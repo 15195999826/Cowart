@@ -11,6 +11,8 @@ import {
   DefaultImageToolbar,
   DefaultImageToolbarContent,
   DefaultToolbar,
+  DefaultVideoToolbar,
+  DefaultVideoToolbarContent,
   DefaultColorStyle,
   DefaultStylePanel,
   DefaultStylePanelContent,
@@ -138,6 +140,11 @@ const AI_IMAGE_ASPECT_PRESETS = [
 ]
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
 const ANNOTATION_TOOL_LABEL = '标注'
+// [fork-patch] 注释: annotations that stay on the card as background notes (FORK.md).
+const NOTE_TOOL_ID = 'cowart-annotation-note'
+const NOTE_TOOL_LABEL = '注释'
+const NOTE_COLOR = 'blue'
+const CLEAR_ANNOTATIONS_LABEL = '清理标注'
 const ANNOTATION_DEFAULT_COLOR = 'red'
 const ANNOTATION_MIN_LENGTH = 8
 const ANNOTATION_BEND_RATIO = 0.12
@@ -180,13 +187,9 @@ const ANNOTATION_HTML_PROMPT = [
   '- 保留原图片和原标注不动，把新 HTML 草稿放到原图片右侧。'
 ].join('\n')
 const ANNOTATION_EDIT_EXPORT_PADDING = 32
-const ANNOTATION_EDIT_NEAR_MARGIN_MIN = 160
-const ANNOTATION_EDIT_NEAR_MARGIN_MAX = 720
-const ANNOTATION_EDIT_RELATED_TEXT_MARGIN = 120
 const ANNOTATION_EDIT_STATUS_RESET_MS = 2200
 const ANNOTATION_EDIT_MAX_EXPORT_DIMENSION = 4096
 const ANNOTATION_EDIT_MAX_EXPORT_PIXELS = 16_000_000
-const ANNOTATION_EDIT_COLORS = new Set(['red', 'yellow', 'orange'])
 const HTML_DRAFT_CAPTURE_DELAY_MS = 2000
 const HTML_DRAFT_ASSET_RETRY_DELAYS_MS = [0, 200, 600, 1400]
 const HTML_DRAFT_DOM_EDIT_LABEL = '编辑文本'
@@ -290,6 +293,19 @@ const annotationToolIcon = (
   <div
     className="cowart-annotation-tool-icon"
     dangerouslySetInnerHTML={{ __html: annotationToolIconSvg }}
+  />
+)
+// [fork-patch] A pushpin for 注释, the notes that stay.
+const noteToolIcon = (
+  <div
+    className="cowart-annotation-tool-icon"
+    dangerouslySetInnerHTML={{
+      __html:
+        '<svg width="30" height="30" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+        '<path d="M18.5 3.5L26.5 11.5L23.5 12.5L19 17L18.5 22.5L15.5 25.5L4.5 14.5L7.5 11.5L13 11L17.5 6.5L18.5 3.5Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>' +
+        '<path d="M10 20L3.5 26.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>' +
+        '</svg>'
+    }}
   />
 )
 const iconSvgSources = import.meta.glob(
@@ -964,7 +980,7 @@ const cowartTldrawOptions = {
   }
 }
 
-function startEditingAnnotationArrowLabel(editor, arrowId) {
+function startEditingAnnotationArrowLabel(editor, arrowId, toolId = ANNOTATION_TOOL_ID /* [fork-patch] */) {
   const shape = editor.getShape(arrowId)
   if (!shape || !editor.canEditShape(shape)) {
     return
@@ -973,7 +989,7 @@ function startEditingAnnotationArrowLabel(editor, arrowId) {
   editor.select(arrowId)
   startEditingShapeWithRichText(editor, arrowId, { selectAll: true })
   pinAnnotationArrowLabelPosition(editor, arrowId)
-  editor.getCurrentTool().setCurrentToolIdMask(ANNOTATION_TOOL_ID)
+  editor.getCurrentTool().setCurrentToolIdMask(toolId)
   selectAnnotationTextWhenReady(editor, arrowId)
 }
 
@@ -1104,29 +1120,260 @@ function expandBox(bounds, padding) {
   )
 }
 
-function annotationEditNearMargin(targetBounds) {
-  return Math.min(
-    ANNOTATION_EDIT_NEAR_MARGIN_MAX,
-    Math.max(ANNOTATION_EDIT_NEAR_MARGIN_MIN, Math.max(targetBounds.w, targetBounds.h))
+// [fork-patch] Annotations are bound to the card they point at instead of being guessed from
+// what lies near a card (FORK.md). The 标注 tool only completes on an annotation target (an
+// image, a video, an AI HTML draft or an AI Slides frame) and binds the arrow's tip to the
+// spot it was released on (a tldraw arrow binding, saved with the canvas). A card's
+// annotations are the 标注 arrows bound to it or to one of its items (a Slides frame's
+// pages); they move along when the card moves and go when it is deleted. Older unbound 标注
+// arrows are bound when the canvas opens, if their tip lies on a card.
+const cowartAnnotationNotices = new EventTarget()
+
+function isAnnotationTargetShape(shape) {
+  return (
+    isImageShape(shape) ||
+    shape?.type === 'video' ||
+    isCowartHtmlDraftEmbedShape(shape) ||
+    isAiSlidesShape(shape)
   )
 }
 
-function shapeHasAnnotationColor(shape) {
-  const color = shape?.props?.color
-  const labelColor = shape?.props?.labelColor
-  return ANNOTATION_EDIT_COLORS.has(color) || ANNOTATION_EDIT_COLORS.has(labelColor)
-}
-
 function isAnnotationArrowShape(shape) {
-  return shape?.type === 'arrow' && (shape.meta?.cowartAnnotationArrow === true || shapeHasAnnotationColor(shape))
+  return shape?.type === 'arrow' && shape.meta?.cowartAnnotationArrow === true
 }
 
-function isAnnotationTextShape(shape) {
-  return shape?.type === 'text' && (shape.meta?.cowartAnnotationText === true || shapeHasAnnotationColor(shape))
+// 注释 (notes that stay) among them; the rest are 标注, the change requests.
+function isAnnotationNoteShape(shape) {
+  return isAnnotationArrowShape(shape) && shape.meta?.cowartAnnotationNote === true
 }
 
-function uniqueShapeIds(shapeIds) {
-  return Array.from(new Set(shapeIds.filter(Boolean)))
+function findAnnotationTarget(editor, pagePoint, ignoreShapeId) {
+  return (
+    editor.getShapeAtPoint(pagePoint, {
+      hitInside: true,
+      hitFrameInside: true,
+      filter: (shape) =>
+        shape.id !== ignoreShapeId &&
+        isAnnotationTargetShape(shape) &&
+        !editor.isShapeOrAncestorLocked(shape)
+    }) ?? null
+  )
+}
+
+function annotationArrowTip(editor, arrow) {
+  const tip = editor.getShapeHandles(arrow)?.find((handle) => handle.id === 'end')
+  return tip ? editor.getShapePageTransform(arrow.id).applyToPoint(tip) : null
+}
+
+function bindAnnotationArrow(editor, arrowId, target, pagePoint) {
+  const { bounds } = editor.getShapeGeometry(target)
+  const point = editor.getPointInShapeSpace(target, pagePoint)
+  editor.createBinding({
+    type: 'arrow',
+    fromId: arrowId,
+    toId: target.id,
+    props: {
+      terminal: 'end',
+      normalizedAnchor: {
+        x: bounds.w ? clampNumber((point.x - bounds.minX) / bounds.w, 0, 1) : 0.5,
+        y: bounds.h ? clampNumber((point.y - bounds.minY) / bounds.h, 0, 1) : 0.5
+      },
+      isExact: true,
+      isPrecise: true,
+      snap: 'none'
+    }
+  })
+}
+
+function bindLegacyAnnotationArrows(editor) {
+  const unbound = []
+  for (const shape of editor.getCurrentPageShapes()) {
+    if (!isAnnotationArrowShape(shape) || annotationArrowEndBinding(editor, shape.id)) continue
+    const tip = annotationArrowTip(editor, shape)
+    const target = tip && findAnnotationTarget(editor, tip, shape.id)
+    if (target) unbound.push({ arrowId: shape.id, target, tip })
+  }
+  if (!unbound.length) return
+  editor.run(
+    () => {
+      for (const { arrowId, target, tip } of unbound) bindAnnotationArrow(editor, arrowId, target, tip)
+    },
+    { history: 'ignore' }
+  )
+}
+
+// The 标注 arrows bound to a card or to one of its items, in reading order of their tips.
+function getCardAnnotations(editor, targetShapeId) {
+  const targetIds = new Set([targetShapeId])
+  editor.visitDescendants(targetShapeId, (id) => {
+    targetIds.add(id)
+  })
+  const annotations = []
+  for (const targetId of targetIds) {
+    for (const binding of editor.getBindingsToShape(targetId, 'arrow')) {
+      if (binding.props.terminal !== 'end') continue
+      const arrow = editor.getShape(binding.fromId)
+      const tip = isAnnotationArrowShape(arrow) ? annotationArrowTip(editor, arrow) : null
+      if (tip) annotations.push({ arrow, tip })
+    }
+  }
+  return annotations.sort((a, b) => a.tip.y - b.tip.y || a.tip.x - b.tip.x)
+}
+
+// Prompt lines with each annotation's words and the spot on the card it points at.
+// 标注 are the changes to make; 注释 are listed apart, as background that stays.
+function annotationNoteLines(editor, targetShapeId) {
+  const bounds = editor.getShapePageBounds(targetShapeId)
+  const annotations = getCardAnnotations(editor, targetShapeId)
+  if (!bounds || !annotations.length) return []
+  const percent = (value, start, size) =>
+    `${Math.round(clampNumber(size ? (value - start) / size : 0.5, 0, 1) * 100)}%`
+  const describe = ({ arrow, tip }) => {
+    const text = editor.getShapeUtil(arrow).getText(arrow)?.trim()
+    const words = text ? `「${text.replace(/\s*\n\s*/g, ' / ')}」` : '(no words on this arrow; see the screenshot)'
+    return `${words} → (${percent(tip.x, bounds.minX, bounds.w)}, ${percent(tip.y, bounds.minY, bounds.h)})`
+  }
+  const requests = annotations.filter(({ arrow }) => !isAnnotationNoteShape(arrow))
+  const notes = annotations.filter(({ arrow }) => isAnnotationNoteShape(arrow))
+  return [
+    ...(requests.length
+      ? [
+          'Change requests (标注 arrows bound to this shape; each spot is where the tip points, in % of the shape width and height from its top-left):',
+          ...requests.map((annotation, index) => `${index + 1}. ${describe(annotation)}`)
+        ]
+      : []),
+    ...(notes.length
+      ? [
+          'Standing notes (注释 arrows bound to this shape: background to keep in mind, not changes to make this time; spots as above):',
+          ...notes.map((annotation) => `- ${describe(annotation)}`)
+        ]
+      : [])
+  ]
+}
+
+// Moving a card takes its annotations along; arrows inside a frame already move with it.
+function moveAnnotationsWithCard(editor, previous, next) {
+  // Undo and redo put the arrows back themselves; tldraw pauses history recording meanwhile.
+  if (editor.history?.state === 'paused') return
+  if (previous.parentId !== next.parentId || (previous.x === next.x && previous.y === next.y)) return
+  if (!isAnnotationTargetShape(next)) return
+  const parentTransform = editor.getShapeParentTransform(next)
+  const from = parentTransform.applyToPoint({ x: previous.x, y: previous.y })
+  const to = parentTransform.applyToPoint({ x: next.x, y: next.y })
+  const selectedIds = new Set(editor.getSelectedShapeIds())
+  const updates = getCardAnnotations(editor, next.id)
+    .map(({ arrow }) => arrow)
+    .filter((arrow) => arrow.parentId === editor.getAncestorPageId(arrow) && !selectedIds.has(arrow.id))
+    .map((arrow) => ({ id: arrow.id, type: 'arrow', x: arrow.x + to.x - from.x, y: arrow.y + to.y - from.y }))
+  if (updates.length) editor.updateShapes(updates)
+}
+
+function deleteAnnotationsWithCards(editor, shapeIds) {
+  const deleting = new Set(shapeIds)
+  const arrowIds = new Set()
+  for (const shapeId of shapeIds) {
+    if (!isAnnotationTargetShape(editor.getShape(shapeId))) continue
+    for (const { arrow } of getCardAnnotations(editor, shapeId)) {
+      if (!deleting.has(arrow.id)) arrowIds.add(arrow.id)
+    }
+  }
+  if (arrowIds.size) editor.deleteShapes([...arrowIds])
+}
+
+function annotationArrowEndBinding(editor, arrowId) {
+  return editor
+    .getBindingsFromShape(arrowId, 'arrow')
+    .find((binding) => binding.props.terminal === 'end')
+}
+
+// After a drag of an annotation: its tip bound exactly where it was released (tip drags),
+// still bound to a card (moving the arrow keeps the tip on its card), bound to the card now
+// under its tip, or false when it points at no card.
+function settleAnnotationArrow(editor, arrowId, releasePoint) {
+  const arrow = editor.getShape(arrowId)
+  if (!isAnnotationArrowShape(arrow)) return true
+  const binding = annotationArrowEndBinding(editor, arrowId)
+  if (!releasePoint && binding && isAnnotationTargetShape(editor.getShape(binding.toId))) {
+    if (!binding.props.isExact) {
+      editor.updateBinding({ ...binding, props: { ...binding.props, isExact: true, isPrecise: true } })
+    }
+    return true
+  }
+  const tip = releasePoint ?? annotationArrowTip(editor, arrow)
+  const target = tip && findAnnotationTarget(editor, tip, arrowId)
+  if (!target) return false
+  if (binding) editor.deleteBinding(binding)
+  bindAnnotationArrow(editor, arrowId, target, tip)
+  return true
+}
+
+function registerAnnotationBindings(editor) {
+  const disposeFollow = editor.sideEffects.registerAfterChangeHandler('shape', (previous, next, source) => {
+    if (source === 'user') moveAnnotationsWithCard(editor, previous, next)
+  })
+  // Emitted before the shapes go, while their bindings still say which arrows are theirs.
+  const handleDeletedShapes = (shapeIds) => deleteAnnotationsWithCards(editor, shapeIds)
+  editor.on('deleted-shapes', handleDeletedShapes)
+  // A drag of an annotation (its tip handle or the whole arrow) has to end on a card too;
+  // one that does not is taken back.
+  let pendingEdit = null
+  const endBindingKey = (arrowId) => {
+    const binding = annotationArrowEndBinding(editor, arrowId)
+    return binding ? JSON.stringify([binding.toId, binding.props]) : null
+  }
+  const handleEvent = (info) => {
+    if (info.type !== 'pointer') return
+    if (info.name === 'pointer_down') {
+      const shape = editor.getOnlySelectedShape()
+      pendingEdit =
+        editor.isIn('select') && isAnnotationArrowShape(shape)
+          ? {
+              arrowId: shape.id,
+              tipDrag: info.target === 'handle' && info.handle?.id === 'end',
+              binding: endBindingKey(shape.id),
+              mark: editor.markHistoryStoppingPoint('edit annotation')
+            }
+          : null
+    } else if (info.name === 'pointer_up' && pendingEdit) {
+      const { arrowId, tipDrag, binding, mark } = pendingEdit
+      pendingEdit = null
+      if (binding && endBindingKey(arrowId) === binding) return
+      const releasePoint = tipDrag ? editor.inputs.getCurrentPagePoint() : null
+      if (settleAnnotationArrow(editor, arrowId, releasePoint)) return
+      const note = isAnnotationNoteShape(editor.getShape(arrowId))
+      editor.bailToMark(mark)
+      cowartAnnotationNotices.dispatchEvent(new CustomEvent('missed-target', { detail: { reverted: true, note } }))
+    }
+  }
+  editor.on('event', handleEvent)
+  // Writing an annotation's words ends with Enter (Shift+Enter for a new line), Esc or a
+  // click elsewhere, back in the select tool; an annotation left without words is taken back.
+  const disposeEditingEnd = editor.sideEffects.registerAfterChangeHandler(
+    'instance_page_state',
+    (previous, next, source) => {
+      if (source !== 'user' || !previous.editingShapeId || previous.editingShapeId === next.editingShapeId) return
+      const arrow = editor.getShape(previous.editingShapeId)
+      if (!isAnnotationArrowShape(arrow) || editor.getShapeUtil(arrow).getText(arrow)?.trim()) return
+      editor.deleteShapes([arrow.id])
+    }
+  )
+  const containerDocument = editor.getContainerDocument()
+  const handleKeyDown = (event) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
+    if (!isAnnotationArrowShape(editor.getEditingShape())) return
+    event.preventDefault()
+    event.stopPropagation()
+    editor.complete()
+  }
+  containerDocument.addEventListener('keydown', handleKeyDown, true)
+  editor.timers.setTimeout(() => bindLegacyAnnotationArrows(editor), 0)
+  return () => {
+    disposeFollow()
+    disposeEditingEnd()
+    editor.off('deleted-shapes', handleDeletedShapes)
+    editor.off('event', handleEvent)
+    containerDocument.removeEventListener('keydown', handleKeyDown, true)
+  }
 }
 
 function collectAnnotationTargetShapeIds(editor, targetShapeId, isTargetShape, invalidTargetMessage) {
@@ -1135,45 +1382,7 @@ function collectAnnotationTargetShapeIds(editor, targetShapeId, isTargetShape, i
     throw new Error(invalidTargetMessage)
   }
 
-  const targetBounds = editor.getShapePageBounds(targetShapeId)
-  if (!targetBounds) {
-    throw new Error('无法读取当前内容的画布位置。')
-  }
-
-  const nearBounds = expandBox(targetBounds, annotationEditNearMargin(targetBounds))
-  const relatedArrowIds = []
-  const relatedArrowBounds = []
-  const relatedTextIds = []
-
-  for (const shape of editor.getCurrentPageShapesSorted()) {
-    if (!shape || shape.id === targetShapeId) continue
-
-    const bounds = editor.getShapePageBounds(shape)
-    if (!bounds) continue
-
-    if (isAnnotationArrowShape(shape) && nearBounds.collides(bounds)) {
-      relatedArrowIds.push(shape.id)
-      relatedArrowBounds.push(bounds)
-      continue
-    }
-
-    if (!isAnnotationTextShape(shape)) continue
-
-    if (nearBounds.collides(bounds)) {
-      relatedTextIds.push(shape.id)
-      continue
-    }
-
-    if (
-      relatedArrowBounds.some((arrowBounds) =>
-        expandBox(arrowBounds, ANNOTATION_EDIT_RELATED_TEXT_MARGIN).collides(bounds)
-      )
-    ) {
-      relatedTextIds.push(shape.id)
-    }
-  }
-
-  return uniqueShapeIds([targetShapeId, ...relatedArrowIds, ...relatedTextIds])
+  return [targetShapeId, ...getCardAnnotations(editor, targetShapeId).map(({ arrow }) => arrow.id)]
 }
 
 function collectAnnotationEditShapeIds(editor, imageShapeId) {
@@ -1203,13 +1412,21 @@ function collectAiSlidesAnnotationShapeIds(editor, slidesShapeId) {
   )
 }
 
-function buildAnnotationEditPrompt({ imageShapeId, shapeIds, exportWidth, exportHeight, screenshotAsset }) {
+function buildAnnotationEditPrompt({
+  imageShapeId,
+  shapeIds,
+  exportWidth,
+  exportHeight,
+  screenshotAsset,
+  annotationLines = [] // [fork-patch]
+}) {
   const annotationCount = Math.max(0, shapeIds.length - 1)
   const lines = [
     ANNOTATION_EDIT_PROMPT,
     '',
     `Cowart source image shape: ${imageShapeId}`,
     `Included annotation shapes: ${annotationCount}`,
+    ...annotationLines, // [fork-patch]
     `Screenshot size: ${Math.round(exportWidth)}x${Math.round(exportHeight)}`
   ]
 
@@ -1223,7 +1440,14 @@ function buildAnnotationEditPrompt({ imageShapeId, shapeIds, exportWidth, export
   return lines.join('\n')
 }
 
-function buildAnnotationHtmlPrompt({ imageShape, shapeIds, exportWidth, exportHeight, screenshotAsset }) {
+function buildAnnotationHtmlPrompt({
+  imageShape,
+  shapeIds,
+  exportWidth,
+  exportHeight,
+  screenshotAsset,
+  annotationLines = [] // [fork-patch]
+}) {
   const targetWidth = Math.round(Number(imageShape.props?.w) || AI_IMAGE_HOLDER_DEFAULT_W)
   const targetHeight = Math.round(Number(imageShape.props?.h) || AI_IMAGE_HOLDER_DEFAULT_H)
   const ratio = targetHeight ? targetWidth / targetHeight : 1
@@ -1235,6 +1459,7 @@ function buildAnnotationHtmlPrompt({ imageShape, shapeIds, exportWidth, exportHe
     `Target canvas HTML size: ${targetWidth} x ${targetHeight} canvas units.`,
     `Target aspect ratio: ${targetWidth}:${targetHeight} (${ratio.toFixed(3)} width/height).`,
     `Included annotation shapes: ${annotationCount}`,
+    ...annotationLines, // [fork-patch]
     `Screenshot size: ${Math.round(exportWidth)}x${Math.round(exportHeight)}`,
     ...(screenshotAsset?.assetPath
       ? [
@@ -1364,7 +1589,8 @@ async function sendAnnotationEditRequest(editor, imageShapeId, request) {
     shapeIds,
     exportWidth: exportResult.width,
     exportHeight: exportResult.height,
-    screenshotAsset
+    screenshotAsset,
+    annotationLines: annotationNoteLines(editor, imageShapeId) // [fork-patch]
   })
   const sender = followUpSender()
   if (!sender) {
@@ -1419,7 +1645,8 @@ async function sendAnnotationHtmlRequest(editor, imageShapeId) {
     shapeIds,
     exportWidth: exportResult.width,
     exportHeight: exportResult.height,
-    screenshotAsset
+    screenshotAsset,
+    annotationLines: annotationNoteLines(editor, imageShapeId) // [fork-patch]
   })
   const sender = followUpSender()
   if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
@@ -2306,7 +2533,8 @@ function buildAiSlidesAnnotationEditPrompt({
   targetSlidesShapeId,
   sourceItems,
   exportResult,
-  screenshotAsset
+  screenshotAsset,
+  annotationLines = [] // [fork-patch]
 }) {
   const pageCount = sourceItems.length
   const annotationCount = Math.max(0, exportResult.shapeIds.length - 1)
@@ -2325,6 +2553,7 @@ function buildAiSlidesAnnotationEditPrompt({
     `Cowart target AI Slides frame below source: ${targetSlidesShapeId}`,
     `Required page count: exactly ${pageCount}.`,
     `Included annotation shapes: ${annotationCount}`,
+    ...annotationLines, // [fork-patch]
     `Screenshot size: ${exportResult.width}x${exportResult.height}`,
     ...(screenshotAsset?.assetPath
       ? [
@@ -2378,7 +2607,8 @@ async function sendAiSlidesAnnotationEditRequest(editor, slidesShapeId) {
       targetSlidesShapeId,
       sourceItems,
       exportResult,
-      screenshotAsset
+      screenshotAsset,
+      annotationLines: annotationNoteLines(editor, slidesShapeId) // [fork-patch]
     })
     const content = [{ type: 'text', text: prompt }]
     if (supportsCowartMessageImages()) {
@@ -2414,7 +2644,12 @@ function htmlDraftAnnotationScreenshotFileName(mode) {
   return `html-draft-annotation-${mode}-${timestamp}.png`
 }
 
-function buildHtmlDraftAnnotationEditPrompt({ draftShape, exportResult, screenshotAsset }) {
+function buildHtmlDraftAnnotationEditPrompt({
+  draftShape,
+  exportResult,
+  screenshotAsset,
+  annotationLines = [] // [fork-patch]
+}) {
   const assetUrl = getCowartHtmlDraftAssetUrl(draftShape)
   const assetPath = getCowartHtmlDraftLocalPath(draftShape)
   const annotationCount = Math.max(0, exportResult.shapeIds.length - 1)
@@ -2427,6 +2662,7 @@ function buildHtmlDraftAnnotationEditPrompt({ draftShape, exportResult, screensh
     `HTML draft asset URL: ${assetUrl || 'unavailable'}`,
     ...(assetPath ? [`HTML draft local path: ${assetPath}`] : []),
     `Included annotation shapes: ${annotationCount}`,
+    ...annotationLines, // [fork-patch]
     `Screenshot size: ${exportResult.width}x${exportResult.height}`,
     ...(screenshotAsset?.assetPath
       ? [
@@ -2444,7 +2680,12 @@ function buildHtmlDraftAnnotationEditPrompt({ draftShape, exportResult, screensh
   ].join('\n')
 }
 
-function buildHtmlDraftAnnotationImagePrompt({ draftShape, exportResult, screenshotAsset }) {
+function buildHtmlDraftAnnotationImagePrompt({
+  draftShape,
+  exportResult,
+  screenshotAsset,
+  annotationLines = [] // [fork-patch]
+}) {
   const targetWidth = Math.round(Number(draftShape.props.w) || AI_IMAGE_HOLDER_DEFAULT_W)
   const targetHeight = Math.round(Number(draftShape.props.h) || AI_IMAGE_HOLDER_DEFAULT_H)
   const ratio = targetHeight ? targetWidth / targetHeight : 1
@@ -2456,6 +2697,7 @@ function buildHtmlDraftAnnotationImagePrompt({ draftShape, exportResult, screens
     `Target canvas image size: ${targetWidth} x ${targetHeight} canvas units.`,
     `Target aspect ratio: ${targetWidth}:${targetHeight} (${ratio.toFixed(3)} width/height).`,
     `Included annotation shapes: ${annotationCount}`,
+    ...annotationLines, // [fork-patch]
     `Screenshot size: ${exportResult.width}x${exportResult.height}`,
     ...(screenshotAsset?.assetPath
       ? [
@@ -2487,10 +2729,11 @@ async function sendHtmlDraftAnnotationRequest(editor, draftShapeId, mode) {
     dataUrl: exportResult.url,
     mimeType: 'image/png'
   })
+  const annotationLines = annotationNoteLines(editor, draftShapeId) // [fork-patch]
   const prompt =
     mode === 'edit'
-      ? buildHtmlDraftAnnotationEditPrompt({ draftShape, exportResult, screenshotAsset })
-      : buildHtmlDraftAnnotationImagePrompt({ draftShape, exportResult, screenshotAsset })
+      ? buildHtmlDraftAnnotationEditPrompt({ draftShape, exportResult, screenshotAsset, annotationLines })
+      : buildHtmlDraftAnnotationImagePrompt({ draftShape, exportResult, screenshotAsset, annotationLines })
   const content = [{ type: 'text', text: prompt }]
 
   if (supportsCowartMessageImages()) {
@@ -2917,11 +3160,12 @@ class CowartAnnotationPointing extends StateNode {
   arrowId = null
   markId = ''
   origin = null
+  isNote = false // [fork-patch] set for 注释 (CowartNotePointing)
 
   onEnter() {
     const origin = this.editor.inputs.getOriginPagePoint()
     const scale = this.editor.getResizeScaleFactor()
-    const color = getAnnotationColor(this.editor)
+    const color = this.isNote ? NOTE_COLOR : getAnnotationColor(this.editor) // [fork-patch]
     const arrowId = createShapeId()
 
     this.arrowId = arrowId
@@ -2934,11 +3178,12 @@ class CowartAnnotationPointing extends StateNode {
       x: origin.x,
       y: origin.y,
       meta: {
-        cowartAnnotationArrow: true
+        cowartAnnotationArrow: true,
+        ...(this.isNote ? { cowartAnnotationNote: true } : {}) // [fork-patch]
       },
       props: {
         kind: 'arc',
-        dash: 'draw',
+        dash: this.isNote ? 'dashed' : 'draw', // [fork-patch]
         size: 'm',
         fill: 'none',
         color,
@@ -2988,11 +3233,14 @@ class CowartAnnotationPointing extends StateNode {
         }
       }
     ])
+    // [fork-patch] Highlight the card the annotation would be bound to.
+    const target = findAnnotationTarget(this.editor, point, this.arrowId)
+    this.editor.setHintingShapes(target ? [target.id] : [])
   }
 
   complete() {
     if (!this.arrowId || !this.origin) {
-      this.editor.setCurrentTool(ANNOTATION_TOOL_ID)
+      this.editor.setCurrentTool(this.parent.id) // [fork-patch] 标注 or 注释
       return
     }
 
@@ -3004,8 +3252,20 @@ class CowartAnnotationPointing extends StateNode {
     const length = Math.hypot(dx, dy)
 
     if (length < ANNOTATION_MIN_LENGTH / this.editor.getZoomLevel()) {
+      this.editor.setHintingShapes([]) // [fork-patch]
       this.editor.bailToMark(this.markId)
       this.parent.transition('idle')
+      return
+    }
+
+    // [fork-patch] An annotation has to point at a card: its tip is bound to the spot it was
+    // released on, and one released anywhere else is taken back.
+    const target = findAnnotationTarget(this.editor, point, this.arrowId)
+    this.editor.setHintingShapes([])
+    if (!target) {
+      this.editor.bailToMark(this.markId)
+      this.parent.transition('idle')
+      cowartAnnotationNotices.dispatchEvent(new CustomEvent('missed-target', { detail: { note: this.isNote } }))
       return
     }
 
@@ -3018,16 +3278,32 @@ class CowartAnnotationPointing extends StateNode {
         }
       }
     ])
+    bindAnnotationArrow(this.editor, this.arrowId, target, point) // [fork-patch]
 
     trackAnnotationCreated()
-    startEditingAnnotationArrowLabel(this.editor, this.arrowId)
+    startEditingAnnotationArrowLabel(this.editor, this.arrowId, this.parent.id) // [fork-patch]
   }
 
   cancel() {
+    this.editor.setHintingShapes([]) // [fork-patch]
     if (this.arrowId) {
       this.editor.bailToMark(this.markId)
     }
     this.parent.transition('idle')
+  }
+}
+
+// [fork-patch] 注释: the 标注 tool drawing notes that stay (blue, dashed, meta.cowartAnnotationNote)
+// instead of change requests; bound, followed and finished the same way.
+class CowartNotePointing extends CowartAnnotationPointing {
+  isNote = true
+}
+
+class CowartNoteTool extends CowartAnnotationTool {
+  static id = NOTE_TOOL_ID
+
+  static children() {
+    return [CowartAnnotationIdle, CowartNotePointing]
   }
 }
 
@@ -3243,6 +3519,66 @@ class CowartEmbedShapeUtil extends CowartConfiguredEmbedShapeUtil {
 
 const cowartShapeUtils = [CowartFrameShapeUtil, CowartEmbedShapeUtil]
 
+// [fork-patch] Host extension hook (see FORK.md). A host adapter can set
+// window.__cowartExtensions = {
+//   tools: [{ id, label, iconSvg, onSelect(editor, source), after? }],
+//   panels: ['ai-image'],
+//   imageToolbar: [{ id, label, title?, iconSvg?, isFor(shape), onSelect({ editor, shape, anchor }) }]
+// }
+// before the app loads to add tools to the toolbar (with the AI tools, or after the media
+// tool with after: 'asset'), to draw a built-in generation panel itself (the app then
+// skips rendering it, and for 'ai-image' also the holder's size / ratio controls in the
+// style panel), or to add buttons to the selected image's toolbar, after the app's own
+// (label and title may be functions of the shape). Nothing changes when it is unset.
+function cowartExtensionTools() {
+  const tools = globalThis.__cowartExtensions?.tools
+  return Array.isArray(tools) ? tools.filter((tool) => typeof tool?.id === 'string' && tool.id) : []
+}
+
+function cowartImageToolbarItems(shape) {
+  const items = globalThis.__cowartExtensions?.imageToolbar
+  if (!shape || !Array.isArray(items)) return []
+  return items.filter(
+    (item) =>
+      typeof item?.id === 'string' &&
+      item.id &&
+      typeof item.onSelect === 'function' &&
+      (typeof item.isFor !== 'function' || item.isFor(shape))
+  )
+}
+
+function cowartPanelTakenOver(panelId) {
+  const panels = globalThis.__cowartExtensions?.panels
+  return Array.isArray(panels) && panels.includes(panelId)
+}
+
+function cowartExtensionTranslations() {
+  return Object.fromEntries(cowartExtensionTools().map((tool) => [`tool.${tool.id}`, tool.label || tool.id]))
+}
+
+function cowartExtensionToolDefinitions(editor) {
+  return Object.fromEntries(
+    cowartExtensionTools().map((tool) => [
+      tool.id,
+      {
+        id: tool.id,
+        label: `tool.${tool.id}`,
+        icon: (
+          <div
+            aria-hidden="true"
+            className="cowart-ai-frame-tool-icon"
+            dangerouslySetInnerHTML={{ __html: String(tool.iconSvg || '') }}
+          />
+        ),
+        onSelect(source) {
+          tool.onSelect?.(editor, source)
+        },
+        meta: { cowartTool: tool.id }
+      }
+    ])
+  )
+}
+
 const cowartUiOverrides = {
   actions(editor, actions, helpers) {
     const defaultDownloadOriginal = actions['download-original']
@@ -3338,13 +3674,17 @@ const cowartUiOverrides = {
       'tool.ai-image': AI_IMAGE_HOLDER_LABEL,
       'tool.ai-draft': AI_DRAFT_HOLDER_LABEL,
       'tool.ai-slides': AI_SLIDES_LABEL,
-      'tool.cowart-annotation': ANNOTATION_TOOL_LABEL
+      'tool.cowart-annotation': ANNOTATION_TOOL_LABEL,
+      'tool.cowart-annotation-note': NOTE_TOOL_LABEL, // [fork-patch]
+      ...cowartExtensionTranslations() // [fork-patch]
     },
     'zh-cn': {
       'tool.ai-image': AI_IMAGE_HOLDER_LABEL,
       'tool.ai-draft': AI_DRAFT_HOLDER_LABEL,
       'tool.ai-slides': AI_SLIDES_LABEL,
-      'tool.cowart-annotation': ANNOTATION_TOOL_LABEL
+      'tool.cowart-annotation': ANNOTATION_TOOL_LABEL,
+      'tool.cowart-annotation-note': NOTE_TOOL_LABEL, // [fork-patch]
+      ...cowartExtensionTranslations() // [fork-patch]
     }
   },
   tools(editor, tools) {
@@ -3439,7 +3779,21 @@ const cowartUiOverrides = {
         meta: {
           cowartTool: 'annotation'
         }
-      }
+      },
+      // [fork-patch] 注释
+      [NOTE_TOOL_ID]: {
+        id: NOTE_TOOL_ID,
+        label: 'tool.cowart-annotation-note',
+        icon: noteToolIcon,
+        onSelect() {
+          unlockGlobalToolLock(editor)
+          editor.setCurrentTool(NOTE_TOOL_ID)
+        },
+        meta: {
+          cowartTool: 'annotation-note'
+        }
+      },
+      ...cowartExtensionToolDefinitions(editor) // [fork-patch]
     }
   }
 }
@@ -3447,6 +3801,7 @@ const cowartUiOverrides = {
 const cowartComponents = {
   Toolbar: CowartToolbar,
   ImageToolbar: CowartSelectionToolbar,
+  VideoToolbar: CowartVideoToolbar, // [fork-patch] tldraw's, plus 清理标注
   InFrontOfTheCanvas: CowartCanvasOverlay,
   StylePanel: CowartStylePanel
 }
@@ -3454,7 +3809,7 @@ const cowartComponents = {
 function CowartCanvasOverlay() {
   return (
     <>
-      <CowartAiImageGenerationPanel />
+      {!cowartPanelTakenOver('ai-image') && <CowartAiImageGenerationPanel /> /* [fork-patch] */}
       <CowartAiDraftGenerationPanel />
       <CowartAiSlidesGenerationPanel />
       <CowartSlidesPresentationOverlay />
@@ -4795,6 +5150,8 @@ function CowartAiImageStyleControls() {
   }, [selectedAiHolderShape?.id, selectedAiHolderShape?.props.w, selectedAiHolderShape?.props.h])
 
   if (!selectedAiHolderShape) return null
+  // [fork-patch] A host that draws the AI image panel also owns the holder's size and ratio.
+  if (isAiImageHolderShape(selectedAiHolderShape) && cowartPanelTakenOver('ai-image')) return null
 
   const activePreset = getAiImageAspectPreset(selectedAiHolderShape)
   const currentWidth = Number(selectedAiHolderShape.props.w)
@@ -5154,6 +5511,7 @@ function CowartSlidesToolbar({ slidesShapeId }) {
         <span className="cowart-slides-toolbar-label">{AI_SLIDES_PRESENT_LABEL}</span>
       </TldrawUiToolbarButton>
       {hasContent && <CowartSlidesAnnotationEditButton slidesShapeId={slidesShapeId} />}
+      <CowartClearAnnotationsButton targetShapeId={slidesShapeId} /* [fork-patch] */ />
     </TldrawUiContextualToolbar>
   )
 }
@@ -5266,6 +5624,7 @@ function CowartHtmlDraftToolbar({ draftShapeId }) {
             label={HTML_DRAFT_ANNOTATION_IMAGE_LABEL}
             showLabel
           />
+          <CowartClearAnnotationsButton targetShapeId={draftShapeId} /* [fork-patch] */ />
         </>
       )}
     </TldrawUiContextualToolbar>
@@ -5415,6 +5774,12 @@ function CowartImageToolbarContent() {
   const isInCropTool = useValue('cowart image crop tool state', () => editor.isIn('select.crop.'), [
     editor
   ])
+  // [fork-patch] The selected image, for buttons host extensions add to this toolbar.
+  const imageShape = useValue(
+    'cowart selected image shape',
+    () => (imageShapeId ? editor.getShape(imageShapeId) : null),
+    [editor, imageShapeId]
+  )
   const [isEditingAltText, setIsEditingAltText] = useState(false)
 
   const handleManipulatingEnd = useCallback(() => {
@@ -5453,9 +5818,120 @@ function CowartImageToolbarContent() {
         <>
           <CowartAnnotationEditToolbarButton imageShapeId={imageShapeId} />
           <CowartAnnotationHtmlToolbarButton imageShapeId={imageShapeId} />
+          <CowartClearAnnotationsButton targetShapeId={imageShapeId} /* [fork-patch] */ />
+          {cowartImageToolbarItems(imageShape).map((item) => (
+            <CowartExtensionImageToolbarButton item={item} key={item.id} shape={imageShape} /> /* [fork-patch] */
+          ))}
         </>
       )}
     </>
+  )
+}
+
+// [fork-patch] 清理标注: deletes the card's 标注 (the change requests, once done with); its 注释
+// stay. Shown while there is something to clear; Ctrl+Z brings them back.
+function CowartClearAnnotationsButton({ targetShapeId }) {
+  const editor = useEditor()
+  const { addToast } = useToasts()
+  const count = useValue(
+    'cowart clearable annotations',
+    () => getCardAnnotations(editor, targetShapeId).filter(({ arrow }) => !isAnnotationNoteShape(arrow)).length,
+    [editor, targetShapeId]
+  )
+  if (!count) return null
+
+  function handleClick() {
+    const arrowIds = getCardAnnotations(editor, targetShapeId)
+      .filter(({ arrow }) => !isAnnotationNoteShape(arrow))
+      .map(({ arrow }) => arrow.id)
+    if (!arrowIds.length) return
+    editor.markHistoryStoppingPoint('clear annotations')
+    editor.deleteShapes(arrowIds)
+    addToast({
+      id: 'cowart-annotations-cleared',
+      title: `已清理 ${arrowIds.length} 条标注`,
+      description: '注释保留。按 Ctrl+Z 可以撤销。',
+      severity: 'success'
+    })
+  }
+
+  const title = `清理这张卡片上的 ${count} 条标注（注释保留）`
+  return (
+    <TldrawUiToolbarButton
+      aria-label={title}
+      className="cowart-annotation-edit-toolbar-button cowart-clear-annotations-toolbar-button"
+      data-testid="tool.cowart-clear-annotations"
+      onClick={handleClick}
+      title={title}
+      type="icon"
+    >
+      <TldrawUiButtonIcon icon="trash" small />
+      <span className="cowart-annotation-edit-toolbar-label">{`${CLEAR_ANNOTATIONS_LABEL} (${count})`}</span>
+    </TldrawUiToolbarButton>
+  )
+}
+
+// [fork-patch] tldraw's video toolbar, plus 清理标注.
+function CowartVideoToolbar() {
+  const editor = useEditor()
+  const videoShapeId = useValue(
+    'cowart selected video shape id',
+    () => {
+      const shape = editor.getOnlySelectedShape()
+      return shape?.type === 'video' ? shape.id : null
+    },
+    [editor]
+  )
+  const [isEditingAltText, setIsEditingAltText] = useState(false)
+  const handleEditAltTextStart = useCallback(() => setIsEditingAltText(true), [])
+  const handleEditAltTextClose = useCallback(() => setIsEditingAltText(false), [])
+
+  useEffect(() => {
+    setIsEditingAltText(false)
+  }, [videoShapeId])
+
+  if (!videoShapeId) return null
+
+  return (
+    <DefaultVideoToolbar>
+      {isEditingAltText ? (
+        <CowartAltTextEditor onClose={handleEditAltTextClose} shapeId={videoShapeId} />
+      ) : (
+        <>
+          <DefaultVideoToolbarContent onEditAltTextStart={handleEditAltTextStart} videoShapeId={videoShapeId} />
+          <CowartClearAnnotationsButton targetShapeId={videoShapeId} />
+        </>
+      )}
+    </DefaultVideoToolbar>
+  )
+}
+
+// [fork-patch] A button a host extension adds to the image toolbar (cowartImageToolbarItems).
+function CowartExtensionImageToolbarButton({ item, shape }) {
+  const editor = useEditor()
+  const label = typeof item.label === 'function' ? item.label(shape) : item.label
+  const title = (typeof item.title === 'function' ? item.title(shape) : item.title) || label || item.id
+
+  return (
+    <TldrawUiToolbarButton
+      aria-label={title}
+      className="cowart-annotation-edit-toolbar-button cowart-extension-toolbar-button"
+      data-testid={`tool.cowart-extension-${item.id}`}
+      onClick={(event) =>
+        item.onSelect({ editor, shape: editor.getShape(shape.id) ?? shape, anchor: event.currentTarget })
+      }
+      title={title}
+      type="icon"
+    >
+      {item.iconSvg ? (
+        <div
+          aria-hidden="true"
+          className="cowart-ai-frame-tool-icon"
+          dangerouslySetInnerHTML={{ __html: String(item.iconSvg) }}
+        />
+      ) : null}
+      {label ? <span className="cowart-annotation-edit-toolbar-label">{label}</span> : null}
+    </TldrawUiToolbarButton>
   )
 }
 
@@ -5684,40 +6160,65 @@ function CowartToolbarItem({ toolId }) {
   return <TldrawUiMenuToolItem toolId={toolId} isSelected={isSelected} />
 }
 
-function CowartAnnotationToolbarItem() {
+function CowartAnnotationToolbarItem({
+  // [fork-patch] Also draws the 注释 tool's button.
+  toolId = ANNOTATION_TOOL_ID,
+  label = ANNOTATION_TOOL_LABEL,
+  icon = annotationToolIcon
+}) {
   const editor = useEditor()
   const isSelected = useValue(
-    'is annotation selected',
-    () => editor.getCurrentToolId() === ANNOTATION_TOOL_ID,
-    [editor]
+    `is ${toolId} selected`,
+    () => editor.getCurrentToolId() === toolId,
+    [editor, toolId]
   )
 
   return (
     <button
-      aria-label={ANNOTATION_TOOL_LABEL}
+      aria-label={label}
       aria-pressed={isSelected ? 'true' : 'false'}
       className="tlui-button tlui-button__tool cowart-annotation-toolbar-button"
-      data-testid={`tools.${ANNOTATION_TOOL_ID}`}
-      data-value={ANNOTATION_TOOL_ID}
+      data-testid={`tools.${toolId}`}
+      data-value={toolId}
       draggable={false}
       onClick={() => {
         unlockGlobalToolLock(editor)
-        editor.setCurrentTool(ANNOTATION_TOOL_ID)
+        editor.setCurrentTool(toolId)
       }}
       onTouchStart={(event) => {
         event.preventDefault()
         unlockGlobalToolLock(editor)
-        editor.setCurrentTool(ANNOTATION_TOOL_ID)
+        editor.setCurrentTool(toolId)
       }}
-      title={ANNOTATION_TOOL_LABEL}
+      title={label}
       type="button"
     >
-      {annotationToolIcon}
+      {icon}
       <span className="cowart-annotation-toolbar-label" draggable={false}>
-        {ANNOTATION_TOOL_LABEL}
+        {label}
       </span>
     </button>
   )
+}
+
+// [fork-patch] Says why an annotation released away from any card disappeared or went back.
+function useCowartAnnotationNotices() {
+  const { addToast } = useToasts()
+  useEffect(() => {
+    function handleMissedTarget(event) {
+      const noun = event.detail?.note ? NOTE_TOOL_LABEL : ANNOTATION_TOOL_LABEL
+      addToast({
+        id: 'cowart-annotation-missed-target',
+        title: `${noun}要指向一张卡片`,
+        description: event.detail?.reverted
+          ? `箭头尖要落在图片、视频、网页卡片、AI HTML 或 AI Slides 上，这条${noun}已退回原位。`
+          : '把箭头拖到图片、视频、网页卡片、AI HTML 或 AI Slides 上再松手，箭头尖就钉在松手的位置。',
+        severity: 'warning'
+      })
+    }
+    cowartAnnotationNotices.addEventListener('missed-target', handleMissedTarget)
+    return () => cowartAnnotationNotices.removeEventListener('missed-target', handleMissedTarget)
+  }, [addToast])
 }
 
 function CowartToolbarDivider() {
@@ -5725,17 +6226,30 @@ function CowartToolbarDivider() {
 }
 
 function CowartToolbar(props) {
+  // [fork-patch] Extension tools sit with the AI tools, or right after the media tool when
+  // they ask for it (after: 'asset'); maxItems grows so nothing else overflows. 注释 sits
+  // next to 标注.
+  useCowartAnnotationNotices()
+  const extensionTools = cowartExtensionTools()
+  const insertTools = extensionTools.filter((tool) => tool.after === 'asset')
   return (
-    <DefaultToolbar {...props} maxItems={11}>
+    <DefaultToolbar {...props} maxItems={12 + extensionTools.length}>
       <CowartAnnotationToolbarItem />
+      <CowartAnnotationToolbarItem icon={noteToolIcon} label={NOTE_TOOL_LABEL} toolId={NOTE_TOOL_ID} />
       <CowartToolbarDivider />
       <SelectToolbarItem />
       <HandToolbarItem />
       <CowartToolbarItem toolId={AI_IMAGE_TOOL_ID} />
       <CowartToolbarItem toolId={AI_DRAFT_TOOL_ID} />
       <CowartToolbarItem toolId={AI_SLIDES_TOOL_ID} />
+      {extensionTools.filter((tool) => tool.after !== 'asset').map((tool) => (
+        <CowartToolbarItem key={tool.id} toolId={tool.id} />
+      ))}
       <CowartToolbarDivider />
       <AssetToolbarItem />
+      {insertTools.map((tool) => (
+        <CowartToolbarItem key={tool.id} toolId={tool.id} />
+      ))}
       <DrawToolbarItem />
       <EraserToolbarItem />
       <TextToolbarItem />
@@ -5998,6 +6512,7 @@ export default function App() {
       scheduleSlidesLayout()
     })
     editor.timers.setTimeout(scheduleSlidesLayout, 100)
+    const disposeAnnotationBindings = registerAnnotationBindings(editor) // [fork-patch]
 
     const containerDocument = editor.getContainerDocument()
     function handleCowartCopy(event) {
@@ -6121,27 +6636,8 @@ export default function App() {
       }
     }
 
-    const unsubscribeAnnotationEditingToolLock = editor.store.listen(
-      ({ changes }) => {
-        for (const [previous, next] of Object.values(changes.updated)) {
-          if (previous?.typeName !== 'instance_page_state') continue
-          if (!previous.editingShapeId || next.editingShapeId) continue
-
-          const shape = editor.getShape(previous.editingShapeId)
-          if (shape?.meta?.cowartAnnotationArrow !== true) continue
-
-          editor.timers.requestAnimationFrame(() => {
-            if (editor.getEditingShapeId()) return
-            if (editor.getCurrentToolId() !== 'select') return
-            editor.setCurrentTool(ANNOTATION_TOOL_ID)
-          })
-        }
-      },
-      {
-        source: 'all',
-        scope: 'session'
-      }
-    )
+    // [fork-patch] Finishing an annotation's words no longer switches back to the 标注 tool:
+    // the select tool stays, so a click on a card selects it (registerAnnotationBindings).
 
     const unsubscribeAnnotationShapeSync = editor.store.listen(
       ({ changes }) => {
@@ -6199,12 +6695,12 @@ export default function App() {
       }
       document.getElementById(SELECTION_STATE_ELEMENT_ID)?.remove()
       unsubscribe()
-      unsubscribeAnnotationEditingToolLock()
       unsubscribeAnnotationShapeSync()
       editor.off('event', handleSlidesPointerUp)
       containerDocument.removeEventListener('copy', handleCowartCopy, { capture: true })
       disposeSlidesBeforeCreateHandler()
       disposeSlidesOperationHandler()
+      disposeAnnotationBindings() // [fork-patch]
       syncViewState()
       saveCanvas()
     }
@@ -6239,7 +6735,7 @@ export default function App() {
         overrides={cowartUiOverrides}
         components={cowartComponents}
         shapeUtils={cowartShapeUtils}
-        tools={[CowartAnnotationTool]}
+        tools={[CowartAnnotationTool, CowartNoteTool /* [fork-patch] */]}
       />
     </main>
   )

@@ -101,6 +101,12 @@ function round(value) {
 // Compact description of the canvas for the model, instead of the raw snapshot.
 export function summarizeCanvas({ snapshot, viewState, canvasDir, storage }) {
   const store = snapshot?.store ?? {}
+  // 标注 arrows are bound to the card their tip points at (arrow binding, end terminal).
+  const annotated = new Map(
+    Object.values(store)
+      .filter((record) => record?.typeName === 'binding' && record.type === 'arrow' && record.props?.terminal === 'end')
+      .map((binding) => [binding.fromId, binding.toId])
+  )
   const pages = pageRecords(snapshot).map((page) => {
     const shapes = shapesOnPage(snapshot, page.id)
     return {
@@ -123,6 +129,10 @@ export function summarizeCanvas({ snapshot, viewState, canvasDir, storage }) {
         if (shape.parentId !== page.id) summary.parentId = shape.parentId
         const tags = shapeTags(shape)
         if (tags.length) summary.tags = tags
+        if (shape.meta?.cowartAnnotationArrow === true && annotated.has(shape.id)) {
+          summary.annotates = annotated.get(shape.id)
+          if (shape.meta.cowartAnnotationNote === true) summary.note = true
+        }
         if (asset) {
           const src = asset.props?.src
           summary.asset = {
@@ -155,6 +165,7 @@ export function formatCanvasSummary(summary) {
       if (shape.text) line += ` 「${shape.text.replace(/\s+/g, ' ')}」`
       if (shape.asset) line += ` 素材 ${shape.asset.name ?? shape.asset.id} → ${shape.asset.localPath}`
       if (shape.tags) line += ` [${shape.tags.join(', ')}]`
+      if (shape.annotates) line += ` ${shape.note ? '注释（常驻说明）' : '标注（修改要求）'} → ${shape.annotates}`
       if (shape.parentId) line += ` 父级 ${shape.parentId}`
       lines.push(line)
     }

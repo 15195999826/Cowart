@@ -16,6 +16,7 @@ const PORT_ATTEMPTS = 20
 const MAX_BODY_BYTES = 128 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
 const RECENT_FINAL_MS = 60_000
+const MESSAGE_KINDS = new Set(['canvas', 'image', 'video', 'web'])
 
 const CONTENT_TYPES = new Map([
   ['.apng', 'image/apng'],
@@ -118,18 +119,18 @@ export class CanvasHttpHost {
   #pageStreams = new Set()
   #agentStreams = new Set()
 
-  constructor({ token, queue, renderPage, callToolFromPage, createVideoRequest, canvasDirFor, fallbackCanvasDir, log }) {
+  constructor({ token, queue, renderPage, callToolFromPage, canvasDirFor, fallbackCanvasDir, log }) {
     this.token = token
     this.queue = queue
     this.renderPage = renderPage
     this.callToolFromPage = callToolFromPage
-    this.createVideoRequest = createVideoRequest
     this.canvasDirFor = canvasDirFor
     this.fallbackCanvasDir = fallbackCanvasDir
     this.log = log ?? (() => {})
 
     queue.on('created', (request) => this.#deliver(request))
     queue.on('changed', (request) => this.#broadcastPage('request', publicRequest(request)))
+    queue.on('cancelled', (request) => this.#deliverCancel(request))
   }
 
   get port() {
@@ -215,15 +216,19 @@ export class CanvasHttpHost {
     if (req.method === 'POST' && url.pathname === '/api/messages') {
       const body = await readJsonBody(req)
       if (!String(body.text || '').trim()) return sendJson(res, 400, { error: '请求内容为空。' })
-      const request = this.queue.create({ text: body.text, kind: 'canvas', projectDir: body.projectDir, canvasDir: body.canvasDir })
+      // The shared AI 图片 / AI 视频 panels tag their messages with the kind and holder.
+      const kind = MESSAGE_KINDS.has(body.kind) ? body.kind : 'canvas'
+      const holderShapeId = kind !== 'canvas' && typeof body.holderShapeId === 'string' ? body.holderShapeId : null
+      const request = this.queue.create({ text: body.text, kind, projectDir: body.projectDir, canvasDir: body.canvasDir, holderShapeId })
       return sendJson(res, 200, { ok: true, request: publicRequest(request) })
     }
-    if (req.method === 'POST' && url.pathname === '/api/requests/video') {
+    // The canvas withdraws a request Claude has not started on.
+    if (req.method === 'POST' && url.pathname === '/api/requests/cancel') {
+      const { id } = await readJsonBody(req)
       try {
-        const request = await this.createVideoRequest(await readJsonBody(req))
-        return sendJson(res, 200, { ok: true, request: publicRequest(request) })
+        return sendJson(res, 200, { ok: true, request: publicRequest(this.queue.cancel(id)) })
       } catch (error) {
-        return sendJson(res, 400, { error: error.message })
+        return sendJson(res, 409, { error: error.message })
       }
     }
     if (req.method === 'GET' && url.pathname === '/api/page-events') return this.#openPageStream(req, res)
@@ -346,6 +351,12 @@ export class CanvasHttpHost {
     if (!stream || request.delivered) return
     sendEvent(stream, 'request', agentEventPayload(request))
     this.queue.markDelivered(request.id)
+  }
+
+  // Claude only needs to hear about a withdrawal if it was told about the request.
+  #deliverCancel(request) {
+    const [stream] = this.#agentStreams
+    if (stream && request.delivered) sendEvent(stream, 'cancelled', agentEventPayload(request))
   }
 
   #broadcastPresence() {

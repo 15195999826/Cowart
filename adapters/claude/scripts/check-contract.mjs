@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { REPO_ROOT, UPSTREAM_RELEASE_MANIFEST, UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
 import { UpstreamCowart } from '../../shared/upstream.mjs'
 
-// Page-side hooks the injected bridge and overlay rely on.
+// Page-side hooks the injected bridge and the shared page scripts rely on.
 const WIDGET_MARKERS = [
   'cowartMcp',
   'callServerTool',
@@ -16,7 +16,29 @@ const WIDGET_MARKERS = [
   'openai:set_globals',
   'toolOutput',
   '__cowartEditor',
-  'getSelectedShapes'
+  'getSelectedShapes',
+  '__cowartExtensions?.tools',
+  '__cowartExtensions?.panels',
+  '__cowartExtensions?.imageToolbar',
+  'tool.cowart-extension-',
+  'cowartAiImageHolder',
+  // The annotation binding patch: the 标注 / 注释 tools bind arrows to cards, prompts list
+  // them, cards clear their 标注.
+  '要指向一张卡片',
+  'Change requests (标注 arrows bound to this shape',
+  'cowartAnnotationNote',
+  'tool.cowart-clear-annotations',
+  // Hidden or reused by the shared page scripts: a web card's image toolbar drops 替换 /
+  // 裁剪 / 按标注生成 Html, annotations drawn with the 标注 tool go along with 照这个做
+  // HTML, the style panel shows only when wanted, and two main menu items are dropped.
+  'tlui-media__toolbar',
+  'tool.image-replace',
+  'tool.image-crop',
+  'tool.cowart-annotation-html',
+  'cowartAnnotationArrow',
+  'tlui-style-panel__wrapper',
+  'insert-embed',
+  'insert-media'
 ]
 
 // Upstream tools and the input properties the adapter passes.

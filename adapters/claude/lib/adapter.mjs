@@ -4,26 +4,32 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { copyFile, mkdir, readFile, stat } from 'node:fs/promises'
-import { basename, extname, join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 
 import { pageAssetUrl, pageDirName, resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
-import { formatCanvasSummary, localPathForAssetSrc, shapeBounds, summarizeCanvas } from '../../shared/canvas-model.mjs'
+import { formatCanvasSummary, summarizeCanvas } from '../../shared/canvas-model.mjs'
+import { sanitizeFileName, uniqueFilePath } from '../../shared/files.mjs'
+import { PREPARE_REQUEST_TOOL, prepareGenerationRequest } from '../../shared/generation-requests.mjs'
+import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
+import { DEFAULT_IMAGE_MODEL_ID, imageModelsForHost } from '../../shared/image-models.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { UpstreamCowart, structuredOrThrow } from '../../shared/upstream.mjs'
-import { planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
-import { injectIntoHead, jsonForInlineScript, readUpstreamWidgetHtml, scriptTag } from '../../shared/widget-html.mjs'
+import { DEFAULT_VIDEO_MODEL_ID, VIDEO_MODELS } from '../../shared/video-models.mjs'
+import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
+import { injectIntoHead, jsonForInlineScript, readUpstreamWidgetHtml, scriptTag, sharedPageScripts } from '../../shared/widget-html.mjs'
 import { CanvasGuard } from './canvas-guard.mjs'
 import { CanvasHttpHost, DEFAULT_PORT } from './http-host.mjs'
-import { CanvasRequestQueue, REQUEST_STATUSES, publicRequest } from './requests.mjs'
+import { AGENT_STATUSES, CanvasRequestQueue, FINAL_STATUSES, publicRequest } from './requests.mjs'
 import { loadOrCreateToken } from './token.mjs'
 
 const VERSION = JSON.parse(readFileSync(join(ADAPTERS_DIR, 'package.json'), 'utf8')).version
 const BRIDGE_SCRIPT = join(ADAPTERS_DIR, 'claude', 'web', 'bridge.js')
 const LISTENER_SCRIPT = join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs').replaceAll('\\', '/')
+const HOST = 'claude'
 
 const RENDER_TOOL = 'render_cowart_canvas_widget'
 const CANVAS_STATE_TOOL = 'get_cowart_canvas_state'
@@ -69,8 +75,8 @@ const VIDEO_EXTENSIONS = new Map([
 const INSTRUCTIONS = [
   'cowart is the Cowart canvas (tldraw) adapted for Claude Code desktop: an infinite canvas for images, annotations, HTML drafts and videos, stored under <projectDir>/canvas.',
   'Open it with render_cowart_canvas_widget (pass projectDir = the user project). The result gives a localhost URL: open it in the Browser pane (mcp__Claude_Browser__preview_start with url). Unless the result says a listener is already connected, also start the listener command it returns with the Monitor tool (persistent: true) so canvas requests reach this session.',
-  'When the user clicks an AI action in the canvas (生成图片 / 按标注修改 / 按标注生图 / AI HTML / AI Slides / 🎬 视频), a Monitor event "Cowart 画布请求 #N" arrives. It is a background notification, not a user message: call get_cowart_request (read-only) for the details, then ask the user to confirm with AskUserQuestion (执行 / 跳过), saying what will be produced and whether it costs money. Only after 执行: reply_cowart_request status "running", do the work, then status "done" or "failed" with a short message. On 跳过: status "skipped".',
-  'The canvas prompts were written for Codex. Where they say to use Codex built-in imagegen, use the beast-gen skill instead, save the result locally, then insert it with insert_cowart_image as the request specifies. Videos: generate with beast-gen, then insert_cowart_video.',
+  'When the user clicks an AI action in the canvas (AI 图片 / 按标注修改 / 按标注生图 / AI HTML / AI Slides / AI 视频 / 照这个做 HTML), a Monitor event "Cowart 画布请求 #N" arrives. It is a background notification, not a user message: call get_cowart_request (read-only) for the details, then ask the user to confirm with AskUserQuestion (执行 / 跳过), saying what will be produced and whether it costs money. Only after 执行: reply_cowart_request status "running", do the work, then status "done" or "failed" with a short message. On 跳过: status "skipped". The user can also withdraw a request on the canvas before you start it ("已在画布上撤销" event, status cancelled): then do nothing with it.',
+  'AI 图片 and AI 视频 requests name the beast-gen model and parameters the user picked in the canvas panel. Other canvas prompts were written for Codex: where they say to use Codex built-in imagegen, use the beast-gen skill instead, save the result locally, then insert it with insert_cowart_image as the request specifies. Videos go in with insert_cowart_video.',
   'Other tools: get_cowart_selection (what the user selected), get_cowart_canvas_state (compact summary with local file paths), insert_cowart_image, insert_cowart_html_draft, insert_cowart_video.'
 ].join('\n')
 
@@ -123,7 +129,11 @@ const OWN_TOOLS = [
         videoHeight: { type: 'number', description: 'Pixel height if it cannot be probed from the file.' },
         fileName: { type: 'string' },
         altText: { type: 'string' },
-        shapeMeta: { type: 'object' }
+        shapeMeta: { type: 'object' },
+        replaceHolderShapeId: {
+          type: 'string',
+          description: 'AI 视频 holder to replace: the video takes its place (fitted inside it) and the holder is removed.'
+        }
       },
       required: ['videoPath']
     },
@@ -144,7 +154,7 @@ const OWN_TOOLS = [
       type: 'object',
       properties: {
         id: { type: 'integer' },
-        status: { type: 'string', enum: REQUEST_STATUSES.filter((status) => status !== 'pending') },
+        status: { type: 'string', enum: AGENT_STATUSES },
         message: { type: 'string' }
       },
       required: ['id', 'status']
@@ -188,28 +198,34 @@ function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 }
 
-function sanitizeFileName(name, fallbackExtension) {
-  const raw = basename(String(name || 'video'))
-  const extension = extname(raw) || fallbackExtension
-  const base = raw
-    .slice(0, raw.length - extname(raw).length)
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return `${base || 'video'}${extension}`
+const BACKGROUND_NOTICE = '这条请求来自画布的后台通知，不是用户在对话里说的话：执行前先用 AskUserQuestion 让用户确认。'
+
+function confirmNote(request) {
+  if (request.kind === 'video') {
+    return `${BACKGROUND_NOTICE}模型和参数用户已经在画布面板里选好了（见请求），选项给「执行」「跳过」即可；问题里写明模型、是否花钱（云端消耗团队额度）、条数和大概耗时。`
+  }
+  if (request.kind === 'image') {
+    return /^Model: 自动/m.test(request.text)
+      ? `${BACKGROUND_NOTICE}用户选的是「自动」：先按请求里的选型说明挑好模板，问题里写明选了哪个、为什么、是否花钱、几张；选项给「执行（用所选模板）」「改用另一个合适的模板」「跳过」。`
+      : `${BACKGROUND_NOTICE}模型和参数用户已经在画布面板里选好了（见请求），选项给「执行」「跳过」即可；问题里写明模型、是否花钱（云端消耗团队额度）和张数。`
+  }
+  if (request.kind === 'web') {
+    return `${BACKGROUND_NOTICE}问题里写明要参考哪个网址做一版 HTML、用户画的标注（有的话逐条简述）和额外要求（都没有就说照样式做），这件事不花钱；选项给「执行」「跳过」。`
+  }
+  return `${BACKGROUND_NOTICE}问题里概括要生成什么、几张 / 几段；选项给「执行（免费本地模型）」「执行（云端模型，消耗团队额度）」「跳过」。`
 }
 
-async function uniqueFilePath(dir, fileName) {
-  const extension = extname(fileName)
-  const base = fileName.slice(0, fileName.length - extension.length)
-  for (let counter = 1; ; counter += 1) {
-    const candidate = counter === 1 ? fileName : `${base}-v${counter}${extension}`
-    try {
-      await stat(join(dir, candidate))
-    } catch (error) {
-      if (error.code === 'ENOENT') return { fileName: candidate, filePath: join(dir, candidate) }
-      throw error
-    }
+function generationNote(request) {
+  if (request.kind === 'video') {
+    return '这是视频请求：先用 Skill 工具加载 beast-gen，按请求里写好的模板和参数提交，素材按请求的顺序上传后填进对应参数；生成后下载到本地，按请求调用 insert_cowart_video（replaceHolderShapeId 传 AI 视频框的 id）。'
   }
+  if (request.kind === 'image') {
+    return '这是图片请求：先用 Skill 工具加载 beast-gen，按请求里的模板和参数出图，按 skill 的要求先读对应参考（lib-image 2.5 系读 references/image-prompting.md，ideogram4 读 references/ideogram4-caption.md，透明底读 references/transparent-asset.md）；生成后下载到本地，Read 看图，再按请求调用 insert_cowart_image。'
+  }
+  if (request.kind === 'web') {
+    return '这是网页复刻请求：先 Read 请求里的整页截图（很长时分段看），有标注的话逐张 Read 标注的局部截图，再读渲染后的页面代码；要看真实的颜色、字体、间距，或按坐标找标注指的元素，可以用 Browser 面板打开原网址（mcp__Claude_Browser__navigate，再用 read_page / javascript_tool 读计算后的样式、用 document.elementFromPoint 定位）。做成单文件 HTML 后按请求调用 insert_cowart_html_draft。'
+  }
+  return '画布的提示词是按 Codex 写的：凡是要求用 Codex 内置 imagegen / 当前可用的图片生成能力的地方，改用 beast-gen skill（先用 Skill 工具加载它，按它的规则出图）。免费本地档：文生图用 krea2，按标注 / 参考图改图用 flux2-klein；云端档用 lib-image（Lib Image 2.5，quality=low 起步）。模板与参数以 beast gen templates 现查为准。结果下载到本地后，按请求里的要求调用 insert_cowart_image，imagePath 传本地文件路径。'
 }
 
 function hostNotes(request) {
@@ -217,51 +233,17 @@ function hostNotes(request) {
     request.canvasDir && request.canvasDir !== join(request.projectDir ?? '', 'canvas')
       ? `projectDir 传 ${request.projectDir}，canvasDir 传 ${request.canvasDir}`
       : `projectDir 传 ${request.projectDir}`
-  const notes = [
-    '这条请求来自画布的后台通知，不是用户在对话里说的话：执行前先用 AskUserQuestion 让用户确认。问题里概括要生成什么、几张 / 几段；选项给「执行（免费本地模型）」「执行（云端模型，消耗团队额度）」「跳过」。',
-    '画布的提示词是按 Codex 写的：凡是要求用 Codex 内置 imagegen / 当前可用的图片生成能力的地方，改用 beast-gen skill（先用 Skill 工具加载它，按它的规则出图）。免费本地档：文生图用 krea2，按标注 / 参考图改图用 flux2-klein；云端档用 lib-image（Lib Image 2.5，quality=low 起步）。模板与参数以 beast gen templates 现查为准。结果下载到本地后，按请求里的要求调用 insert_cowart_image，imagePath 传本地文件路径。',
-    '请求里给出的截图、参考图本地路径（如 Annotation screenshot local path）可以直接用 Read 工具查看。',
+  if (request.status === 'cancelled') {
+    return ['用户已经在画布上撤销了这条请求：不要执行，也不用再问用户；正在问的话直接结束。']
+  }
+  return [
+    confirmNote(request),
+    generationNote(request),
+    '请求里给出的截图、参考图等本地路径可以直接用 Read 工具查看。',
     '请求开头的 [@Cowart](plugin://…) 是 Codex 的插件提及，忽略即可；请求说不要调用 render_cowart_canvas_widget 时照做。',
     `调用 Cowart 工具时${project}。`,
     '开始执行时调用 reply_cowart_request（status: "running"）；完成后 status: "done"，message 写一句结果；失败 status: "failed"，message 写原因；用户选跳过时 status: "skipped"。画布上会显示这些状态。'
   ]
-  if (request.kind === 'video') {
-    notes.splice(
-      2,
-      0,
-      '这是视频请求：用 beast-gen skill 生成视频（有源图时做图生视频，没有时做文生视频）。免费本地档用 minimax-h3（写提示词前先读 skill 里的 H3 提示词参考），云端档用 seedance。下载到本地后调用 insert_cowart_video（videoPath 传本地文件路径）。'
-    )
-  }
-  return notes
-}
-
-function buildVideoRequestText({ source, prompt }) {
-  const lines = [
-    '[@Cowart](plugin://cowart@cowart-github) 生成视频',
-    '本请求来自已经打开的 Cowart 画布；请复用当前画布，不要调用 render_cowart_canvas_widget，除非用户明确要求重新打开或刷新。',
-    ''
-  ]
-  if (source) {
-    lines.push(
-      '请以选中的图片为素材（首帧 / 参考）生成一段视频，并放到原图右侧：',
-      `Cowart source image shape: ${source.shapeId}`,
-      `Source image local path: ${source.localPath}`,
-      `Source image canvas size: ${Math.round(source.w)} x ${Math.round(source.h)}`,
-      '',
-      'Required tool call after generating the video:',
-      '- 把生成的视频下载到本地，然后调用 insert_cowart_video，videoPath 传本地文件路径。',
-      `- anchorShapeId: "${source.shapeId}"，placement: "right"，margin: 40，matchAnchor: true。`
-    )
-  } else {
-    lines.push(
-      '请根据下面的 prompt 生成一段视频，并放到画布上：',
-      '',
-      'Required tool call after generating the video:',
-      '- 把生成的视频下载到本地，然后调用 insert_cowart_video，videoPath 传本地文件路径；不传 anchorShapeId，工具会放到画布内容右侧。'
-    )
-  }
-  lines.push('', 'Prompt:', prompt)
-  return lines.join('\n')
 }
 
 export async function startClaudeAdapter() {
@@ -325,12 +307,24 @@ export async function startClaudeAdapter() {
       title: searchParams.get('title') || 'Cowart Canvas',
       version: VERSION
     }
-    const [widgetHtml, bridgeSource] = await Promise.all([readUpstreamWidgetHtml(), readFile(BRIDGE_SCRIPT, 'utf8')])
+    const hostConfig = {
+      host: HOST,
+      videoModels: VIDEO_MODELS,
+      defaultVideoModelId: DEFAULT_VIDEO_MODEL_ID,
+      imageModels: imageModelsForHost(HOST),
+      defaultImageModelId: DEFAULT_IMAGE_MODEL_ID
+    }
+    const [widgetHtml, bridgeSource, sharedScripts] = await Promise.all([
+      readUpstreamWidgetHtml(),
+      readFile(BRIDGE_SCRIPT, 'utf8'),
+      sharedPageScripts(hostConfig)
+    ])
     return injectIntoHead(
       widgetHtml,
       [
         scriptTag(`window.__COWART_CLAUDE__=${jsonForInlineScript(config)};`, 'cowartClaudeConfig'),
-        scriptTag(bridgeSource, 'cowartClaudeBridge')
+        scriptTag(bridgeSource, 'cowartClaudeBridge'),
+        sharedScripts
       ].join('\n')
     )
   }
@@ -339,12 +333,30 @@ export async function startClaudeAdapter() {
     if (DROPPED_TOOLS.has(name)) {
       return { content: [], structuredContent: { configured: false, delivered: false, skippedBy: 'cowart-claude-adapter' } }
     }
+    if (name === PREPARE_REQUEST_TOOL) {
+      try {
+        const prepared = await prepareGenerationRequest({ upstream, host: HOST, args })
+        return textResult('已生成画布请求。', prepared)
+      } catch (error) {
+        return errorResult(error instanceof Error ? error.message : String(error))
+      }
+    }
+    if (name === CAPTURE_WEB_TOOL) {
+      try {
+        const captured = await captureWebReference({ args })
+        return textResult(`已截下 ${captured.url}（${captured.width}×${captured.height}）。`, captured)
+      } catch (error) {
+        return errorResult(error instanceof Error ? error.message : String(error))
+      }
+    }
     if (name === RENDER_TOOL || !(await upstreamToolNames()).has(name)) return errorResult(`画布页面不能调用 ${name}。`)
 
     if (name === 'save_cowart_canvas_state') {
       return callUpstreamLocked(name, args, (canvasDir) => {
-        const { snapshot, restored } = guard.protectPageSave(canvasDir, args.snapshot)
-        if (restored.length > 0) log(`kept ${restored.length} new video(s) in a stale page save`)
+        const { snapshot, restored, dropped } = guard.protectPageSave(canvasDir, args.snapshot)
+        if (restored.length > 0 || dropped.length > 0) {
+          log(`stale page save: kept ${restored.length} new video(s), dropped ${dropped.length} replaced holder(s)`)
+        }
         return { ...args, snapshot }
       })
     }
@@ -355,24 +367,6 @@ export async function startClaudeAdapter() {
     return result
   }
 
-  async function createVideoRequest(body) {
-    const prompt = nonEmpty(body.prompt)
-    if (!prompt) throw new Error('先写一句视频描述。')
-    const { projectDir, canvasDir } = resolveCowartPaths(body)
-
-    let source = null
-    if (nonEmpty(body.shapeId)) {
-      const state = structuredOrThrow(await upstream.callTool(CANVAS_STATE_TOOL, { projectDir, canvasDir }), CANVAS_STATE_TOOL)
-      const store = state.snapshot?.store ?? {}
-      const shape = store[body.shapeId]
-      const asset = shape ? store[shape.props?.assetId] : null
-      const localPath = localPathForAssetSrc(canvasDir, asset?.props?.src)
-      if (!shape || !localPath) throw new Error('选中的图片还没保存到画布文件里，等一两秒再点一次。')
-      source = { shapeId: shape.id, localPath, ...shapeBounds(store, shape) }
-    }
-    return queue.create({ text: buildVideoRequestText({ source, prompt }), kind: 'video', projectDir, canvasDir })
-  }
-
   async function ensureHost() {
     if (host) return host
     hostStarting ??= (async () => {
@@ -381,7 +375,6 @@ export async function startClaudeAdapter() {
         queue,
         renderPage,
         callToolFromPage,
-        createVideoRequest,
         canvasDirFor,
         fallbackCanvasDir: () => lastProject?.canvasDir ?? null,
         log
@@ -454,19 +447,22 @@ export async function startClaudeAdapter() {
       }
       const videoWidth = Number(args.videoWidth) || probe.width
       const videoHeight = Number(args.videoHeight) || probe.height
-      const plan = planVideoPlacement({
-        snapshot: state.snapshot,
-        viewState: state.viewState,
-        pageId: nonEmpty(args.pageId),
-        anchorShapeId: nonEmpty(args.anchorShapeId),
-        placement: args.placement,
-        margin: Number.isFinite(args.margin) ? args.margin : 40,
-        matchAnchor: args.matchAnchor,
-        displayWidth: args.displayWidth,
-        displayHeight: args.displayHeight,
-        videoWidth,
-        videoHeight
-      })
+      const holderShapeId = nonEmpty(args.replaceHolderShapeId)
+      const plan = holderShapeId
+        ? planVideoInHolder({ snapshot: state.snapshot, holderShapeId, videoWidth, videoHeight })
+        : planVideoPlacement({
+            snapshot: state.snapshot,
+            viewState: state.viewState,
+            pageId: nonEmpty(args.pageId),
+            anchorShapeId: nonEmpty(args.anchorShapeId),
+            placement: args.placement,
+            margin: Number.isFinite(args.margin) ? args.margin : 40,
+            matchAnchor: args.matchAnchor,
+            displayWidth: args.displayWidth,
+            displayHeight: args.displayHeight,
+            videoWidth,
+            videoHeight
+          })
 
       const assetsDir = join(canvasDir, 'pages', pageDirName(plan.pageId), 'assets')
       await mkdir(assetsDir, { recursive: true })
@@ -492,7 +488,12 @@ export async function startClaudeAdapter() {
           ...(nonEmpty(args.anchorShapeId) ? { cowartVideoSourceShapeId: args.anchorShapeId } : {})
         }
       })
-      const snapshot = { ...state.snapshot, store: { ...state.snapshot.store, [asset.id]: asset, [shape.id]: shape } }
+      const store = { ...state.snapshot.store, [asset.id]: asset, [shape.id]: shape }
+      // The video replaces its holder; a holder the user filled with other shapes stays put.
+      const removeHolder =
+        holderShapeId && !Object.values(store).some((record) => record?.typeName === 'shape' && record.parentId === holderShapeId)
+      if (removeHolder) delete store[holderShapeId]
+      const snapshot = { ...state.snapshot, store }
       const saved = structuredOrThrow(
         await callUpstreamWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot }),
         'save_cowart_canvas_state'
@@ -503,10 +504,20 @@ export async function startClaudeAdapter() {
         throw new Error(`视频记录没通过 tldraw 校验：${rejected.map((record) => `${record.id} ${record.reason}`).join('；')}`)
       }
       guard.trackInsertedVideo(canvasDir, { shape, asset })
+      if (removeHolder) guard.trackRemovedShape(canvasDir, holderShapeId)
 
       return textResult(
-        `已插入视频 ${shape.id}：${plan.w}×${plan.h}，位于 ${plan.pageId} 的 (${plan.x}, ${plan.y})；文件 ${filePath}`,
-        { ok: true, shapeId: shape.id, assetId: asset.id, pageId: plan.pageId, bounds: { x: plan.x, y: plan.y, w: plan.w, h: plan.h }, filePath, mimeType: probe.mimeType }
+        `已插入视频 ${shape.id}：${plan.w}×${plan.h}，位于 ${plan.pageId} 的 (${plan.x}, ${plan.y})${removeHolder ? `，替换了 AI 视频框 ${holderShapeId}` : ''}；文件 ${filePath}`,
+        {
+          ok: true,
+          shapeId: shape.id,
+          assetId: asset.id,
+          pageId: plan.pageId,
+          bounds: { x: plan.x, y: plan.y, w: plan.w, h: plan.h },
+          replacedHolderShapeId: removeHolder ? holderShapeId : null,
+          filePath,
+          mimeType: probe.mimeType
+        }
       )
     })
   }
@@ -534,7 +545,7 @@ export async function startClaudeAdapter() {
   }
 
   function listRequests(args) {
-    const requests = queue.list().filter((request) => args.includeFinished === true || !['done', 'failed', 'skipped'].includes(request.status))
+    const requests = queue.list().filter((request) => args.includeFinished === true || !FINAL_STATUSES.has(request.status))
     const text = requests.length
       ? requests.map((request) => `#${request.id} [${request.status}] ${request.title}${request.summary ? `：${request.summary}` : ''}`).join('\n')
       : '没有待处理的画布请求。'

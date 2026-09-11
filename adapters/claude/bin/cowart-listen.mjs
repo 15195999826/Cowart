@@ -59,6 +59,10 @@ async function listenOnce(token) {
         process.exit(0)
       }
       if (event === 'request' && data) emit(formatRequest(JSON.parse(data)))
+      if (event === 'cancelled' && data) {
+        const request = JSON.parse(data)
+        emit(`Cowart 画布请求 #${request.id}「${request.title}」已在画布上撤销：不用处理了（如果正在用 AskUserQuestion 问用户，这条就不必再执行）`)
+      }
     }
   }
 }

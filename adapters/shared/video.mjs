@@ -226,6 +226,42 @@ export function planVideoPlacement({
   }
 }
 
+// Fits a video inside an AI video holder (contain, centered) and takes over its z-index.
+export function planVideoInHolder({ snapshot, holderShapeId, videoWidth, videoHeight }) {
+  const store = snapshot?.store ?? {}
+  const holder = store[holderShapeId]
+  if (holder?.typeName !== 'shape') throw new Error(`画布里找不到 AI 视频框：${holderShapeId}`)
+  const pageId = pageIdOfShape(store, holder)
+  if (!pageId) throw new Error(`AI 视频框不在任何页面上：${holderShapeId}`)
+
+  const bounds = shapeBounds(store, holder)
+  const aspect = positiveNumber(videoWidth) && positiveNumber(videoHeight) ? videoWidth / videoHeight : bounds.w / bounds.h
+  let w = bounds.w
+  let h = w / aspect
+  if (h > bounds.h) {
+    h = bounds.h
+    w = h * aspect
+  }
+
+  let index = holder.index
+  if (holder.parentId !== pageId || typeof index !== 'string') {
+    const siblingIndexes = Object.values(store)
+      .filter((record) => record?.typeName === 'shape' && record.parentId === pageId && typeof record.index === 'string')
+      .map((record) => record.index)
+      .sort()
+    index = generateKeyBetween(siblingIndexes.at(-1) ?? null, null)
+  }
+
+  return {
+    pageId,
+    x: Math.round(bounds.x + (bounds.w - w) / 2),
+    y: Math.round(bounds.y + (bounds.h - h) / 2),
+    w: Math.max(1, Math.round(w)),
+    h: Math.max(1, Math.round(h)),
+    index
+  }
+}
+
 export function videoRecords({ assetId, shapeId, plan, fileName, assetUrl, mimeType, fileSize, videoWidth, videoHeight, altText = '', shapeMeta = {} }) {
   const asset = {
     id: assetId,
