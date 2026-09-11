@@ -1,0 +1,19 @@
+{
+  "name": "cowart-adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Host adapters for the Cowart fork (Claude Code, Codex). See ../FORK.md.",
+  "scripts": {
+    "check:contract": "node ./claude/scripts/check-contract.mjs",
+    "test:claude": "node ./claude/scripts/smoke-test.mjs",
+    "dev:claude": "node ./claude/scripts/dev-host.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "fractional-indexing": "3.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
