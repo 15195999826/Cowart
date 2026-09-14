@@ -52,7 +52,7 @@ FORK.md         本文件
 
 ## 分支与同步
 
-- 只有 `main` 一个分支，直接在上面开发、提交，不开 `feat/*` 之类的开发分支。Codex 和 Claude Code 都从这里装；Codex 从 GitHub marketplace 安装插件并**自动跟随远程 `main`**，所以没验证过的提交先留在本地，验证过再推送。
+- 只有 `main` 一个分支，直接在上面开发、提交，不开 `feat/*` 之类的开发分支。Codex 和 Claude Code 都从这里装；Codex 从 GitHub marketplace 安装插件并**自动跟随远程 `main`**，所以没验证过的提交先留在本地。开发完成并通过本地验证后直接推送，无需再次确认；推送前先 `git fetch origin`、`git rebase origin/main`，rebase 若改变代码或产物，补做受影响的验证再推送。
 - `upstream` remote 指向原作者仓库。同步：`git fetch upstream && git merge upstream/main`。`mcp/generated/` 下的发布产物有冲突时不手工合并，重新 `npm run build:artifacts` 生成。
 - 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成和反馈测试），都过了再推送。
 - 有补丁点以后，改了 `src/` 就要在仓库根目录 `npm ci && npm run build:artifacts` 重新生成 `mcp/generated/`，并和源码一起提交；`npm run check:artifacts` 能核对两者是否一致。
