@@ -61,6 +61,7 @@ import {
   useValue
 } from 'tldraw'
 import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite'
+import zhCnTranslation from '@tldraw/assets/translations/zh-cn.json' // [fork-patch]
 import { AllSelection } from '@tiptap/pm/state'
 import html2canvas from 'html2canvas'
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, FileCode, Image as ImageIcon, Play, X } from 'lucide-react'
@@ -341,7 +342,21 @@ function buildCowartAssetUrls() {
   } catch (error) {
     console.warn('Cowart could not load bundled tldraw asset URLs.', error)
   }
-  return { ...base, icons: { ...base.icons, ...icons } }
+  // [fork-patch] tldraw checks the fetched language pack before applying UI overrides.
+  // Complete the resource itself; keep upstream translations once they provide the keys.
+  const chinese = {
+    'page-menu.max-pages-reached': '已达到页面数量上限',
+    'page-menu.resize': '调整页面列表大小',
+    ...zhCnTranslation
+  }
+  return {
+    ...base,
+    icons: { ...base.icons, ...icons },
+    translations: {
+      ...base.translations,
+      'zh-cn': `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(chinese))}`
+    }
+  }
 }
 
 function isCowartLocalAssetUrl(src) {
@@ -1538,7 +1553,12 @@ function dataUrlToImageContent(dataUrl, meta = {}) {
   }
 }
 
-function followUpSender() {
+// [fork-patch] Carry the source page across asynchronous screenshots and uploads.
+function followUpSender(sourceShapeId) {
+  const editor = window.__cowartEditor
+  const pageId = editor?.getAncestorPageId(sourceShapeId)
+  if (!pageId) throw new Error('来源卡片已不在画布上，请重新选择后发送。')
+  const pageName = editor.getPage(pageId)?.name
   let sendMessage = null
   if (typeof window.cowartMcp?.sendFollowUpMessage === 'function') {
     sendMessage = (message) => window.cowartMcp.sendFollowUpMessage(message)
@@ -1548,7 +1568,7 @@ function followUpSender() {
   if (!sendMessage) return null
 
   return (message, analyticsContext = {}) =>
-    sendTrackedWidgetMessage(sendMessage, message, analyticsContext)
+    sendTrackedWidgetMessage(sendMessage, { ...message, cowart: { ...message.cowart, pageId, pageName } }, analyticsContext)
 }
 
 function cowartHostCapabilities() {
@@ -1569,6 +1589,8 @@ function supportsCowartMessageImages() {
 }
 
 async function sendAnnotationEditRequest(editor, imageShapeId, request) {
+  const sender = followUpSender(imageShapeId) // [fork-patch] Capture before the first await.
+  if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
   const { shapeIds, exportBounds, exportSize } = request
   const exportResult = await editor.toImageDataUrl(shapeIds, {
     bounds: exportBounds,
@@ -1592,11 +1614,6 @@ async function sendAnnotationEditRequest(editor, imageShapeId, request) {
     screenshotAsset,
     annotationLines: annotationNoteLines(editor, imageShapeId) // [fork-patch]
   })
-  const sender = followUpSender()
-  if (!sender) {
-    throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
-  }
-
   const content = [{ type: 'text', text: prompt }]
 
   if (supportsCowartMessageImages()) {
@@ -1618,6 +1635,8 @@ async function sendAnnotationEditRequest(editor, imageShapeId, request) {
 }
 
 async function sendAnnotationHtmlRequest(editor, imageShapeId) {
+  const sender = followUpSender(imageShapeId) // [fork-patch] Capture before the first await.
+  if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
   const imageShape = editor.getShape(imageShapeId)
   if (!isImageShape(imageShape)) throw new Error('请选择一张图片后再按标注生成 Html。')
 
@@ -1648,9 +1667,6 @@ async function sendAnnotationHtmlRequest(editor, imageShapeId) {
     screenshotAsset,
     annotationLines: annotationNoteLines(editor, imageShapeId) // [fork-patch]
   })
-  const sender = followUpSender()
-  if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
-
   const content = [{ type: 'text', text: prompt }]
   if (supportsCowartMessageImages()) {
     content.push(
@@ -2578,7 +2594,7 @@ function buildAiSlidesAnnotationEditPrompt({
 }
 
 async function sendAiSlidesAnnotationEditRequest(editor, slidesShapeId) {
-  const sender = followUpSender()
+  const sender = followUpSender(slidesShapeId) // [fork-patch]
   if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
 
   const sourceSlidesShape = editor.getShape(slidesShapeId)
@@ -2594,6 +2610,8 @@ async function sendAiSlidesAnnotationEditRequest(editor, slidesShapeId) {
     dataUrl: exportResult.url,
     mimeType: 'image/png'
   })
+  // [fork-patch] A page switch during capture must not create the new holder on another page.
+  if (editor.getAncestorPageId(sourceSlidesShape) !== editor.getCurrentPageId()) throw new Error('已切换页面，请回到原 Slides 所在页重新发送。')
   const targetSlidesShapeId = createAiSlidesBelowSource(editor, sourceSlidesShape)
 
   try {
@@ -2714,7 +2732,7 @@ function buildHtmlDraftAnnotationImagePrompt({
 }
 
 async function sendHtmlDraftAnnotationRequest(editor, draftShapeId, mode) {
-  const sender = followUpSender()
+  const sender = followUpSender(draftShapeId) // [fork-patch]
   if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
 
   const draftShape = editor.getShape(draftShapeId)
@@ -2935,7 +2953,7 @@ function stopEditorOverlayEvent(event) {
 }
 
 async function sendAiImageGenerationRequest({ holderShape, userPrompt, referenceFiles = [] }) {
-  const sender = followUpSender()
+  const sender = followUpSender(holderShape.id) // [fork-patch]
   if (!sender) {
     throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
   }
@@ -2998,7 +3016,7 @@ async function sendAiImageGenerationRequest({ holderShape, userPrompt, reference
 }
 
 async function sendAiDraftGenerationRequest({ holderShape, userPrompt, referenceFiles = [] }) {
-  const sender = followUpSender()
+  const sender = followUpSender(holderShape.id) // [fork-patch]
   if (!sender) {
     throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
   }
@@ -3061,7 +3079,7 @@ async function sendAiDraftGenerationRequest({ holderShape, userPrompt, reference
 }
 
 async function sendAiSlidesGenerationRequest({ slidesShape, pageCount, userPrompt, referenceFiles = [] }) {
-  const sender = followUpSender()
+  const sender = followUpSender(slidesShape.id) // [fork-patch]
   if (!sender) {
     throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
   }

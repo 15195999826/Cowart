@@ -2,7 +2,9 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const ADAPTERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+export const ADAPTERS_DIR = process.env.COWART_ADAPTERS_ROOT
+  ? resolve(process.env.COWART_ADAPTERS_ROOT)
+  : resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const REPO_ROOT = resolve(ADAPTERS_DIR, '..')
 
 // The machine's one canvas: the canvas service keeps it for every session, project and host

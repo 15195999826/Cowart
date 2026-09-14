@@ -207,6 +207,9 @@ export class GenerationJobs {
 
   // Reads what the panel sent, queues a request the canvas shows, and starts the job.
   async start({ args, host }) {
+    if (host === 'codex' && args.kind === 'image' && args.model === 'codex-imagegen') {
+      throw Object.assign(new Error('Codex imagegen 由该页负责的 Codex 会话生成。'), { fallback: true })
+    }
     const cli = findBeastCli()
     if (!cli) throw Object.assign(new Error(this.availability().reason), { fallback: true })
     const resolved = await resolveGeneration({ upstream: this.#upstream, host, args })

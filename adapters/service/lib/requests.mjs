@@ -4,6 +4,7 @@
 // generation-jobs.mjs): they belong to no session and report their steps as they go. Ids
 // are unique across sessions.
 import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
 
 const MENTION = /^\s*\[@Cowart\]\([^)]*\)\s*/
 const MAX_REQUESTS = 200
@@ -51,6 +52,7 @@ export class CanvasRequestQueue extends EventEmitter {
     const now = new Date().toISOString()
     const request = {
       id: this.#nextId++,
+      requestKey: randomUUID(),
       session,
       executor,
       pageId,
@@ -115,6 +117,10 @@ export class CanvasRequestQueue extends EventEmitter {
     if (request.executor === 'service') throw new Error(`画布请求 #${request.id} 由画布服务直接生成，不用 Claude 处理。`)
     if (!AGENT_STATUSES.includes(status)) throw new Error(`不支持的状态：${status}`)
     if (request.status === 'cancelled') throw new Error(`画布请求 #${request.id} 已经在画布上撤销了，不要再处理。`)
+    if (FINAL_STATUSES.has(request.status)) {
+      if (status === request.status) return request
+      throw new Error(`画布请求 #${request.id} 已经结束（${request.status}），不要重复执行。`)
+    }
     request.status = status
     if (typeof message === 'string') request.message = message.trim().slice(0, 500)
     request.updatedAt = new Date().toISOString()

@@ -3,7 +3,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
-import { UPSTREAM_START_SCRIPT } from './paths.mjs'
+import { REPO_ROOT, UPSTREAM_SERVER_BUNDLE } from './paths.mjs'
 
 export class UpstreamCowart {
   #client = null
@@ -29,9 +29,9 @@ export class UpstreamCowart {
   async #connect() {
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [UPSTREAM_START_SCRIPT],
+      args: [UPSTREAM_SERVER_BUNDLE],
       cwd: this.cwd,
-      env: { ...this.env },
+      env: { ...this.env, COWART_PLUGIN_ROOT: REPO_ROOT },
       stderr: 'pipe'
     })
     transport.stderr?.on('data', (chunk) => this.onStderr?.(chunk))

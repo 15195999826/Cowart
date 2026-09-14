@@ -2,10 +2,10 @@
   "mcpServers": {
     "cowart_mcp": {
       "title": "Cowart Canvas Widget MCP",
-      "description": "Core Cowart canvas MCP server. Use render_cowart_canvas_widget to open, reopen, or explicitly refresh the project canvas; use the state and insertion tools without rerendering when a Cowart widget is already open.",
+      "description": "Cowart native MCP Apps canvas: thin Codex bridge to the machine-wide service shared with Claude Code. Open or take responsibility for a page; reuse its state, generation and insertion tools.",
       "command": "node",
       "args": [
-        "./scripts/start-mcp.mjs"
+        "./adapters/codex/bin/start.mjs"
       ],
       "cwd": "."
     }

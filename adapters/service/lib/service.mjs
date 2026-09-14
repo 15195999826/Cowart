@@ -19,8 +19,8 @@ import { CanvasRequestQueue } from './requests.mjs'
 import { CanvasServer } from './server.mjs'
 import { loadOrCreateToken } from './token.mjs'
 
-// The canvas served to the browser is the Claude Code one; its host bridge lives with the
-// Claude adapter (Codex shows upstream's MCP Apps widget instead).
+// The canvas served to the browser is the local-server one; its host bridge lives with the
+// Claude adapter.
 const PAGE_BRIDGE_SCRIPT = join(ADAPTERS_DIR, 'claude', 'web', 'bridge.js')
 const PAGE_HOST = 'claude'
 const IDLE_MS = Number(process.env.COWART_SERVICE_IDLE_MS) || 10 * 60_000
@@ -64,9 +64,10 @@ export async function startCanvasService({ port }) {
       imageModels: imageModelsForHost(PAGE_HOST),
       defaultImageModelId: DEFAULT_IMAGE_MODEL_ID
     }
-    const [widgetHtml, bridgeSource, sharedScripts] = await Promise.all([
+    const [widgetHtml, bridgeSource, pageRuntime, sharedScripts] = await Promise.all([
       readUpstreamWidgetHtml(),
       readFile(PAGE_BRIDGE_SCRIPT, 'utf8'),
+      readFile(join(ADAPTERS_DIR, 'shared', 'web', 'service-bridge.js'), 'utf8'),
       sharedPageScripts(hostConfig)
     ])
     return injectIntoHead(
@@ -74,6 +75,7 @@ export async function startCanvasService({ port }) {
       [
         scriptTag(`window.__COWART_CLAUDE__=${jsonForInlineScript(config)};`, 'cowartClaudeConfig'),
         scriptTag(bridgeSource, 'cowartClaudeBridge'),
+        scriptTag(pageRuntime, 'cowartServiceBridge'),
         sharedScripts
       ].join('\n')
     )

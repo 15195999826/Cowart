@@ -18,6 +18,7 @@ import { structuredOrThrow } from '../../shared/upstream.mjs'
 import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
 import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
 import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
+import { readVideoAsset } from './video-assets.mjs'
 
 // A canvas nobody has opened yet gets its first page from this (the schema of the bundled
 // tldraw and a document record); the page fills in the rest when it loads.
@@ -233,6 +234,12 @@ export class CanvasOps extends EventEmitter {
   // Tool calls from a canvas page (the upstream widget and the shared panels). pane is the
   // page's { session } when it identified itself.
   async callFromPage(name, args, { host, pane } = {}) {
+    if (name === 'read_cowart_page_asset') {
+      try {
+        const video = await readVideoAsset(args)
+        if (video) return textResult('画布视频素材。', video)
+      } catch (error) { return errorResult(error.message) }
+    }
     if (DROPPED_TOOLS.has(name)) {
       return { content: [], structuredContent: { configured: false, delivered: false, skippedBy: 'cowart-canvas-service' } }
     }

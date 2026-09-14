@@ -540,8 +540,8 @@
     const prepared = await retryUnsaved(() => callTool(PREPARE_REQUEST_TOOL, args))
     if (!prepared.text) throw new Error('生成请求是空的。')
     if (!bridge || typeof bridge.sendFollowUpMessage !== 'function') throw new Error(`${HOST_NAME} 没有可用的消息通道。`)
-    await bridge.sendFollowUpMessage({ prompt: prepared.text, cowart: { kind, holderShapeId } })
-    return { ...prepared, direct: false }
+    const delivered = await bridge.sendFollowUpMessage({ prompt: prepared.text, cowart: { kind, holderShapeId, pageId: prepared.pageId, pageName: prepared.pageName, requiredHost: body.model === 'codex-imagegen' ? 'codex' : undefined } })
+    return { ...prepared, direct: false, recipient: delivered?.recipient }
   }
 
   // ---- Prompt triggers (/ and @) -------------------------------------------------------
@@ -1316,7 +1316,7 @@
       render()
       try {
         const sent = await sendGenerationRequest({ kind: spec.kind, holderShapeId: holder.id, body: { prompt: draft.prompt.trim(), ...spec.payload(ctx) } })
-        draft.status = sent.direct ? '开始生成了，进度看画布顶部' : HOST === 'codex' ? '已发送给 Codex' : `已发送，请到 ${HOST_NAME} 对话里确认`
+        draft.status = sent.direct ? '开始生成了，进度看画布顶部' : `请求已提交给${sent.recipient || '负责会话'}，进度看画布顶部`
         draft.statusKind = 'sent'
         renameHolder(holder.id, `${spec.label} · ${sent.direct ? '生成中…' : '已发送'}`)
       } catch (sendError) {

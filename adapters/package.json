@@ -1,6 +1,6 @@
 {
   "name": "cowart-adapters",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Host adapters for the Cowart fork (Claude Code, Codex). See ../FORK.md.",
@@ -13,7 +13,11 @@
     "install:skill": "node ./claude/scripts/install-skill.mjs",
     "uninstall:skill": "node ./claude/scripts/install-skill.mjs --remove",
     "service:status": "node ./service/bin/cowart-service.mjs --status",
-    "service:stop": "node ./service/bin/cowart-service.mjs --stop"
+    "service:stop": "node ./service/bin/cowart-service.mjs --stop",
+    "build:artifacts": "node ./scripts/build-artifacts.mjs",
+    "check:artifacts": "node ./scripts/build-artifacts.mjs --check",
+    "probe:cold": "node ./scripts/probe-cold-install.mjs",
+    "test:codex": "node ./codex/scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
@@ -21,6 +25,6 @@
     "puppeteer-core": "25.10.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   }
 }

@@ -10,7 +10,9 @@ import { ADAPTERS_DIR, REPO_ROOT } from '../shared/paths.mjs'
 import { DEFAULT_PORT, SERVICE_NAME, localIdentity, serviceVerdict } from './lib/identity.mjs'
 import { RUNTIME_DIR, SERVICE_LOG, loadOrCreateToken } from './lib/token.mjs'
 
-export const SERVICE_ENTRY = join(ADAPTERS_DIR, 'service', 'bin', 'cowart-service.mjs')
+export const SERVICE_ENTRY = process.env.COWART_BUNDLED === '1'
+  ? join(ADAPTERS_DIR, 'generated', 'cowart-service.mjs')
+  : join(ADAPTERS_DIR, 'service', 'bin', 'cowart-service.mjs')
 // Ports held by something else (another program, a pre-service adapter) are skipped.
 export const PORT_ATTEMPTS = 20
 const PROBE_TIMEOUT_MS = 4_000
@@ -80,7 +82,7 @@ export async function stopService(port, token, reason = 'requested') {
 function serviceEnv() {
   return Object.fromEntries(
     Object.entries(process.env).filter(
-      ([key]) => /^COWART_/i.test(key) || (!/^(CLAUDE|ANTHROPIC)/i.test(key) && !/(TOKEN|SECRET|PASSWORD|API_KEY)/i.test(key))
+      ([key]) => /^COWART_/i.test(key) || (!/^(CLAUDE|ANTHROPIC|CODEX_THREAD|CODEX_SESSION)/i.test(key) && !/(TOKEN|SECRET|PASSWORD|API_KEY)/i.test(key))
     )
   )
 }
@@ -214,7 +216,7 @@ export class CanvasServiceClient {
     this.#connecting ??= (async () => {
       this.#token ??= await loadOrCreateToken()
       this.#port = await this.#locate({ allowReplace })
-      this.#openSessionStream()
+      await this.#openSessionStream()
     })().finally(() => {
       this.#connecting = null
     })
@@ -257,6 +259,13 @@ export class CanvasServiceClient {
     this.#stream?.abort()
     const controller = new AbortController()
     this.#stream = controller
+    let registered = false
+    let resolveRegistered
+    let rejectRegistered
+    const registration = new Promise((resolve, reject) => {
+      resolveRegistered = resolve
+      rejectRegistered = reject
+    })
     const query = new URLSearchParams({ session: this.session, host: this.host, cwd: this.cwd ?? '', pid: String(process.pid) })
     fetch(`${this.origin}/api/bridge/session?${query}`, {
       headers: { accept: 'text/event-stream', 'x-cowart-token': this.#token },
@@ -265,14 +274,25 @@ export class CanvasServiceClient {
       .then(async (response) => {
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
         await readEventStream(response.body, (event) => {
+          // A bridge call must not race the session's host/state registration. The stream
+          // stays open in the background once the service acknowledges this session.
+          if (event === 'hello') {
+            registered = true
+            resolveRegistered()
+          }
           if (event === 'replaced') this.#replaced = true
         })
       })
-      .catch(() => {})
+      .catch((error) => rejectRegistered(error))
       .finally(() => {
+        if (!registered) {
+          rejectRegistered(new Error('画布服务没有确认会话连接。'))
+          return
+        }
         if (this.#stream !== controller || this.#closed || this.#replaced) return
         this.#reconnect(0)
       })
+    return registration
   }
 
   #reconnect(attempt) {

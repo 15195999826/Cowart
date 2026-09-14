@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 // Named after the first host; every bridge and the service share it.
-export const RUNTIME_DIR = join(homedir(), '.cowart-claude')
+export const RUNTIME_DIR = process.env.COWART_RUNTIME_DIR || join(homedir(), '.cowart-claude')
 export const TOKEN_FILE = join(RUNTIME_DIR, 'token')
 export const SERVICE_LOG = join(RUNTIME_DIR, 'service.log')
 const TOKEN_PATTERN = /^[0-9a-f]{32,}$/

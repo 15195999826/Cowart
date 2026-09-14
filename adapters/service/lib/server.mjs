@@ -4,7 +4,7 @@
 // request to the session responsible for its page and streams it to that session's
 // listener, starts the AI 图片 / AI 视频 generation it runs itself (generation-jobs.mjs), and
 // tells every page who is responsible for which page (presence.mjs).
-import { timingSafeEqual } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import http from 'node:http'
@@ -16,9 +16,13 @@ import { readFileHead, sniffMediaType } from '../../shared/video.mjs'
 import { INSERT_VIDEO_TOOL, PAGE_WRITE_TOOLS, textResult } from './canvas-ops.mjs'
 import { Presence } from './presence.mjs'
 import { FINAL_STATUSES, publicRequest } from './requests.mjs'
+import { WidgetPanes } from './widget-panes.mjs'
 
-// Pages served here are the Claude Code canvas; Codex shows upstream's MCP Apps widget.
-const PAGE_HOST = 'claude'
+// Both page transports use these same actions. Browser pages use HTTP/SSE and MCP Apps
+// widgets use their own authenticated bridge plus a leased, cursor-based event stream.
+const PAGE_ACTIONS = new Set(['/api/tools/call', '/api/panes/page', '/api/pages/enter', '/api/generations', '/api/messages', '/api/requests/cancel', '/api/requests/claim', '/api/requests/delivered', '/api/requests/release'])
+const WIDGET_LEASE_MS = Number(process.env.COWART_WIDGET_LEASE_MS) || 30_000
+const DELIVERY_LEASE_MS = Number(process.env.COWART_DELIVERY_LEASE_MS) || 30_000
 const MAX_BODY_BYTES = 128 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
 const RECENT_FINAL_MS = 60_000
@@ -156,6 +160,9 @@ export class CanvasServer {
   // Page event streams: res → { session, pane, canvasDir }.
   #pageStreams = new Map()
   #paneTimers = new Map()
+  #widgets
+  #deliveryClaims = new Map()
+  #deliveryReceipts = new Map()
   // Where the last «打开 Cowart 画布» pointed (path and query), for a bare address.
   #lastOpenedUrl = null
 
@@ -172,10 +179,14 @@ export class CanvasServer {
     this.onActivity = onActivity ?? (() => {})
     this.onShutdownRequest = onShutdownRequest ?? (() => {})
     this.presence = presence ?? new Presence({ canvasDir })
+    this.#widgets = new WidgetPanes({ leaseMs: WIDGET_LEASE_MS, onExpired: (pane) => this.#expireWidget(pane) })
 
     queue.on('created', (request) => this.#deliver(request))
     // Every page showing the canvas follows its requests, whichever session they went to.
-    queue.on('changed', (request) => this.#broadcastCanvas(request.canvasDir, 'request', publicRequest(request)))
+    queue.on('changed', (request) => {
+      if (request.delivered || request.status === 'cancelled') this.#clearDeliveryClaim(request.id)
+      this.#broadcastCanvas(request.canvasDir, 'request', publicRequest(request))
+    })
     queue.on('cancelled', (request) => this.#deliverCancel(request))
     this.presence.on('changed', (canvasDir) => this.#broadcastCanvas(canvasDir, 'page-state', this.presence.view(canvasDir)))
     ops.on('pages-deleted', ({ canvasDir, pageIds }) => {
@@ -200,7 +211,7 @@ export class CanvasServer {
   }
 
   get pageCount() {
-    return this.#pageStreams.size
+    return this.#pageStreams.size + this.#widgets.size
   }
 
   // Binds exactly this port: the port is the machine-wide lock, and the bridges choose it.
@@ -220,7 +231,7 @@ export class CanvasServer {
       })
     })
     this.#server = server
-    this.#port = port
+    this.#port = server.address().port
     return this
   }
 
@@ -233,6 +244,8 @@ export class CanvasServer {
       if (session.listener) streams.push(session.listener)
     }
     for (const timer of this.#paneTimers.values()) clearTimeout(timer)
+    for (const id of this.#deliveryClaims.keys()) this.#clearDeliveryClaim(id)
+    this.#widgets.close()
     for (const res of streams) endStream(res, 'stopping', { reason })
     if (!this.#server) return
     const closed = new Promise((resolveClose) => this.#server.close(() => resolveClose()))
@@ -248,7 +261,7 @@ export class CanvasServer {
       port: this.#port,
       canvasDir: this.canvasDir,
       startedAt: this.#startedAt,
-      pages: this.#pageStreams.size,
+      pages: this.pageCount,
       generations: this.jobs?.running ?? 0,
       sessions: [...this.#sessions.values()].map((session) => ({
         id: session.id,
@@ -257,7 +270,7 @@ export class CanvasServer {
         state: session.state,
         bridge: Boolean(session.bridge),
         listener: Boolean(session.listener),
-        pages: session.pages.size,
+        pages: session.pages.size + this.#widgets.forSession(session.id).length,
         canvasDir: session.lastCanvas?.canvasDir ?? null,
         page: this.presence.pageOf(session.id)
       }))
@@ -311,86 +324,170 @@ export class CanvasServer {
       }
     }
 
-    // Canvas pages.
-    if (req.method === 'POST' && url.pathname === '/api/tools/call') {
-      const { name, arguments: args } = await readJsonBody(req)
-      const pane = this.#paneContext(req.headers['x-cowart-pane'])
-      return sendJson(res, 200, await this.ops.callFromPage(String(name || ''), this.#oneCanvas(args && typeof args === 'object' ? args : {}), { host: PAGE_HOST, pane }))
-    }
-    // The page says which page it shows (a default for its session's writes, nothing more).
-    if (req.method === 'POST' && url.pathname === '/api/panes/page') {
-      const { pane, pageId, pageName } = await readJsonBody(req)
-      if (!this.presence.pane(pane)) return sendJson(res, 409, { error: '画布页面还没连上画布服务。' })
-      this.presence.setPanePage(pane, { pageId: nonEmpty(pageId), pageName: nonEmpty(pageName) })
-      return sendJson(res, 200, { ok: true })
-    }
-    // The page's button: this pane's session takes the page the pane shows.
-    if (req.method === 'POST' && url.pathname === '/api/pages/enter') {
-      const { pane } = await readJsonBody(req)
-      const entry = this.presence.pane(pane)
-      if (!entry?.pageId) return sendJson(res, 409, { error: '画布页面还没连上画布服务。' })
-      const session = this.#sessions.get(entry.session)
-      if (!session || session.state === 'ended') {
-        return sendJson(res, 409, { error: '这个面板的会话已经结束了：在某个会话里说「打开 Cowart 画布 ' + (entry.pageName ?? '<页名>') + '」让它负责这一页。' })
-      }
-      const { previous } = this.presence.enter(entry.session, entry.canvasDir, entry.pageId)
-      return sendJson(res, 200, { ok: true, pageId: entry.pageId, previous: previous && previous !== entry.session ? this.#nameOf(previous) : null })
-    }
-    // The AI 图片 / AI 视频 panels: the canvas service generates on the click. Without the
-    // beast command line the page sends the request to Claude instead (fallback).
-    if (req.method === 'POST' && url.pathname === '/api/generations') {
+    // Browser pages and MCP Apps widgets share the same page operation boundary.
+    if (req.method === 'POST' && PAGE_ACTIONS.has(url.pathname)) {
       const body = await readJsonBody(req)
-      const available = this.jobs ? this.jobs.availability() : { ok: false, reason: '画布服务不能直接生成。' }
-      if (!available.ok) return sendJson(res, 409, { error: available.reason, fallback: true })
-      try {
-        const request = await this.jobs.start({ args: this.#oneCanvas(body && typeof body === 'object' ? body : {}), host: PAGE_HOST })
-        return sendJson(res, 200, { ok: true, request: publicRequest(request) })
-      } catch (error) {
-        return sendJson(res, 409, { error: error instanceof Error ? error.message : String(error), fallback: Boolean(error?.fallback) })
-      }
-    }
-    if (req.method === 'POST' && url.pathname === '/api/messages') {
-      const body = await readJsonBody(req)
-      if (!String(body.text || '').trim()) return sendJson(res, 400, { error: '请求内容为空。' })
-      if (!validId(body.session)) {
-        return sendJson(res, 409, { error: '这个画布页面是旧版本打开的：回到 Claude Code 重新打开画布。' })
-      }
-      let target
-      try {
-        target = this.#routeRequest(body)
-      } catch (error) {
-        return sendJson(res, 409, { error: error.message })
-      }
-      // The shared AI 图片 / AI 视频 panels tag their messages with the kind and holder.
-      const kind = MESSAGE_KINDS.has(body.kind) ? body.kind : 'canvas'
-      const holderShapeId = kind !== 'canvas' && typeof body.holderShapeId === 'string' ? body.holderShapeId : null
-      const request = this.queue.create({
-        text: body.text,
-        kind,
-        session: target,
-        projectDir: body.projectDir,
-        canvasDir: this.canvasDir,
-        pageId: nonEmpty(body.pageId),
-        pageName: nonEmpty(body.pageName),
-        holderShapeId
-      })
-      return sendJson(res, 200, { ok: true, request: publicRequest(request) })
-    }
-    // The canvas withdraws a request Claude has not started on, or a generation before its
-    // result goes in (from any page of the canvas).
-    if (req.method === 'POST' && url.pathname === '/api/requests/cancel') {
-      const { id } = await readJsonBody(req)
-      try {
-        const request = this.queue.get(id)
-        const cancelled = request?.executor === 'service' && this.jobs ? this.jobs.cancel(id) : this.queue.cancel(id)
-        return sendJson(res, 200, { ok: true, request: publicRequest(cancelled) })
-      } catch (error) {
-        return sendJson(res, 409, { error: error.message })
-      }
+      const paneId = req.headers['x-cowart-pane'] || body.pane
+      const pane = this.presence.pane(paneId)
+      const session = pane ? this.#sessions.get(pane.session) : null
+      const result = await this.#pageAction(url.pathname, body, { paneId, session, host: session?.host ?? 'claude' })
+      return sendJson(res, result.status, result.payload)
     }
     if (req.method === 'GET' && url.pathname === '/api/page-events') return this.#openPageStream(req, res, url)
     if (req.method === 'GET' && url.pathname === '/api/agent-events') return this.#openAgentStream(req, res, url)
     return sendJson(res, 404, { error: 'Not found' })
+  }
+
+  async #pageAction(path, body, { paneId, session, host, widget = false }) {
+    const reply = (status, payload) => ({ status, payload })
+    if (body.session && session && body.session !== session.id) return reply(403, { error: '不能替另一个会话操作画布。' })
+    if (body.pane && paneId && body.pane !== paneId) return reply(403, { error: '不能替另一个画布面板操作。' })
+    try {
+      switch (path) {
+        case '/api/tools/call': {
+          const args = body.arguments && typeof body.arguments === 'object' ? body.arguments : {}
+          const pane = paneId ? this.#paneContext(paneId) : undefined
+          const payload = await this.ops.callFromPage(String(body.name || ''), this.#oneCanvas(args), { host, pane })
+          return reply(200, payload)
+        }
+        case '/api/panes/page': {
+          if (!this.presence.pane(paneId)) return reply(409, { error: '画布页面还没连上画布服务。' })
+          this.presence.setPanePage(paneId, { pageId: nonEmpty(body.pageId), pageName: nonEmpty(body.pageName) })
+          return reply(200, { ok: true })
+        }
+        case '/api/pages/enter': {
+          const entry = this.presence.pane(paneId)
+          if (!entry?.pageId) return reply(409, { error: '画布页面还没连上画布服务。' })
+          if (!session || session.state === 'ended') return reply(409, { error: '这个面板的会话已经结束了：在会话里重新打开画布再接管这一页。' })
+          const { previous } = this.presence.enter(session.id, entry.canvasDir, entry.pageId)
+          return reply(200, { ok: true, pageId: entry.pageId, previous: previous && previous !== session.id ? this.#nameOf(previous) : null })
+        }
+        case '/api/generations': {
+          const available = this.jobs ? this.jobs.availability() : { ok: false, reason: '画布服务不能直接生成。' }
+          if (!available.ok) return reply(409, { error: available.reason, fallback: true })
+          const request = await this.jobs.start({ args: this.#oneCanvas(body), host })
+          return reply(200, { ok: true, request: publicRequest(request) })
+        }
+        case '/api/messages': {
+          if (!String(body.text || '').trim()) return reply(400, { error: '请求内容为空。' })
+          const own = session?.id ?? body.session
+          if (!validId(own)) return reply(409, { error: '这个画布页面是旧版本打开的：回到会话重新打开画布。' })
+          const target = this.#routeRequest({ ...body, session: own })
+          const kind = MESSAGE_KINDS.has(body.kind) ? body.kind : 'canvas'
+          const request = this.queue.create({
+            text: body.text,
+            kind,
+            session: target,
+            projectDir: body.projectDir ?? session?.cwd,
+            canvasDir: this.canvasDir,
+            pageId: nonEmpty(body.pageId),
+            pageName: nonEmpty(body.pageName),
+            holderShapeId: kind !== 'canvas' && typeof body.holderShapeId === 'string' ? body.holderShapeId : null
+          })
+          return reply(200, { ok: true, request: publicRequest(request) })
+        }
+        case '/api/requests/cancel': {
+          const request = this.queue.get(body.id)
+          const cancelled = request?.executor === 'service' && this.jobs ? this.jobs.cancel(body.id) : this.queue.cancel(body.id)
+          return reply(200, { ok: true, request: publicRequest(cancelled) })
+        }
+        case '/api/requests/claim':
+        case '/api/requests/delivered':
+        case '/api/requests/release': {
+          if (!widget || session?.host !== 'codex' || session.state !== 'online') return reply(403, { error: '只有所属会话的在线 Codex 画布才能接收这条请求。' })
+          return reply(200, this.#widgetDelivery(path, session, paneId, body.id, body.deliveryToken, body.requestKey))
+        }
+        default:
+          return reply(404, { error: 'Not found' })
+      }
+    } catch (error) {
+      return reply(409, { error: error instanceof Error ? error.message : String(error), ...(path === '/api/generations' ? { fallback: Boolean(error?.fallback) } : {}) })
+    }
+  }
+
+  #clearDeliveryClaim(id) {
+    const claim = this.#deliveryClaims.get(Number(id))
+    if (!claim) return
+    clearTimeout(claim.timer)
+    this.#deliveryClaims.delete(Number(id))
+  }
+
+  #widgetDelivery(path, session, paneId, id, deliveryToken, requestKey) {
+    const request = this.#ownRequest(session, id)
+    const claim = this.#deliveryClaims.get(request.id)
+    if (path === '/api/requests/claim') {
+      if (requestKey && requestKey !== request.requestKey) throw new Error('这条画布请求来自已经重启的旧服务，不能用旧编号领取新请求。')
+      if (request.executor !== 'session' || request.delivered || request.status !== 'pending') return { ok: true, request: null }
+      if (claim && claim.pane !== paneId) return { ok: true, request: null }
+      if (!claim) {
+        const timer = setTimeout(() => {
+          this.#clearDeliveryClaim(request.id)
+          if (request.status === 'pending' && !request.delivered) this.#broadcastCanvas(request.canvasDir, 'request', publicRequest(request))
+        }, DELIVERY_LEASE_MS)
+        timer.unref?.()
+        this.#deliveryClaims.set(request.id, { pane: paneId, session: session.id, timer, token: randomUUID() })
+      }
+      return { ok: true, request: { ...publicRequest(request), text: request.text, deliveryToken: this.#deliveryClaims.get(request.id).token } }
+    }
+    const receipt = this.#deliveryReceipts.get(request.id)
+    if (path === '/api/requests/delivered' && request.delivered && receipt?.pane === paneId && receipt.token === deliveryToken) {
+      return { ok: true, request: publicRequest(request) }
+    }
+    if (!claim || claim.pane !== paneId || !deliveryToken || claim.token !== deliveryToken) throw new Error('这条请求没有由当前面板领取，或领取已过期。')
+    this.#clearDeliveryClaim(request.id)
+    if (path === '/api/requests/delivered') {
+      this.#deliveryReceipts.set(request.id, { pane: paneId, token: deliveryToken })
+      while (this.#deliveryReceipts.size > 200) this.#deliveryReceipts.delete(this.#deliveryReceipts.keys().next().value)
+      // A cancellation received while ui/message was in flight must remain cancelled.
+      if (request.status !== 'cancelled') this.queue.markDelivered(request.id)
+    } else if (request.status === 'pending' && !request.delivered) {
+      this.#broadcastCanvas(request.canvasDir, 'request', publicRequest(request))
+    }
+    return { ok: true, request: publicRequest(request) }
+  }
+
+  #touchWidget(session, paneId) {
+    if (session.host !== 'codex') throw new Error('当前会话不是 Codex 画布桥，或桥尚未连接。')
+    if (!validId(paneId)) throw new Error('缺少有效的画布面板标识。')
+    const existing = this.presence.pane(paneId)
+    if (existing && existing.session !== session.id) throw new Error('这个画布面板属于另一个会话。')
+    const { pane, created } = this.#widgets.touch({ pane: paneId, session: session.id, canvasDir: this.canvasDir })
+    if (created) {
+      this.presence.openPane({ pane: paneId, session: session.id, canvasDir: this.canvasDir })
+      this.#broadcastPresence(session)
+    }
+    this.onActivity()
+    return pane
+  }
+
+  #expireWidget(pane) {
+    this.presence.closePane(pane.id)
+    for (const [id, claim] of this.#deliveryClaims) {
+      if (claim.pane !== pane.id) continue
+      this.#clearDeliveryClaim(id)
+      const request = this.queue.get(id)
+      if (request && !request.delivered && request.status === 'pending') this.#broadcastCanvas(request.canvasDir, 'request', publicRequest(request))
+    }
+    const session = this.#sessions.get(pane.session)
+    if (session) this.#broadcastPresence(session)
+    this.onActivity()
+  }
+
+  #recentRequests(canvasDir) {
+    const now = Date.now()
+    return this.queue.list()
+      .filter((request) => request.canvasDir === canvasDir)
+      .filter((request) => !FINAL_STATUSES.has(request.status) || now - Date.parse(request.updatedAt) < RECENT_FINAL_MS)
+      .map(publicRequest)
+  }
+
+  #pageEvents(session, canvasDir) {
+    return [
+      { event: 'hello', data: { protocol: this.identity.protocol, build: this.identity.build } },
+      { event: 'presence', data: this.#presence(session) },
+      { event: 'requests', data: { requests: this.#recentRequests(canvasDir) } },
+      { event: 'page-state', data: this.presence.view(canvasDir) }
+    ]
   }
 
   // A request from a page goes to the session responsible for that page. A page nobody is
@@ -398,10 +495,15 @@ export class CanvasServer {
   #routeRequest(body) {
     const own = this.#session(body.session)
     const pageId = nonEmpty(body.pageId)
-    if (!pageId) return own.id
     const canvasDir = this.canvasDir
-    const holder = this.presence.holderOf(canvasDir, pageId)
-    if (holder && this.#sessions.get(holder)?.state !== 'ended') return holder
+    const holder = pageId ? this.presence.holderOf(canvasDir, pageId) : null
+    const target = holder && this.#sessions.get(holder)?.state !== 'ended' ? holder : own.id
+    const requiredHost = nonEmpty(body.requiredHost)
+    if (requiredHost && this.#sessions.get(target)?.host !== requiredHost) {
+      throw new Error(`这项生成需要 ${requiredHost === 'codex' ? 'Codex' : requiredHost}，但当前页面由「${this.#nameOf(target)}」负责。请在 Codex 会话接管这一页，或选择两个宿主都支持的模型。`)
+    }
+    if (!pageId || target !== own.id) return target
+    if (holder === own.id && own.state !== 'ended') return own.id
     if (own.state === 'ended') {
       throw new Error(`这个面板的会话已经结束了：在某个会话里说「打开 Cowart 画布 ${nonEmpty(body.pageName) ?? '<页名>'}」让它负责这一页，再点。`)
     }
@@ -505,6 +607,8 @@ export class CanvasServer {
     const pane = validId(url.searchParams.get('pane')) ? url.searchParams.get('pane') : null
     // Whatever canvas the page's URL names (older pages name their project's), it shows this one.
     const canvasDir = this.canvasDir
+    const knownPane = pane ? this.presence.pane(pane) : null
+    if (knownPane && knownPane.session !== session?.id) return sendJson(res, 403, { error: '这个画布面板属于另一个会话。' })
     openEventStream(req, res)
     this.#pageStreams.set(res, { session: session?.id ?? null, pane, canvasDir })
     session?.pages.add(res)
@@ -529,29 +633,22 @@ export class CanvasServer {
       this.onActivity()
     })
 
-    const now = Date.now()
-    const recent = canvasDir
-      ? this.queue
-          .list()
-          .filter((request) => request.canvasDir === canvasDir)
-          .filter((request) => !FINAL_STATUSES.has(request.status) || now - Date.parse(request.updatedAt) < RECENT_FINAL_MS)
-          .map(publicRequest)
-      : []
-    sendEvent(res, 'hello', { protocol: this.identity.protocol, build: this.identity.build })
-    sendEvent(res, 'presence', this.#presence(session))
-    sendEvent(res, 'requests', { requests: recent })
-    if (canvasDir) sendEvent(res, 'page-state', this.presence.view(canvasDir))
+    for (const { event, data } of this.#pageEvents(session, canvasDir)) sendEvent(res, event, data)
     this.onActivity()
   }
 
   #presence(session) {
     if (!session) return { session: 'ended', agentOnline: false }
-    return { session: session.state, agentOnline: session.state === 'online' && Boolean(session.listener) }
+    const receiver = session.host === 'codex' ? this.#widgets.forSession(session.id).length > 0 : Boolean(session.listener)
+    return { session: session.state, host: session.host, agentOnline: session.state === 'online' && receiver }
   }
 
   #deliver(request) {
     if (request.executor === 'service') return
-    const stream = this.#sessions.get(request.session)?.listener
+    const session = this.#sessions.get(request.session)
+    // Codex delivery is acknowledged only after its own widget's ui/message succeeds.
+    if (session?.host === 'codex') return
+    const stream = session?.listener
     if (!stream || request.delivered) return
     sendEvent(stream, 'request', agentEventPayload(request))
     this.queue.markDelivered(request.id)
@@ -571,10 +668,12 @@ export class CanvasServer {
 
   #broadcastPresence(session) {
     for (const res of session.pages) sendEvent(res, 'presence', this.#presence(session))
+    this.#widgets.broadcast((pane) => pane.session === session.id, 'presence', this.#presence(session))
   }
 
   #broadcastCanvas(canvasDir, event, data) {
     for (const [res, stream] of this.#pageStreams) if (stream.canvasDir === canvasDir) sendEvent(res, event, data)
+    this.#widgets.broadcast((pane) => pane.canvasDir === canvasDir, event, data)
   }
 
   // ---- Bridge operations -------------------------------------------------------------
@@ -601,6 +700,22 @@ export class CanvasServer {
   async #bridgeCall(session, { cwd, op, args }) {
     session.cwd = nonEmpty(cwd) ?? session.cwd
     switch (op) {
+      case 'widget-call': {
+        const pane = this.#touchWidget(session, args.pane)
+        const body = args.body && typeof args.body === 'object' && !Array.isArray(args.body) ? args.body : {}
+        return this.#pageAction(String(args.path || ''), body, { paneId: pane.id, session, host: session.host, widget: true })
+      }
+      case 'widget-poll': {
+        const pane = this.#touchWidget(session, args.pane)
+        return this.#widgets.poll(pane, args.cursor, async () => {
+          const currentPages = await this.ops.canvasPages(this.#withDefaults(session))
+          const events = this.#pageEvents(session, this.canvasDir)
+          events.find((item) => item.event === 'page-state').data.allPageIds = currentPages.map((page) => page.id)
+          const held = this.presence.pageOf(session.id)
+          if (held?.canvasDir === this.canvasDir) events.push({ event: 'goto-page', data: { pageId: held.pageId } })
+          return events
+        })
+      }
       case 'model-tools':
         return { tools: await this.ops.modelTools() }
       case 'open-canvas':
@@ -618,10 +733,12 @@ export class CanvasServer {
       }
       case 'request-get': {
         const request = this.#ownRequest(session, args.id)
+        if (args.requestKey && args.requestKey !== request.requestKey) throw new Error('这条画布请求来自已经重启的旧服务，不能用旧编号处理新请求。')
         return { request: { ...publicRequest(request), text: request.text } }
       }
       case 'request-reply': {
-        this.#ownRequest(session, args.id)
+        const request = this.#ownRequest(session, args.id)
+        if (args.requestKey && args.requestKey !== request.requestKey) throw new Error('这条画布请求来自已经重启的旧服务，不能用旧编号处理新请求。')
         return { request: publicRequest(this.queue.update(args.id, { status: args.status, message: args.message })) }
       }
       case 'request-list': {
@@ -649,6 +766,7 @@ export class CanvasServer {
     let previous = null
     const wanted = nonEmpty(args.page)
     const paneOpen = [...this.#pageStreams.values()].some((stream) => stream.session === session.id && stream.canvasDir === target.canvasDir)
+      || this.#widgets.forSession(session.id).some((pane) => pane.canvasDir === target.canvasDir)
     if (wanted) {
       entered = await this.ops.ensurePage(target, wanted)
     } else if (args.shownPage === true) {
@@ -662,6 +780,7 @@ export class CanvasServer {
       for (const [res, stream] of this.#pageStreams) {
         if (stream.session === session.id && stream.canvasDir === target.canvasDir) sendEvent(res, 'goto-page', { pageId: entered.id })
       }
+      this.#widgets.broadcast((pane) => pane.session === session.id && pane.canvasDir === target.canvasDir, 'goto-page', { pageId: entered.id })
     }
 
     const pages = (await this.ops.canvasPages(target)).map((entry) => {
@@ -681,12 +800,14 @@ export class CanvasServer {
       port: this.#port,
       session: session.id,
       sessionName,
+      protocol: this.identity.protocol,
       projectDir: target.projectDir,
       canvasDir: target.canvasDir,
       page: entered ? entered.name : null,
       pageCreated: Boolean(entered?.created),
       takenFrom: previous && previous !== session.id ? this.#nameOf(previous) : null,
       myPage: myPage ? myPage.name : null,
+      heldPageId: myPage?.id ?? null,
       paneOpen,
       title,
       pages,
@@ -746,7 +867,9 @@ export class CanvasServer {
       return
     }
     const held = validId(session) ? this.presence.pageOf(session) : null
-    const html = await this.renderPage(url.searchParams, { heldPageId: held?.canvasDir === this.canvasDir ? held.pageId : null })
+    const html = await this.renderPage(url.searchParams, {
+      heldPageId: held?.canvasDir === this.canvasDir ? held.pageId : null
+    })
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',

@@ -11,7 +11,7 @@ export const SERVICE_NAME = 'cowart-canvas'
 export const DEFAULT_PORT = 43240
 // Bump when the API between bridges, pages and the service changes incompatibly.
 // 2: page responsibility (分页负责制) and delta saves replaced per-pane editing locks.
-export const PROTOCOL = 2
+export const PROTOCOL = 3
 export const VERSION = JSON.parse(readFileSync(join(ADAPTERS_DIR, 'package.json'), 'utf8')).version
 
 // Code the service process runs. Page scripts are read on every page load and bridges
@@ -35,7 +35,7 @@ function moduleFiles(dir) {
   }
 }
 
-export function codeFingerprint() {
+export function sourceCodeFingerprint() {
   const hash = createHash('sha256')
   for (const file of [...MODULE_DIRS.flatMap(moduleFiles), ...BUILD_FILES].sort()) {
     hash.update(relative(REPO_ROOT, file).replaceAll('\\', '/'))
@@ -47,9 +47,13 @@ export function codeFingerprint() {
     }
     hash.update('\0')
   }
-  // Lets tests stand in for "the code changed" without touching files.
-  hash.update(process.env.COWART_SERVICE_BUILD_SALT ?? '')
   return hash.digest('hex').slice(0, 16)
+}
+
+export function codeFingerprint() {
+  const base = typeof __COWART_SERVICE_BUILD__ === 'string' ? __COWART_SERVICE_BUILD__ : sourceCodeFingerprint()
+  const salt = process.env.COWART_SERVICE_BUILD_SALT
+  return salt ? createHash('sha256').update(base).update(salt).digest('hex').slice(0, 16) : base
 }
 
 export function localIdentity() {

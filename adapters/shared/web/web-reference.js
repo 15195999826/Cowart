@@ -454,8 +454,11 @@
       const notes = cardAnnotations(editor, card)
       if (notes.length) setPopoverStatus(`正在截取 ${notes.length} 处标注…`, 'progress')
       const annotations = await exportAnnotations(editor, card, notes)
+      if (editor.getAncestorPageId(card) !== editor.getCurrentPageId()) {
+        throw new Error('已切换页面：请回到网页卡片所在页再发送。')
+      }
       holder = createHolder(editor, card)
-      await kit.sendGenerationRequest({
+      const sent = await kit.sendGenerationRequest({
         kind: 'web',
         holderShapeId: holder.id,
         body: { prompt: popoverInput.value.trim(), sourceShapeId: card.id, annotations }
@@ -464,7 +467,7 @@
       popoverInput.value = ''
       closePopover()
       kit.revealRect(editor, holder.rect)
-      showToast(kit.host === 'codex' ? '已发送给 Codex' : `已发送，请到 ${kit.hostName} 对话里确认`)
+      showToast(`请求已提交给${sent.recipient || '负责会话'}，进度看画布顶部`)
     } catch (error) {
       if (holder && editor.getShape(holder.id)) editor.deleteShape(holder.id)
       setPopoverStatus(error instanceof Error ? error.message : String(error))

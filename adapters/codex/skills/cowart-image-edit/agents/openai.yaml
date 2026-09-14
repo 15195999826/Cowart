@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cowart Image Edit"
+  short_description: "Revise images from card annotations beside the originals"
+  default_prompt: "Use $cowart-image-edit to revise the images according to Cowart annotations and place each result beside its original."

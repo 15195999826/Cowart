@@ -15,7 +15,9 @@ import { DEFAULT_PORT, VERSION } from '../../service/lib/identity.mjs'
 import { AGENT_STATUSES } from '../../service/lib/requests.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
-const LISTENER_SCRIPT = join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs').replaceAll('\\', '/')
+const LISTENER_SCRIPT = (process.env.COWART_BUNDLED === '1'
+  ? join(ADAPTERS_DIR, 'generated', 'cowart-listen.mjs')
+  : join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs')).replaceAll('\\', '/')
 const HOST = 'claude'
 // The canvas needs the desktop's Browser pane; other entry points get no tools.
 const DESKTOP_ENTRYPOINT = 'claude-desktop'
@@ -47,7 +49,7 @@ function disabledInstructions(entrypoint) {
   return `cowart（Cowart 画布）只在 Claude Code 桌面版里提供：画布要在桌面版的 Browser 面板里打开。这个会话的入口是 ${entrypoint}，所以没有 cowart 工具；要在这里用，设环境变量 COWART_ALLOW_CLI=1 后重开会话。`
 }
 
-const OWN_TOOLS = [
+export const OWN_TOOLS = [
   {
     name: RENDER_TOOL,
     title: 'Open Cowart Canvas',

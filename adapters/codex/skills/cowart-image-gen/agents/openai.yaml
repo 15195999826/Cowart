@@ -1,0 +1,7 @@
+interface:
+  display_name: "Cowart Image Gen"
+  short_description: "Generate an image into a shared Cowart page or holder"
+  default_prompt: "Use $cowart-image-gen to replace the selected Cowart AI image holder with a generated image."
+
+policy:
+  allow_implicit_invocation: true

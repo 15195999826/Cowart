@@ -395,6 +395,6 @@ export function generationRequestText(resolved, host) {
 // Called for the page-only prepare tool; returns the text to send plus request metadata.
 export async function prepareGenerationRequest({ upstream, host, args = {} }) {
   const resolved = await resolveGeneration({ upstream, host, args })
-  const { kind, holderShapeId, projectDir, canvasDir } = resolved
-  return { kind, holderShapeId, projectDir, canvasDir, text: generationRequestText(resolved, host) }
+  const { kind, holderShapeId, projectDir, canvasDir, pageId, pageName } = resolved
+  return { kind, holderShapeId, projectDir, canvasDir, pageId, pageName, text: generationRequestText(resolved, host) }
 }

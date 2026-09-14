@@ -27,6 +27,9 @@ const WIDGET_MARKERS = [
   '要指向一张卡片',
   'Change requests (标注 arrows bound to this shape',
   'cowartAnnotationNote',
+  // Requests keep the source page through asynchronous export/upload before routing.
+  '来源卡片已不在画布上',
+  '调整页面列表大小',
   'tool.cowart-clear-annotations',
   // Hidden or reused by the shared page scripts: a web card's image toolbar drops 替换 /
   // 裁剪 / 按标注生成 Html, annotations drawn with the 标注 tool go along with 照这个做

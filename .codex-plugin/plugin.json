@@ -17,12 +17,12 @@
     "image-generation",
     "visual-collaboration"
   ],
-  "skills": "./skills/",
+  "skills": "./adapters/codex/skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Cowart",
     "shortDescription": "Open a native tldraw canvas and reuse it across Cowart workflows.",
-    "longDescription": "Cowart brings a tldraw-powered native widget canvas into Codex for visual planning and creative iteration. The cowart_mcp server provides the canvas and project-backed state tools; render_cowart_canvas_widget opens, reopens, or explicitly refreshes the native canvas. Once the widget is open, image generation, annotation editing, HTML, Slides, and other Cowart workflows should reuse it and let MCP-backed storage synchronization update the canvas without rendering another widget tab.",
+    "longDescription": "Cowart brings a tldraw-powered native widget canvas into Codex for visual planning and creative iteration. The cowart_mcp server provides the canvas and shared canvas service and page tools; render_cowart_canvas_widget opens, reopens, or explicitly refreshes the native canvas. Once the widget is open, image generation, annotation editing, HTML, Slides, and other Cowart workflows should reuse it and let MCP-backed storage synchronization update the canvas without rendering another widget tab.",
     "developerName": "ZHONG XIN",
     "category": "Productivity",
     "websiteURL": "https://www.jiqiren.ai",
@@ -34,7 +34,7 @@
       "Native Codex widget",
       "AI image generation",
       "Annotation-driven editing",
-      "Project-local persistence"
+      "Pages shared with Claude Code"
     ],
     "defaultPrompt": [
       "Open the Cowart canvas for this project.",
