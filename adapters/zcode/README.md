@@ -45,6 +45,7 @@ npm --prefix adapters run install:zcode
 1. 对 ZCode 说「打开 Cowart 画布」（或「打开 Cowart 画布 角色设定」进入某页）。它会调 `render_cowart_canvas_widget`，把画布网址发给你（Markdown 链接，浏览器里打开），并后台启动画布请求监听。
 2. 画布顶部显示「● ZCode 已连接」后就可以点 AI 按钮了。AI 图片 / AI 视频点发送直接生成；其它请求会唤醒会话，用 AskUserQuestion 确认后执行。
 3. 会话处理完每条画布请求，会自动再启动一次监听接下一条。
+4. 用着哪里不舒服，说「反馈：……」，ZCode 用 `send_cowart_feedback` 记到本机的 `~/.cowart/feedback/`（会话、页、代码版本、最近的画布请求自动附上）；回到 Cowart 仓库用 `npm --prefix adapters run feedback` 处理（见 FORK.md「反馈」）。
 
 ## 开发与检查
 

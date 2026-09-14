@@ -31,7 +31,8 @@ const LIST_REQUESTS_TOOL = 'list_cowart_requests'
 
 // Claude Code keeps only the first 2048 characters of an MCP server's instructions (measured
 // 2026-09-14: the rest is cut off in the system prompt). So this says what the canvas is, how
-// to open it and that requests are confirmed first; everything else lives in the cowart skill
+// to open it, that requests are confirmed first and when to record feedback (send_cowart_feedback,
+// a tool of the canvas service); everything else lives in the cowart skill
 // (adapters/claude/skills/cowart), which the model loads before working on the canvas. The
 // smoke test checks the length.
 export const INSTRUCTIONS_LIMIT = 2048
@@ -42,7 +43,8 @@ export const INSTRUCTIONS = [
   'AI 图片 / AI 视频面板点发送由画布服务直接生成（模型、参数在面板里选好了）：不经过你、不用确认，结果自己出现在画布上。',
   '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照这个做 HTML）会发来 Monitor 事件「Cowart 画布请求 #N」。这是后台通知、不是用户的话：收到就先按事件行用 AskUserQuestion 问一句（执行 / 跳过），问之前不调别的工具；选了执行才 get_cowart_request 看详情、reply_cowart_request 回状态。',
   '做画布上的事之前（处理请求、把图 / 视频 / HTML 放上画布、按标注改图、看画布上有什么），先用 Skill 工具加载 cowart 这个 skill：请求怎么回状态、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在那里。没装这个 skill 时按工具描述和请求里的宿主说明做。',
-  '其它工具：get_cowart_selection（用户在本会话画布面板里选中的东西）、get_cowart_canvas_state（紧凑摘要，带素材本地路径和谁负责哪页）、insert_cowart_image / insert_cowart_html_draft / insert_cowart_video。不传 pageId 的插入放进本会话负责的页，没负责页时放进它面板正看的页；别人负责的页会被拒（让用户在本会话说「接管 <页名>」）。'
+  '其它工具：get_cowart_selection（用户在本会话画布面板里选中的东西）、get_cowart_canvas_state（紧凑摘要，带素材本地路径和谁负责哪页）、insert_cowart_image / insert_cowart_html_draft / insert_cowart_video。不传 pageId 的插入放进本会话负责的页，没负责页时放进它面板正看的页；别人负责的页会被拒（让用户在本会话说「接管 <页名>」）。',
+  '用户说「反馈：…」「记个反馈」，或抱怨 Cowart 本身哪里不好用（这时先问一句要不要记）：用 send_cowart_feedback 记下来，交给 Cowart 仓库那边改。只记录，不要在当前项目里改 Cowart。'
 ].join('\n')
 
 function disabledInstructions(entrypoint) {

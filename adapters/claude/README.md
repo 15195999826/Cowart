@@ -96,14 +96,16 @@ npm --prefix adapters run service:stop      # 停掉它，下次有会话要用�
 1. 对 Claude 说「打开 Cowart 画布」，或「打开 Cowart 画布 角色设定」让这个会话负责「角色设定」这一页（没有就新建）。Claude 调 `render_cowart_canvas_widget`，按返回的指引在 Browser 面板打开网址，并用 Monitor 启动这个会话的画布请求监听。
 2. 画布顶部显示「● Claude 已连接」后，就可以在画布里点 AI 按钮了：底部工具栏的 AI 图片 / AI HTML / AI Slides / AI 视频，以及选中图片后的按标注修改 / 按标注生图。
 3. AI 图片 / AI 视频点「发送」就开始生成，进度和结果都在画布上。其它请求（按标注修改、AI HTML、AI Slides、照这个做 HTML）在负责这一页的会话里弹一张确认卡片，点了才执行，卡片里选免费本地模型 / 云端模型。结果回到画布，状态显示在画布顶部。
+4. 用着哪里不舒服，在任何会话里说「反馈：……」，Claude 用 `send_cowart_feedback` 记到本机的 `~/.cowart/feedback/`（会话、页、代码版本、最近的画布请求自动附上）；回到 Cowart 仓库用 `npm --prefix adapters run feedback` 查看和处理（见 FORK.md「反馈」）。
 
 画布是画布服务的，全机只有一张，所有会话、所有项目都在上面按页分工：数据存在 `~/.cowart/canvas/`（每页一个目录，素材跟着页走），格式和 Codex 版一致。以前存在各项目 `canvas/` 下的页，用 `node adapters/service/bin/cowart-service.mjs --import <画布目录> …` 搬进来（整页目录拷过去，原目录不动）。
 
 ## 开发与检查
 
 ```bash
-npm --prefix adapters run test:claude       # 端到端：冒烟测试 + 多会话测试（临时项目、测试端口，不碰真实画布）
+npm --prefix adapters run test:claude       # 端到端：冒烟、多会话、直接生成、反馈测试（临时项目、测试端口，不碰真实画布和反馈目录）
 npm --prefix adapters run test:multi        # 只跑多会话测试
+npm --prefix adapters run feedback          # 反馈收件箱：列出没处理的反馈（-- show / done / wontfix / reopen <编号>）
 npm --prefix adapters run check:contract    # 同步上游后跑：适配层依赖的上游接口是否还在
 node adapters/claude/scripts/dev-host.mjs --project <目录> [--session <标识>] [--canvas <目录>]   # 不经 Claude Code 手动联调
 ```

@@ -2,8 +2,9 @@
 // canvas to the Browser pane, relays page tool calls, serves page assets (videos need real URLs
 // with range support), tracks the sessions whose bridges are connected, routes each canvas
 // request to the session responsible for its page and streams it to that session's
-// listener, starts the AI 图片 / AI 视频 generation it runs itself (generation-jobs.mjs), and
-// tells every page who is responsible for which page (presence.mjs).
+// listener, starts the AI 图片 / AI 视频 generation it runs itself (generation-jobs.mjs),
+// tells every page who is responsible for which page (presence.mjs), and keeps the feedback
+// users send about Cowart itself (feedback.mjs).
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -11,9 +12,10 @@ import http from 'node:http'
 import { extname, isAbsolute, relative, resolve } from 'node:path'
 
 import { resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
-import { localPathForAssetSrc } from '../../shared/canvas-model.mjs'
+import { formatCanvasSummary, localPathForAssetSrc } from '../../shared/canvas-model.mjs'
 import { readFileHead, sniffMediaType } from '../../shared/video.mjs'
 import { INSERT_VIDEO_TOOL, PAGE_WRITE_TOOLS, textResult } from './canvas-ops.mjs'
+import { FEEDBACK_TOOL, FEEDBACK_TOOL_DEFINITION, FeedbackStore } from './feedback.mjs'
 import { Presence } from './presence.mjs'
 import { FINAL_STATUSES, publicRequest } from './requests.mjs'
 import { WidgetPanes } from './widget-panes.mjs'
@@ -35,6 +37,8 @@ const SESSION_WAIT_MS = Number(process.env.COWART_SESSION_WAIT_MS) || 15_000
 const PANE_GRACE_MS = 5_000
 const MESSAGE_KINDS = new Set(['canvas', 'image', 'video', 'web'])
 const ID_PATTERN = /^[A-Za-z0-9_.-]{1,96}$/
+// The session's latest canvas requests a feedback item keeps.
+const FEEDBACK_REQUESTS = 10
 
 const CONTENT_TYPES = new Map([
   ['.apng', 'image/apng'],
@@ -167,7 +171,7 @@ export class CanvasServer {
   #lastOpenedUrl = null
 
   // canvasDir: the machine's one canvas (SHARED_CANVAS_DIR), the only one this serves.
-  constructor({ token, identity, canvasDir, queue, ops, jobs, renderPage, log, onActivity, onShutdownRequest, presence }) {
+  constructor({ token, identity, canvasDir, queue, ops, jobs, renderPage, log, onActivity, onShutdownRequest, presence, feedback }) {
     this.token = token
     this.identity = identity
     this.canvasDir = canvasDir
@@ -179,6 +183,7 @@ export class CanvasServer {
     this.onActivity = onActivity ?? (() => {})
     this.onShutdownRequest = onShutdownRequest ?? (() => {})
     this.presence = presence ?? new Presence({ canvasDir })
+    this.feedback = feedback ?? new FeedbackStore()
     this.#widgets = new WidgetPanes({ leaseMs: WIDGET_LEASE_MS, onExpired: (pane) => this.#expireWidget(pane) })
 
     queue.on('created', (request) => this.#deliver(request))
@@ -716,8 +721,15 @@ export class CanvasServer {
           return events
         })
       }
-      case 'model-tools':
-        return { tools: await this.ops.modelTools() }
+      case 'model-tools': {
+        // Upstream's tools and the service's own feedback tool, which stays listed when
+        // upstream is down: that is worth feedback too.
+        const upstreamTools = await this.ops.modelTools().catch((error) => {
+          this.log(`upstream tools unavailable: ${error.message}`)
+          return []
+        })
+        return { tools: [...upstreamTools, FEEDBACK_TOOL_DEFINITION] }
+      }
       case 'open-canvas':
         return this.#openCanvas(session, args)
       case 'canvas-state':
@@ -726,6 +738,7 @@ export class CanvasServer {
         return this.ops.insertVideo(await this.#pageWrite(session, INSERT_VIDEO_TOOL, this.#withDefaults(session, args)))
       case 'tool': {
         const name = String(args.name || '')
+        if (name === FEEDBACK_TOOL) return this.#recordFeedback(session, args.arguments ?? {})
         let toolArgs = this.#withDefaults(session, args.arguments ?? {})
         if (PAGE_WRITE_TOOLS.has(name)) toolArgs = await this.#pageWrite(session, name, toolArgs)
         await this.ops.replaySelection(name, toolArgs, session.id)
@@ -853,6 +866,62 @@ export class CanvasServer {
     const own = mine?.canvasDir === canvasDir ? '' : '\n这个会话没负责这张画布的页：不带 pageId 的插入会放进它的画布面板正看着的页（没人负责的话）。'
     const text = `${result.content?.[0]?.text ?? ''}\n\n谁负责哪一页（别的会话负责的页不能往里放东西）：\n${summary}${own}`
     return textResult(text, { ...result.structuredContent, responsibilities: view })
+  }
+
+  // ---- Feedback ----------------------------------------------------------------------
+
+  // send_cowart_feedback: the user's words and the model's account, with what the service
+  // knows of the session right now. Each part of that is best effort: the feedback is kept
+  // even when the canvas cannot be read.
+  async #recordFeedback(session, input) {
+    const pages = await this.ops.canvasPages(this.#withDefaults(session)).catch(() => [])
+    const pageRef = (idOrName) => {
+      if (!idOrName) return null
+      const page = pages.find((entry) => entry.id === idOrName || entry.name === idOrName)
+      return page ? { id: page.id, name: page.name } : { id: idOrName, name: null }
+    }
+    const held = this.presence.pageOf(session.id)
+    const heldPage = held?.canvasDir === this.canvasDir ? pageRef(held.pageId) : null
+    const shownPages = this.presence.panesOf(session.id, this.canvasDir).map((pane) => ({ id: pane.pageId, name: pane.pageName ?? pageRef(pane.pageId).name }))
+    const page = pageRef(nonEmpty(input.pageId)) ?? heldPage ?? shownPages[0] ?? null
+    const pageIds = new Set([page?.id, heldPage?.id, ...shownPages.map((entry) => entry.id)].filter(Boolean))
+    const requests = this.queue
+      .list()
+      .filter((request) => request.session === session.id || (request.executor === 'service' && pageIds.has(request.pageId)))
+      .slice(-FEEDBACK_REQUESTS)
+      .map(({ id, kind, executor, title, summary, status, message, pageName, createdAt, updatedAt }) => ({ id, kind, executor, title, summary, status, message, pageName, createdAt, updatedAt }))
+    const { record, dir, skipped } = await this.feedback.create(input, {
+      source: { host: session.host ?? null, session: session.id, sessionName: this.presence.nameOf(session.id), project: session.cwd ?? null },
+      canvas: { canvasDir: this.canvasDir, page, heldPage, shownPages },
+      code: { version: this.identity.version, protocol: this.identity.protocol, build: this.identity.build, root: this.identity.root },
+      requests,
+      canvasText: page ? await this.#pageSummary(session, page.id) : null
+    })
+    const kept = [
+      '会话、项目、代码版本',
+      page && `当时的页「${page.name ?? page.id}」`,
+      requests.length > 0 && `最近 ${requests.length} 条画布请求`,
+      record.files.serviceLog && '服务日志',
+      record.attachments.length > 0 && `${record.attachments.length} 个附件`
+    ].filter(Boolean)
+    const lines = [
+      `已记下反馈 #${record.id}「${record.title}」：${dir}`,
+      `一起记下的还有${kept.join('、')}。`,
+      ...skipped.map((item) => `没附上 ${item.from}：${item.reason}。`),
+      '把编号告诉用户就行：反馈在 Cowart 仓库里处理（npm --prefix adapters run feedback），这个会话不用改 Cowart。'
+    ]
+    return textResult(lines.join('\n'), { id: record.id, title: record.title, status: record.status, dir })
+  }
+
+  // The page as the canvas summary describes it now.
+  async #pageSummary(session, pageId) {
+    try {
+      const summary = (await this.ops.canvasState(this.#withDefaults(session))).structuredContent
+      const page = summary?.pages?.find((entry) => entry.id === pageId)
+      return page ? formatCanvasSummary({ ...summary, currentPageId: pageId, pages: [page] }) : null
+    } catch {
+      return null
+    }
   }
 
   // ---- Page and assets ---------------------------------------------------------------

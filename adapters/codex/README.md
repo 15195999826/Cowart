@@ -16,6 +16,8 @@ Codex 保留原生 **MCP Apps widget**，每个会话只运行一个薄 bridge�
 
 例如 Claude 先创建「角色设定」，Codex 就能打开同一页、看到原有图片和标注。让 Codex 接管后，该页后续 AI 请求交给 Codex；无需导出、复制或转换 page。模型插入默认放到本会话负责的页，未负责页时使用本会话面板正看的页。处理队列请求时始终显式传回原请求的 `pageId`。
 
+用着哪里不舒服，说「反馈：……」，Codex 调 `send_cowart_feedback` 记到本机的 `~/.cowart/feedback/`（服务附上会话、页、代码版本和最近的画布请求）；回到 Cowart 仓库用 `npm --prefix adapters run feedback` 处理，见 [FORK.md](../../FORK.md)「反馈」。
+
 ## 对齐的画布功能
 
 - **AI 图片**：共用模型、画幅、参考素材和参数面板；猛兽模型由画布服务直接生成。Codex 额外提供「Codex imagegen」，交给负责该页的 Codex 会话处理。

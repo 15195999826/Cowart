@@ -105,10 +105,21 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 | `insert_cowart_video` | 放视频 | `videoPath`；`replaceHolderShapeId` 替换 AI 视频框 |
 | `insert_cowart_html_draft` | 放 / 替换 HTML 草稿、给 Slides 加页 | `htmlContent` 或 `htmlPath`、`draftShapeId`、`fileName` |
 | `get_cowart_request` / `reply_cowart_request` / `list_cowart_requests` | 画布请求的详情、状态、列表 | 状态 running / done / failed / skipped |
+| `send_cowart_feedback` | 记下用户对 Cowart 本身的意见 | 见第 7 节 |
 
 没有整张保存的工具，也不要手写 tldraw 记录：插入工具会算位置、拷素材、存盘。
 
-## 7. 别做的事
+## 7. 反馈
+
+用户说「反馈：…」「记个反馈」「给 Cowart 提个意见」，或抱怨 Cowart 本身（画布、面板、按钮、画布请求、生成、这些工具）哪里不好用时，调 `send_cowart_feedback` 记下来，交给 Cowart 仓库那边改。只是抱怨、没说要反馈的，先问一句要不要记。
+
+- `text` 放用户原话，不改写、不删减；`title` 一句话（20 字左右）；`kind`：`bug` 坏了 / 结果不对，`friction` 能用但别扭、麻烦、慢，`idea` 想要的新功能。
+- `details` 写你知道的情况：用户当时在做什么、点了什么、实际怎样、期望怎样、怎么复现。不知道的别编；最多问一句，别为补细节反复追问。
+- 跟画布上的东西有关就传 `shapeIds`（说的不是本会话负责或正在看的页时再传 `pageId`）；有截图、生成结果之类的本地文件就传 `attachments`。
+- 会话名、项目、负责 / 在看的页、代码版本、最近的画布请求、服务日志由服务自己附上，不用你收集。
+- 只记录：不在当前项目里改 Cowart 的代码、配置或画布数据。记完告诉用户反馈编号。
+
+## 8. 别做的事
 
 - 不删页、不清页、不往别人负责的页写。
 - 不为面板里点发送的 AI 图片 / AI 视频插手：那是画布服务在做。

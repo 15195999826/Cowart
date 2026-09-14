@@ -170,13 +170,14 @@ export function rawGet(port, path, headers) {
 }
 
 // A session bridge the way Claude Code runs it: MCP over stdio, with its own session id.
-export async function startBridge({ cwd, port, session, env = {} }) {
+// entry runs another host's bridge (ZCode, Codex) the same way.
+export async function startBridge({ cwd, port, session, env = {}, entry = BRIDGE_ENTRY }) {
   const inherited = { ...process.env }
   // Checks run the same from any host; the desktop-only switch is tested on purpose.
   delete inherited.CLAUDE_CODE_ENTRYPOINT
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [BRIDGE_ENTRY],
+    args: [entry],
     cwd,
     // A service a check starts keeps the check's canvas, never the machine's.
     env: { ...inherited, COWART_CLAUDE_PORT: String(port), COWART_SESSION_ID: session, COWART_SESSION_NAMES_FILE: NAMES_FILE, COWART_CANVAS_DIR: join(cwd, 'canvas'), ...env },

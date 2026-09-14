@@ -14,11 +14,14 @@
 adapters/
   package.json  适配层自己的依赖（MCP SDK、fractional-indexing、puppeteer-core），装在 adapters/node_modules
   service/      全机一个的画布服务和全机那一张画布，宿主无关（见下文「画布服务」）
-    bin/        服务入口 cowart-service.mjs（桥在后台拉起；--status / --stop 手动查看、停止，--import 把旧画布的页搬进来）
+    bin/        服务入口 cowart-service.mjs（桥在后台拉起；--status / --stop 手动查看、停止，--import 把旧画布的页搬进来）、
+                反馈收件箱 cowart-feedback.mjs（npm run feedback：列出、查看、关掉用户反馈，见下文「反馈」）
     lib/        HTTP 服务与会话（server.mjs：请求按页路由）、画布操作（canvas-ops.mjs：上游子进程、写入排队、页面专用工具、
                 视频插入、插入的图片保持原比例、差异保存、给会话建页）、差异合并（delta-merge.mjs）、谁负责哪一页（presence.mjs）、
                 请求队列、写入保护、令牌、身份与代码指纹（identity.mjs）、
-                画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）
+                画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）、
+                用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）
+    test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）
     client.mjs  给各宿主的桥用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接 / 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
                 图片 / 视频模型清单（image-models.mjs / video-models.mjs）、
@@ -51,7 +54,7 @@ FORK.md         本文件
 
 - 只有 `main` 一个分支，直接在上面开发、提交，不开 `feat/*` 之类的开发分支。Codex 和 Claude Code 都从这里装；Codex 从 GitHub marketplace 安装插件并**自动跟随远程 `main`**，所以没验证过的提交先留在本地，验证过再推送。
 - `upstream` remote 指向原作者仓库。同步：`git fetch upstream && git merge upstream/main`。`mcp/generated/` 下的发布产物有冲突时不手工合并，重新 `npm run build:artifacts` 生成。
-- 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟测试 + 多会话测试），都过了再推送。
+- 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成和反馈测试），都过了再推送。
 - 有补丁点以后，改了 `src/` 就要在仓库根目录 `npm ci && npm run build:artifacts` 重新生成 `mcp/generated/`，并和源码一起提交；`npm run check:artifacts` 能核对两者是否一致。
 - 改动适配层后运行 `npm --prefix adapters run build:artifacts` 和 `check:artifacts`，提交 `adapters/generated/`；`npm --prefix adapters run probe:cold` 用临时目录中的发布文件验证不依赖 `node_modules`、既有服务和真实用户画布。原生 Codex widget 的视频、外链和完整交互仍需宿主验收，协议测试不能替代。
 - **Windows 上构建前必须按 LF 检出**：`git config core.autocrlf false`、`git config core.eol lf`，再重新检出（`git rm -r --cached -q . && git reset -q --hard`，先把未提交的改动存好）。否则 `index.html` 和 SVG 图标会以 CRLF 被打进页面，产物跟上游对不上。
@@ -105,6 +108,15 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - **空闲退出**：没有会话连着、也没有打开的画布页面，10 分钟后退出（`COWART_SERVICE_IDLE_MS` 可改）。
 - **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop` 时，桥不提供工具、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
 - Claude / ZCode 网页和 Codex 原生 MCP Apps widget 使用相同的页面功能与差异保存脚本；宿主传输分别是 HTTP / SSE 和 MCP Apps 工具调用 / 轮询。共享服务保存相同的 page 与素材，切换宿主不用转换画布。
+
+## 反馈（2026-09-14）
+
+用户在别的项目里用 Cowart（Claude Code、ZCode、Codex 都一样）觉得哪里不舒服，说「反馈：…」，那个会话的 AI 就调 `send_cowart_feedback` 记下来；我们在本仓库里按反馈改。
+
+- **工具在画布服务上**（`service/lib/feedback.mjs`）：服务把它和上游工具一起经 `model-tools` 列给各宿主的桥，调用照常转给服务，所以三个桥的转发代码都不用动；上游起不来时它照样列出（这种时候最该反馈）。三边的桥说明和 cowart skill 各有一段写什么时候调、怎么写：用户原话放 `text`，AI 只补它知道的情况；用户只是抱怨时先问一句要不要记；只记录，不在别的项目里改 Cowart。
+- **存在本机** `~/.cowart/feedback/<编号>-<标题>/`（`COWART_FEEDBACK_DIR` 可改，编号在本机递增）：`feedback.json`（记录）、`feedback.md`（同样内容给人看）、`canvas.txt`（说的那一页当时的画布摘要）、`service-log.txt`（服务日志最后 80 行）和模型附上的文件。服务自动记下：机器、宿主、会话名、项目目录、会话负责 / 面板在看的页、代码版本（build 指纹、仓库提交、未提交文件数）、本会话最近 10 条画布请求（连同这些页上服务直接生成的）。
+- **在本仓库处理**：用户说「看看反馈」时，`npm --prefix adapters run feedback` 列出没处理的，`-- show <编号>` 看全文、当时的情况和文件路径；按开发准则先跟用户讨论再改，改完 `-- done <编号> --commit <提交> --note "<改了什么>"`，不改的 `-- wontfix <编号> --note "<为什么>"`，`-- reopen <编号>` 重开（编号直接写数字：PowerShell 里 `#` 后面算注释）。
+- 别的机器上记的反馈留在那台机器的 `~/.cowart/feedback`，拉到这台来处理的命令还没做。
 
 ## 注意
 

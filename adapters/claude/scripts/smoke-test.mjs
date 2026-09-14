@@ -99,7 +99,8 @@ try {
       'insert_cowart_video',
       'get_cowart_request',
       'reply_cowart_request',
-      'list_cowart_requests'
+      'list_cowart_requests',
+      'send_cowart_feedback'
     ]) {
       assert.ok(names.includes(name), `missing ${name}`)
     }
