@@ -10,6 +10,8 @@ import { join } from 'node:path'
 
 import { importCanvasPages } from '../../service/lib/canvas-import.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
+import { ADAPTERS_DIR } from '../../shared/paths.mjs'
+import { INSTRUCTIONS, INSTRUCTIONS_LIMIT } from '../lib/bridge.mjs'
 import { EMPTY_CANVAS, FIXTURES, finish, openEvents, rawGet, serviceStatus, startBridge, step, stopTestService, text, writePng } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_SMOKE_PORT) || 43290
@@ -78,6 +80,14 @@ async function addHolder(id, props, meta) {
 }
 
 try {
+  await step('bridge instructions fit what Claude Code keeps of them, and the skill they point to exists', async () => {
+    assert.ok(INSTRUCTIONS.length <= INSTRUCTIONS_LIMIT, `bridge instructions are ${INSTRUCTIONS.length} characters, Claude Code keeps ${INSTRUCTIONS_LIMIT}`)
+    assert.match(INSTRUCTIONS, /Skill 工具加载 cowart/)
+    const skill = await readFile(join(ADAPTERS_DIR, 'claude', 'skills', 'cowart', 'SKILL.md'), 'utf8')
+    assert.match(skill, /^name: cowart$/m)
+    assert.match(skill, /^description: .+/m)
+  })
+
   await step('tool list: Claude tools present, page-only tools hidden', async () => {
     const names = (await client.listTools()).tools.map((tool) => tool.name)
     for (const name of [

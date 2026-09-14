@@ -10,6 +10,8 @@
     "test:multi": "node ./claude/scripts/multi-session-test.mjs",
     "test:generation": "node ./claude/scripts/generation-test.mjs",
     "dev:claude": "node ./claude/scripts/dev-host.mjs",
+    "install:skill": "node ./claude/scripts/install-skill.mjs",
+    "uninstall:skill": "node ./claude/scripts/install-skill.mjs --remove",
     "service:status": "node ./service/bin/cowart-service.mjs --status",
     "service:stop": "node ./service/bin/cowart-service.mjs --stop"
   },

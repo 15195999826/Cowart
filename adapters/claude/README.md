@@ -65,6 +65,14 @@ claude mcp add cowart -s local -- node C:/WebProjects/Cowart/adapters/claude/bin
 
 新开 Claude Code 会话后生效。工具只在桌面版提供：会话入口（`CLAUDE_CODE_ENTRYPOINT`）不是 `claude-desktop` 时（命令行版、VS Code 插件等），cowart 不提供工具、也不拉起画布服务。
 
+再把 Claude 版的 skill 链接进 Claude Code 的全局 skills 目录（一次就行；仓库挪了位置再跑一次，`uninstall:skill` 移除）：
+
+```bash
+npm --prefix adapters run install:skill
+```
+
+它在 `~/.claude/skills/cowart` 建一个指向 `adapters/claude/skills/cowart` 的目录链接（Windows 是 junction，不用管理员权限），skill 跟着检出的代码走。Claude Code 只把 MCP 服务说明的前 2048 个字符放进上下文，所以桥的说明只讲画布是什么、怎么打开、请求先问再做；画布请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在这个 skill 里，Claude 做画布上的事之前会先加载它。没装 skill 也能用，只是 Claude 只能凭工具描述和每条请求的宿主说明干活。
+
 环境变量：
 
 - `COWART_CLAUDE_PORT`：画布服务的端口，默认 43240；被别的程序占着就往后找。

@@ -30,7 +30,8 @@ adapters/
     bin/        MCP 入口 cowart-claude-mcp.mjs（每个会话一个薄桥）、画布请求监听 cowart-listen.mjs
     lib/        薄桥 bridge.mjs：工具定义、给 Claude 的说明、请求的宿主说明，工具都转给画布服务
     web/        只属于 Claude 的页面脚本：宿主桥、差异保存和状态浮层（bridge.js）
-    scripts/    冒烟测试、多会话测试、上游接口检查、手动联调宿主
+    skills/     Claude 版 skill cowart：打开画布、画布请求怎么处理、结果放哪一页、标注怎么读（install:skill 链接进 ~/.claude/skills）
+    scripts/    冒烟测试、多会话测试、上游接口检查、手动联调宿主、安装 skill（install-skill.mjs）
   codex/        Codex 适配（说明见 adapters/codex/README.md）
 FORK.md         本文件
 ```
@@ -102,6 +103,7 @@ FORK.md         本文件
 - 标注绑定在数据层（见补丁点清单）：「标注」「注释」工具画的箭头（`meta.cowartAnnotationArrow`，注释另有 `meta.cowartAnnotationNote`）用 tldraw 的箭头绑定（`binding`，`props.terminal: 'end'`）挂在它指着的卡片上，随画布保存。上游的按标注修改、适配层的「照这个做 HTML」、给模型看的画布摘要（「标注（修改要求）/ 注释（常驻说明）→ 卡片 id」）都按绑定取，不再按距离和颜色猜。
 - 模型清单（`adapters/shared/*-models.mjs`）照 `beast gen templates` 手抄，网关模板改了要跟着改；画布直接生成按清单里的模板和参数名提交。
 - 画布直接生成每次写提示词都跑一次 `claude -p`（默认 haiku，约 5 秒），用本机 Claude Code 的登录额度；产物落在猛兽上、记在 beast 配置里的用户（`~/.beast/config.json` 的 client）名下。
+- Claude Code 只把 MCP 服务 `instructions` 的前 2048 个字符放进上下文（2026-09-14 实测，后面直接截断）。桥的说明（`bridge.mjs` 的 `INSTRUCTIONS`）只讲画布是什么、怎么打开、请求先问再做，冒烟测试盯着长度；请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻怎么换成 beast-gen 写在 `adapters/claude/skills/cowart/SKILL.md`，`npm --prefix adapters run install:skill` 把它链接成全局 skill（Windows 用目录 junction），桥的说明和每条请求的宿主说明都让 Claude 先加载它。仓库根目录的 `skills/` 是上游给 Codex 的（`$CODEX_HOME`、内置 imagegen、整张保存），Codex 跟着 `main` 自动更新，不改。
 
 ## 补丁点清单
 
