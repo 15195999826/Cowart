@@ -1,11 +1,14 @@
-// Per-user secret shared by the adapter, its canvas page and the request listener.
-// Persisted so an open canvas tab keeps working after the Claude session restarts.
+// Per-user secret shared by the canvas service, its pages, the session bridges and the
+// request listener. Persisted so open canvas tabs keep working across service restarts.
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-export const TOKEN_FILE = join(homedir(), '.cowart-claude', 'token')
+// Named after the first host; every bridge and the service share it.
+export const RUNTIME_DIR = join(homedir(), '.cowart-claude')
+export const TOKEN_FILE = join(RUNTIME_DIR, 'token')
+export const SERVICE_LOG = join(RUNTIME_DIR, 'service.log')
 const TOKEN_PATTERN = /^[0-9a-f]{32,}$/
 
 export async function readToken() {

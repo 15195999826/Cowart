@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-// Run by Claude's Monitor tool: prints one line per Cowart canvas request so the session
-// wakes up. Usage: node cowart-listen.mjs --port <port>
-import { readToken } from '../lib/token.mjs'
+// Run by Claude's Monitor tool: prints one line per canvas request of this session so the
+// session wakes up. Usage: node cowart-listen.mjs --port <port> --session <id> [--once]
+// ZCode has no Monitor: its bridge passes --once and runs this as a background task that
+// exits after the first request/cancelled event (the exit is what wakes the session up);
+// the service replays undelivered requests when the next listener connects.
+import { readEventStream } from '../../service/client.mjs'
+import { readToken } from '../../service/lib/token.mjs'
 
 const GIVE_UP_MS = 120_000
 const RETRY_MS = 2_000
+const ONCE = process.argv.includes('--once')
 
 function option(name) {
   const index = process.argv.indexOf(`--${name}`)
@@ -15,58 +20,64 @@ function emit(line) {
   process.stdout.write(`${line}\n`)
 }
 
+// The line carries what the confirmation needs, so Claude asks before any other call.
+function options(request) {
+  return request.kind === 'canvas' ? '执行（免费本地模型）/ 执行（云端，消耗团队额度）/ 跳过' : '执行 / 跳过'
+}
+
 function formatRequest(request) {
+  const page = request.page ? `（页「${request.page}」）` : ''
   const summary = request.summary ? `：${request.summary}` : ''
-  return `Cowart 画布请求 #${request.id}「${request.title}」${summary} → 先调 get_cowart_request {"id": ${request.id}} 看详情，再用 AskUserQuestion 请用户确认（执行 / 跳过）`
+  return `Cowart 画布请求 #${request.id}「${request.title}」${page}${summary} → 马上用 AskUserQuestion 问用户一句（${options(request)}），选了执行再调 get_cowart_request {"id": ${request.id}} 看详情照做`
 }
 
 const port = Number(option('port'))
+const session = option('session')
 if (!Number.isInteger(port) || port <= 0) {
   emit('Cowart 画布监听：缺少 --port 参数，已退出。')
   process.exit(1)
 }
-const url = `http://${option('host') || '127.0.0.1'}:${port}/api/agent-events`
+if (!session) {
+  emit('Cowart 画布监听：缺少 --session 参数（这是旧的监听命令），已退出；重新打开画布即可拿到新的监听命令。')
+  process.exit(1)
+}
+const url = `http://${option('host') || '127.0.0.1'}:${port}/api/agent-events?session=${encodeURIComponent(session)}`
 
 async function listenOnce(token) {
   const response = await fetch(url, { headers: { accept: 'text/event-stream', 'x-cowart-token': token } })
-  if (response.status === 403) {
-    emit('Cowart 画布监听：本地服务拒绝了令牌，已退出；重新打开画布即可拿到新的监听命令。')
+  if (response.status === 403 || response.status === 400) {
+    const payload = await response.json().catch(() => ({}))
+    emit(`Cowart 画布监听：${payload.error || '本地服务拒绝了监听'}，已退出；重新打开画布即可拿到新的监听命令。`)
     process.exit(1)
   }
   if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
   process.stderr.write(`connected to ${url}\n`)
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) throw new Error('stream closed')
-    lastAlive = Date.now()
-    buffer += decoder.decode(value, { stream: true })
-    let end
-    while ((end = buffer.indexOf('\n\n')) >= 0) {
-      const block = buffer.slice(0, end)
-      buffer = buffer.slice(end + 2)
-      let event = 'message'
-      let data = ''
-      for (const line of block.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim()
-        else if (line.startsWith('data:')) data += line.slice(5).trim()
-      }
+  try {
+    await readEventStream(response.body, (event, data) => {
       if (event === 'replaced') {
         emit('Cowart 画布监听：已有新的监听接替，本监听退出。')
         process.exit(0)
       }
-      if (event === 'request' && data) emit(formatRequest(JSON.parse(data)))
-      if (event === 'cancelled' && data) {
-        const request = JSON.parse(data)
-        emit(`Cowart 画布请求 #${request.id}「${request.title}」已在画布上撤销：不用处理了（如果正在用 AskUserQuestion 问用户，这条就不必再执行）`)
+      if (event === 'session-ended') {
+        emit('Cowart 画布监听：这个会话跟画布服务断开了，本监听退出；重新打开画布时会给出新的监听命令。')
+        process.exit(0)
       }
-    }
+      if (event === 'request') {
+        emit(formatRequest(data))
+        if (ONCE) process.exit(0)
+      }
+      if (event === 'cancelled') {
+        emit(`Cowart 画布请求 #${data.id}「${data.title}」已在画布上撤销：不用处理了（如果正在用 AskUserQuestion 问用户，这条就不必再执行）`)
+        if (ONCE) process.exit(0)
+      }
+    })
+  } finally {
+    lastAlive = Date.now()
   }
+  throw new Error('stream closed')
 }
 
+// A service restart (a newer version replacing it) drops the stream; keep trying for a while.
 let lastAlive = Date.now()
 for (;;) {
   const token = await readToken()
@@ -79,7 +90,7 @@ for (;;) {
   } catch (error) {
     process.stderr.write(`disconnected: ${error.message}\n`)
     if (Date.now() - lastAlive > GIVE_UP_MS) {
-      emit(`Cowart 画布监听：连不上本地服务超过 2 分钟（${error.message}），已退出；重新打开画布时会给出新的监听命令。`)
+      emit(`Cowart 画布监听：连不上画布服务超过 2 分钟（${error.message}），已退出；重新打开画布时会给出新的监听命令。`)
       process.exit(1)
     }
     await new Promise((resolve) => setTimeout(resolve, RETRY_MS))

@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 // Manual test harness: runs the Claude adapter the way Claude Code does (MCP over stdio),
-// opens a canvas, and exposes the adapter's tools on a control port.
-// Usage: node dev-host.mjs --project <dir> [--control-port 43299]
+// opens the canvas, and exposes the adapter's tools on a control port.
+// Usage: node dev-host.mjs --project <dir> [--session <id>] [--control-port 43299] [--canvas <dir>]
 //   curl -X POST -H "x-cowart-dev: 1" http://127.0.0.1:43299/call -d '{"name":"list_cowart_requests","arguments":{}}'
 // The custom header keeps other local web pages from driving the adapter (it forces a CORS preflight).
+// --canvas gives a service this starts a canvas of its own instead of the machine's; only with
+// COWART_CLAUDE_PORT set to a port of its own, so the machine's service never gets it.
 import http from 'node:http'
 import { join, resolve } from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
+import { DEFAULT_PORT } from '../../service/lib/identity.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 function option(name) {
@@ -19,12 +22,18 @@ function option(name) {
 
 const projectDir = resolve(option('project') || process.cwd())
 const controlPort = Number(option('control-port')) || 43299
+const canvasDir = option('canvas') ? resolve(option('canvas')) : null
+if (canvasDir && (Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT) === DEFAULT_PORT) {
+  console.error('--canvas 只给独立的测试服务用：同时把 COWART_CLAUDE_PORT 设成另一个端口，免得机器上的画布服务换了画布。')
+  process.exit(1)
+}
 
+// Its own session id, so it never takes over the pages of the Claude session it runs in.
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-claude-mcp.mjs')],
   cwd: projectDir,
-  env: { ...process.env },
+  env: { ...process.env, COWART_SESSION_ID: option('session') || 'dev-host', COWART_ALLOW_CLI: '1', ...(canvasDir ? { COWART_CANVAS_DIR: canvasDir } : {}) },
   stderr: 'inherit'
 })
 const client = new Client({ name: 'cowart-dev-host', version: '0.0.0' })

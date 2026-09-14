@@ -1,115 +1,29 @@
 #!/usr/bin/env node
-// End-to-end check of the Claude adapter without Claude Code: runs it over stdio against a
-// throwaway project and exercises tools, the page API, video support and canvas requests.
+// End-to-end check of the Claude adapter without Claude Code: runs a session bridge over
+// stdio against a throwaway project (the bridge starts its own canvas service on a test
+// port) and exercises tools, the page API, video support and canvas requests.
 import assert from 'node:assert/strict'
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { importCanvasPages } from '../../service/lib/canvas-import.mjs'
+import { loadOrCreateToken } from '../../service/lib/token.mjs'
+import { EMPTY_CANVAS, FIXTURES, finish, openEvents, rawGet, serviceStatus, startBridge, step, stopTestService, text, writePng } from './test-kit.mjs'
 
-import { ADAPTERS_DIR } from '../../shared/paths.mjs'
-import { loadOrCreateToken } from '../lib/token.mjs'
-
-const FIXTURES = join(ADAPTERS_DIR, 'claude', 'test', 'fixtures')
 const PORT = Number(process.env.COWART_SMOKE_PORT) || 43290
-
-let failures = 0
-async function step(name, run) {
-  try {
-    await run()
-    console.log(`PASS  ${name}`)
-  } catch (error) {
-    failures += 1
-    console.log(`FAIL  ${name}\n      ${error.stack?.split('\n').slice(0, 3).join('\n      ') ?? error}`)
-  }
-}
-
-function text(result) {
-  return (result.content ?? []).filter((item) => item.type === 'text').map((item) => item.text).join('\n')
-}
-
-// Minimal SSE reader over fetch; returns an async queue of { event, data }.
-function openEvents(url, headers) {
-  const controller = new AbortController()
-  const events = []
-  const waiters = []
-  const ready = fetch(url, { headers: { accept: 'text/event-stream', ...headers }, signal: controller.signal }).then(async (response) => {
-    assert.equal(response.status, 200)
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    ;(async () => {
-      try {
-        for (;;) {
-          const { value, done } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          let end
-          while ((end = buffer.indexOf('\n\n')) >= 0) {
-            const block = buffer.slice(0, end)
-            buffer = buffer.slice(end + 2)
-            let event = 'message'
-            let data = ''
-            for (const line of block.split('\n')) {
-              if (line.startsWith('event:')) event = line.slice(6).trim()
-              else if (line.startsWith('data:')) data += line.slice(5).trim()
-            }
-            if (!data) continue
-            const item = { event, data: JSON.parse(data) }
-            const waiter = waiters.findIndex((entry) => entry.match(item))
-            if (waiter >= 0) waiters.splice(waiter, 1)[0].resolve(item)
-            else events.push(item)
-          }
-        }
-      } catch {
-        // Aborted.
-      }
-    })()
-  })
-  return {
-    ready,
-    close: () => controller.abort(),
-    next(match, timeoutMs = 5000) {
-      const index = events.findIndex(match)
-      if (index >= 0) return Promise.resolve(events.splice(index, 1)[0])
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('timed out waiting for event')), timeoutMs)
-        waiters.push({ match, resolve: (item) => (clearTimeout(timer), resolve(item)) })
-      })
-    }
-  }
-}
-
-function rawGet(port, path, headers) {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, headers }, (res) => {
-      res.resume()
-      res.on('end', () => resolve(res))
-    })
-    req.on('error', reject)
-    req.end()
-  })
-}
+const SESSION = 'smoke'
 
 const token = await loadOrCreateToken()
 const projectDir = await mkdtemp(join(tmpdir(), 'cowart-claude-smoke-'))
 const canvasDir = join(projectDir, 'canvas')
 await mkdir(join(canvasDir, 'pages', 'page'), { recursive: true })
-await copyFile(join(FIXTURES, 'empty-canvas.json'), join(canvasDir, 'pages', 'page', 'cowart-canvas.json'))
+await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.json'))
 
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-claude-mcp.mjs')],
-  cwd: projectDir,
-  env: { ...process.env, COWART_CLAUDE_PORT: String(PORT) },
-  stderr: 'pipe'
-})
-const client = new Client({ name: 'cowart-claude-smoke', version: '0.0.0' })
-await client.connect(transport)
-const call = (name, args = {}) => client.callTool({ name, arguments: args })
+await stopTestService(PORT)
+const bridge = await startBridge({ cwd: projectDir, port: PORT, session: SESSION })
+const { call, client } = bridge
 
 let origin = ''
 let pageUrl = ''
@@ -129,6 +43,7 @@ const sendTagged = (prepared) =>
     text: prepared.structuredContent.text,
     kind: prepared.structuredContent.kind,
     holderShapeId: prepared.structuredContent.holderShapeId,
+    session: SESSION,
     projectDir,
     canvasDir
   })
@@ -144,8 +59,8 @@ async function addHolder(id, props, meta) {
       typeName: 'shape',
       type: 'frame',
       x: props.x,
-      y: 0,
-      rotation: 0,
+      y: props.y ?? 0,
+      rotation: props.rotation ?? 0,
       index: props.index,
       parentId: 'page:page',
       isLocked: false,
@@ -183,24 +98,38 @@ try {
     }
   })
 
-  await step('render returns a localhost URL and listener command', async () => {
+  await step('the bridge started a detached canvas service that knows the session', async () => {
+    const status = await serviceStatus(PORT)
+    assert.ok(status, 'no canvas service on the test port')
+    assert.equal(status.service, 'cowart-canvas')
+    assert.notEqual(status.pid, process.pid)
+    const session = status.sessions.find((entry) => entry.id === SESSION)
+    assert.ok(session?.bridge, JSON.stringify(status.sessions))
+    assert.equal(session.state, 'online')
+  })
+
+  await step('render returns a session URL and a listener command for this session', async () => {
     const result = await call('render_cowart_canvas_widget', { projectDir })
-    const { url, port, listenCommand, listenerConnected } = result.structuredContent
+    const { url, port, listenCommand, listenerConnected, sessionName, page } = result.structuredContent
     assert.equal(port, PORT)
-    assert.match(url, new RegExp(`^http://127\\.0\\.0\\.1:${PORT}/\\?projectDir=`))
-    assert.match(listenCommand, /cowart-listen\.mjs" --port \d+$/)
+    assert.match(url, new RegExp(`^http://127\\.0\\.0\\.1:${PORT}/\\?session=${SESSION}&projectDir=`))
+    assert.match(listenCommand, new RegExp(`cowart-listen\\.mjs" --port ${PORT} --session ${SESSION}$`))
     assert.equal(listenerConnected, false)
+    // A session that picks no name for itself gets a spare one.
+    assert.ok(sessionName, 'no session name')
+    assert.equal(page, null)
     origin = `http://127.0.0.1:${port}`
     pageUrl = url
   })
 
-  await step('canvas page is served with the Claude bridge and a CSP', async () => {
+  await step('canvas page is served with the Claude bridge, its session and a CSP', async () => {
     const response = await fetch(pageUrl)
     assert.equal(response.status, 200)
     assert.match(response.headers.get('content-security-policy') ?? '', /default-src 'self'/)
     const html = await response.text()
     assert.ok(html.includes('id="cowartClaudeBridge"'))
     assert.ok(html.includes('window.__COWART_CLAUDE__='))
+    assert.ok(html.includes(`"session":"${SESSION}"`))
     assert.ok(html.includes('window.__cowartHostConfig='))
     for (const script of ['kit', 'canvas-chrome', 'video-playback', 'ai-video', 'ai-image', 'web-reference']) {
       assert.ok(html.includes(`id="cowartShared-${script}"`), `missing ${script}`)
@@ -219,10 +148,10 @@ try {
     const state = await api('/api/tools/call', { name: 'get_cowart_canvas_state', arguments: { projectDir, canvasDir } })
     assert.equal(state.structuredContent.storage, 'per-page')
     const analytics = await api('/api/tools/call', { name: 'track_cowart_analytics_event', arguments: {} })
-    assert.equal(analytics.structuredContent.skippedBy, 'cowart-claude-adapter')
+    assert.equal(analytics.structuredContent.skippedBy, 'cowart-canvas-service')
   })
 
-  await step('insert_cowart_image via the adapter, summarized with local paths', async () => {
+  await step('insert_cowart_image via the bridge, summarized with local paths', async () => {
     const inserted = await call('insert_cowart_image', { imagePath: join(FIXTURES, 'tiny.png') })
     assert.ok(!inserted.isError, text(inserted))
     imageShapeId = inserted.structuredContent.shapeId
@@ -259,7 +188,7 @@ try {
   })
 
   await step('a stale page save cannot drop a freshly inserted video', async () => {
-    const stale = JSON.parse(await readFile(join(FIXTURES, 'empty-canvas.json'), 'utf8'))
+    const stale = JSON.parse(await readFile(EMPTY_CANVAS, 'utf8'))
     const current = await api('/api/tools/call', { name: 'get_cowart_canvas_state', arguments: { projectDir, canvasDir } })
     // Simulate a page that loaded before the video existed and never polled since.
     const pageStore = { ...current.structuredContent.snapshot.store }
@@ -274,14 +203,15 @@ try {
     assert.ok(after.structuredContent.snapshot.store[videoShapeId], 'video was dropped')
   })
 
-  await step('canvas messages become requests delivered to one listener', async () => {
-    const pageEvents = openEvents(`${origin}/api/page-events?token=${token}`, {})
-    const agent = openEvents(`${origin}/api/agent-events`, { 'x-cowart-token': token })
+  await step('canvas messages become requests delivered to the session listener', async () => {
+    // A canvas page follows the requests of the canvas it shows (its query names the canvas).
+    const pageEvents = openEvents(`${origin}/api/page-events?${new URLSearchParams({ token, session: SESSION, canvasDir })}`)
+    const agent = openEvents(`${origin}/api/agent-events?session=${SESSION}`, { 'x-cowart-token': token })
     await Promise.all([pageEvents.ready, agent.ready])
-    await pageEvents.next((item) => item.event === 'presence' && item.data.agentOnline === true)
+    await pageEvents.next((item) => item.event === 'presence' && item.data.agentOnline === true && item.data.session === 'online')
 
     const text = '[@Cowart](plugin://cowart@cowart-github) 生成图片\n说明\n\nPrompt:\n一只猫'
-    const created = await api('/api/messages', { text, projectDir, canvasDir })
+    const created = await api('/api/messages', { text, session: SESSION, projectDir, canvasDir })
     const delivered = await agent.next((item) => item.event === 'request')
     assert.equal(delivered.data.id, created.request.id)
     assert.equal(delivered.data.title, '生成图片')
@@ -295,7 +225,7 @@ try {
     const update = await pageEvents.next((item) => item.event === 'request' && item.data.status === 'done')
     assert.equal(update.data.message, '好了')
 
-    const replacement = openEvents(`${origin}/api/agent-events`, { 'x-cowart-token': token })
+    const replacement = openEvents(`${origin}/api/agent-events?session=${SESSION}`, { 'x-cowart-token': token })
     await replacement.ready
     await agent.next((item) => item.event === 'replaced')
     replacement.close()
@@ -303,17 +233,29 @@ try {
     pageEvents.close()
   })
 
+  await step('pages opened before sessions existed, and old listener commands, are told to reopen', async () => {
+    const orphan = await fetch(`${origin}/api/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cowart-token': token },
+      body: JSON.stringify({ text: '旧页面', projectDir, canvasDir })
+    })
+    assert.equal(orphan.status, 409)
+    assert.match((await orphan.json()).error, /重新打开画布/)
+    const oldListener = await fetch(`${origin}/api/agent-events`, { headers: { 'x-cowart-token': token } })
+    assert.equal(oldListener.status, 400)
+  })
+
   await step('a pending request can be withdrawn on the canvas, and Claude hears about it', async () => {
-    const agent = openEvents(`${origin}/api/agent-events`, { 'x-cowart-token': token })
+    const agent = openEvents(`${origin}/api/agent-events?session=${SESSION}`, { 'x-cowart-token': token })
     await agent.ready
-    const created = await api('/api/messages', { text: '[@Cowart](plugin://cowart@cowart-github) 按标注修改\n\nPrompt:\n误点', projectDir, canvasDir })
+    const created = await api('/api/messages', { text: '[@Cowart](plugin://cowart@cowart-github) 按标注修改\n\nPrompt:\n误点', session: SESSION, projectDir, canvasDir })
     await agent.next((item) => item.event === 'request' && item.data.id === created.request.id)
 
     const cancel = (id) =>
       fetch(`${origin}/api/requests/cancel`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-cowart-token': token },
-        body: JSON.stringify({ id })
+        body: JSON.stringify({ id, session: SESSION })
       })
     const withdrawn = await cancel(created.request.id)
     assert.equal(withdrawn.status, 200)
@@ -460,6 +402,44 @@ try {
     assert.match(text(codexOnly), /不支持所选的图片模型/)
   })
 
+  await step('insert_cowart_image keeps the bitmap ratio: centered in an AI 图片 holder, from the top left beside an image', async () => {
+    const imageHolder = { cowartAiImageHolder: true, cowartAiImageHolderVersion: 1 }
+    const storedShapes = async () => (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
+    // krea2 answers 3:4 at 1K with 896 x 1152, a little wider than upstream's 3:4 holder (512 x 683).
+    const portrait = await writePng(join(projectDir, 'krea2-3x4.png'), 896, 1152)
+    await addHolder('shape:smokefitholder', { x: 8000, w: 512, h: 683, index: 'b10', name: 'AI 图片' }, imageHolder)
+    const inserted = await call('insert_cowart_image', { imagePath: portrait, anchorShapeId: 'shape:smokefitholder' })
+    assert.ok(!inserted.isError, text(inserted))
+    assert.deepEqual(inserted.structuredContent.bounds, { x: 8000, y: 12.5, w: 512, h: 658 })
+    assert.match(text(inserted), /896×1152）等比放进 512×683 的 AI 图片框并居中：512×658/)
+    let store = await storedShapes()
+    const fitted = store[inserted.structuredContent.shapeId]
+    assert.ok(!store['shape:smokefitholder'], 'holder was not replaced')
+    assert.deepEqual([fitted.x, fitted.y, fitted.props.w, fitted.props.h], [8000, 12.5, 512, 658])
+
+    // A turned holder: the image stays centered on it (the offset turns with the shape).
+    await addHolder('shape:smokefitturned', { x: 9500, w: 512, h: 683, rotation: Math.PI / 2, index: 'b11', name: 'AI 图片' }, imageHolder)
+    const turned = (await call('insert_cowart_image', { imagePath: portrait, anchorShapeId: 'shape:smokefitturned' })).structuredContent.bounds
+    assert.equal(turned.x, 9487.5)
+    assert.ok(Math.abs(turned.y) < 1e-9, `y ${turned.y}`)
+    assert.deepEqual([turned.w, turned.h], [512, 658])
+
+    // Beside an image, matching its size as 按标注修改 does: a square result keeps its ratio from the box's top left.
+    const square = await writePng(join(projectDir, 'square.png'), 1024, 1024)
+    const beside = await call('insert_cowart_image', { imagePath: square, anchorShapeId: fitted.id, placement: 'right' })
+    assert.ok(!beside.isError, text(beside))
+    assert.match(text(beside), /等比放进 512×658 的范围，左上对齐：512×512/)
+    store = await storedShapes()
+    const next = store[beside.structuredContent.shapeId]
+    assert.deepEqual([next.x, next.y, next.props.w, next.props.h], [8000 + 512 + 40, 12.5, 512, 512])
+
+    // An image upstream already sized to its bitmap's ratio stays as upstream placed it.
+    const plain = await call('insert_cowart_image', { imagePath: portrait, anchorShapeId: fitted.id, placement: 'below', matchAnchor: false, displayWidth: 256 })
+    assert.ok(!plain.isError, text(plain))
+    assert.doesNotMatch(text(plain), /等比放进/)
+    assert.deepEqual([plain.structuredContent.bounds.w, plain.structuredContent.bounds.h], [256, 329])
+  })
+
   await step('web reference: a local page is captured whole, and 照这个做 HTML names the page, its code and the annotations', async () => {
     // A scrolling page, served locally so the check needs no network.
     const page = http.createServer((_req, res) => {
@@ -596,10 +576,65 @@ try {
       page.close()
     }
   })
+
+  await step('an old per-project canvas moves into the one canvas: its page goes last, assets and all, the old canvas untouched', async () => {
+    // A project's canvas the way upstream saved it: one page with an image, and the manifest.
+    const oldProject = await mkdtemp(join(tmpdir(), 'cowart-claude-old-project-'))
+    try {
+      const pagesDir = join(oldProject, 'canvas', 'pages')
+      await mkdir(join(pagesDir, 'oldpage', 'assets'), { recursive: true })
+      await copyFile(join(FIXTURES, 'tiny.png'), join(pagesDir, 'oldpage', 'assets', 'old.png'))
+      const template = JSON.parse(await readFile(EMPTY_CANVAS, 'utf8'))
+      const store = {
+        'document:document': template.store['document:document'],
+        'page:oldpage': { ...template.store['page:page'], id: 'page:oldpage', name: '旧项目的页', index: 'a1' },
+        'asset:oldimage': {
+          id: 'asset:oldimage',
+          typeName: 'asset',
+          type: 'image',
+          props: { name: 'old.png', src: '/page-assets/oldpage/old.png', w: 1, h: 1, mimeType: 'image/png', isAnimated: false, fileSize: 0 },
+          meta: {}
+        },
+        'shape:oldimage': {
+          id: 'shape:oldimage',
+          typeName: 'shape',
+          type: 'image',
+          x: 0,
+          y: 0,
+          rotation: 0,
+          index: 'a1',
+          parentId: 'page:oldpage',
+          isLocked: false,
+          opacity: 1,
+          props: { assetId: 'asset:oldimage', w: 100, h: 100, playing: true, url: '', crop: null, flipX: false, flipY: false, altText: '' },
+          meta: {}
+        }
+      }
+      const oldFile = join(pagesDir, 'oldpage', 'cowart-canvas.json')
+      await writeFile(oldFile, JSON.stringify({ schema: template.schema, store }))
+      await writeFile(join(pagesDir, 'manifest.json'), JSON.stringify({ version: 1, source: 'cowart', pages: [{ id: 'page:oldpage', name: '旧项目的页', index: 'a1', path: 'pages/oldpage/cowart-canvas.json' }] }))
+      const before = await readFile(oldFile, 'utf8')
+
+      // A project directory stands for its canvas.
+      const moved = await importCanvasPages({ sources: [oldProject], into: canvasDir })
+      assert.deepEqual(moved, [{ source: oldProject, pageId: 'page:oldpage', name: '旧项目的页', assets: 1 }])
+      const again = await importCanvasPages({ sources: [join(oldProject, 'canvas')], into: canvasDir })
+      assert.equal(again[0].skipped, '画布里已经有这一页')
+
+      const stored = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
+      assert.equal(stored['page:oldpage']?.name, '旧项目的页', 'the moved page is not on the canvas')
+      assert.ok(stored['page:oldpage'].index > stored['page:page'].index, 'the moved page does not come after the others')
+      assert.ok(stored['shape:oldimage'] && stored['asset:oldimage'])
+      assert.equal((await rawGet(PORT, '/page-assets/oldpage/old.png', { host: `127.0.0.1:${PORT}`, referer: pageUrl })).statusCode, 200)
+      assert.equal(await readFile(oldFile, 'utf8'), before, 'the old canvas was changed')
+    } finally {
+      await rm(oldProject, { recursive: true, force: true }).catch(() => {})
+    }
+  })
 } finally {
-  await client.close().catch(() => {})
+  await bridge.close()
+  await stopTestService(PORT)
   await rm(projectDir, { recursive: true, force: true }).catch(() => {})
 }
 
-console.log(failures === 0 ? '\nAll smoke checks passed.' : `\n${failures} smoke check(s) failed.`)
-process.exit(failures === 0 ? 0 : 1)
+finish()

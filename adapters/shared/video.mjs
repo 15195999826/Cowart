@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 
 import { generateKeyBetween } from 'fractional-indexing'
 
-import { pageIdOfShape, pageRecords, shapeBounds, shapesOnPage } from './canvas-model.mjs'
+import { containSize, pageIdOfShape, pageRecords, shapeBounds, shapesOnPage } from './canvas-model.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -236,12 +236,7 @@ export function planVideoInHolder({ snapshot, holderShapeId, videoWidth, videoHe
 
   const bounds = shapeBounds(store, holder)
   const aspect = positiveNumber(videoWidth) && positiveNumber(videoHeight) ? videoWidth / videoHeight : bounds.w / bounds.h
-  let w = bounds.w
-  let h = w / aspect
-  if (h > bounds.h) {
-    h = bounds.h
-    w = h * aspect
-  }
+  const { w, h } = containSize(bounds, aspect)
 
   let index = holder.index
   if (holder.parentId !== pageId || typeof index !== 'string') {

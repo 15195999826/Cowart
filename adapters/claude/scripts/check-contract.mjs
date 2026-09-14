@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { REPO_ROOT, UPSTREAM_RELEASE_MANIFEST, UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
+import { REPO_ROOT, UPSTREAM_RELEASE_MANIFEST, UPSTREAM_SERVER_BUNDLE, UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
 import { UpstreamCowart } from '../../shared/upstream.mjs'
 
 // Page-side hooks the injected bridge and the shared page scripts rely on.
@@ -41,6 +41,11 @@ const WIDGET_MARKERS = [
   'insert-media'
 ]
 
+// Records upstream's server writes that the canvas service reads: an image upstream put into
+// an AI 图片 holder carries this meta, and the service centers it there when it fits the
+// image back to its bitmap's ratio (canvas-ops.mjs).
+const SERVER_MARKERS = ['cowartGeneratedForAiImageHolder']
+
 // Upstream tools and the input properties the adapter passes.
 const EXPECTED_TOOLS = {
   render_cowart_canvas_widget: ['projectDir', 'canvasDir'],
@@ -75,6 +80,11 @@ for (const marker of WIDGET_MARKERS) {
 }
 if (!widget.includes('</head>')) problems.push('widget has no </head> to inject the bridge before')
 
+const server = await readFile(UPSTREAM_SERVER_BUNDLE, 'utf8')
+for (const marker of SERVER_MARKERS) {
+  if (!server.includes(marker)) problems.push(`upstream server no longer writes "${marker}"`)
+}
+
 const storage = await import('../../../mcp/lib/canvas-storage.mjs')
 for (const name of STORAGE_EXPORTS) {
   if (typeof storage[name] !== 'function') problems.push(`mcp/lib/canvas-storage.mjs no longer exports ${name}()`)
@@ -95,7 +105,7 @@ try {
     }
   }
   for (const name of tools.keys()) {
-    if (!(name in EXPECTED_TOOLS)) notes.push(`new upstream tool ${name}: decide whether the model should see it (PAGE_ONLY_TOOLS in adapters/claude/lib/adapter.mjs)`)
+    if (!(name in EXPECTED_TOOLS)) notes.push(`new upstream tool ${name}: decide whether the model should see it (PAGE_ONLY_TOOLS in adapters/service/lib/canvas-ops.mjs)`)
   }
 } finally {
   await upstream.close()

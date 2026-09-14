@@ -1,7 +1,7 @@
-// Serializes canvas writes per canvas directory and keeps adapter-side edits from being
-// undone by a stale page autosave: freshly inserted videos must not be dropped and
-// replaced AI video holders must not come back. Upstream only protects image shapes
-// this way (protectImageRecords), so these need the same treatment here.
+// Serializes canvas writes per canvas directory and keeps service-side edits from being
+// undone by a stale page autosave: records a tool just inserted (a video, a generated image,
+// an HTML draft) must not be dropped, and replaced AI holders must not come back. Upstream
+// only protects image shapes this way (protectImageRecords), so the rest needs it here.
 const FETCH_GRACE_MS = 5_000
 const MAX_PENDING_MS = 10 * 60_000
 
@@ -22,17 +22,26 @@ export class CanvasGuard {
     }
   }
 
+  trackInsertedRecords(canvasDir, records) {
+    const entries = this.#entries(this.#inserted, canvasDir)
+    for (const record of records) {
+      if (record?.id) entries.set(record.id, { record, addedAt: Date.now(), fetchedAt: null })
+    }
+  }
+
   trackInsertedVideo(canvasDir, { shape, asset }) {
-    this.#entries(this.#inserted, canvasDir).set(shape.id, { shape, asset, addedAt: Date.now(), fetchedAt: null })
+    this.trackInsertedRecords(canvasDir, [shape, asset])
   }
 
   trackRemovedShape(canvasDir, shapeId) {
     this.#entries(this.#removed, canvasDir).set(shapeId, { addedAt: Date.now(), fetchedAt: null })
   }
 
-  // The page saves its whole store. Until the page has fetched a snapshot that reflects an
-  // adapter edit, a save that contradicts it is stale rather than a user action.
-  protectPageSave(canvasDir, snapshot) {
+  // Until the page has fetched a snapshot that reflects a service-side edit, a save that
+  // contradicts it is stale rather than a user action. A page that saves a delta cannot
+  // drop an inserted record it never saw, so only holders it may have kept are checked;
+  // a whole-canvas save (an older page) gets the inserted records back too.
+  protectPageSave(canvasDir, snapshot, { restoreInserted = true } = {}) {
     if (!snapshot?.store) return { snapshot, restored: [], dropped: [] }
     const now = Date.now()
     const restored = []
@@ -44,14 +53,14 @@ export class CanvasGuard {
     }
 
     const inserted = this.#inserted.get(canvasDir)
-    for (const [shapeId, entry] of inserted ?? []) {
-      if (store[shapeId] || this.#settled(entry, now)) {
-        inserted.delete(shapeId)
+    for (const [id, entry] of inserted ?? []) {
+      if (store[id] || this.#settled(entry, now)) {
+        inserted.delete(id)
         continue
       }
-      writable()[shapeId] = entry.shape
-      store[entry.asset.id] ??= entry.asset
-      restored.push(shapeId)
+      if (!restoreInserted) continue
+      writable()[id] = entry.record
+      restored.push(id)
     }
 
     const removed = this.#removed.get(canvasDir)
@@ -71,8 +80,8 @@ export class CanvasGuard {
   observePageFetch(canvasDir, snapshot) {
     if (!snapshot?.store) return
     const now = Date.now()
-    for (const [shapeId, entry] of this.#inserted.get(canvasDir) ?? []) {
-      if (entry.fetchedAt === null && snapshot.store[shapeId]) entry.fetchedAt = now
+    for (const [id, entry] of this.#inserted.get(canvasDir) ?? []) {
+      if (entry.fetchedAt === null && snapshot.store[id]) entry.fetchedAt = now
     }
     for (const [shapeId, entry] of this.#removed.get(canvasDir) ?? []) {
       if (entry.fetchedAt === null && !snapshot.store[shapeId]) entry.fetchedAt = now

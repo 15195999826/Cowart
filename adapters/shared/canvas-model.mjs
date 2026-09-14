@@ -54,6 +54,36 @@ export function shapeBounds(store, shape) {
   return { ...absolutePosition(store, shape), ...shapeSize(shape) }
 }
 
+// The largest size of the given aspect (width / height) that fits a w x h box.
+export function containSize(box, aspect) {
+  if (!(Number.isFinite(aspect) && aspect > 0)) return { w: box.w, h: box.h }
+  return aspect > box.w / box.h ? { w: box.w, h: box.w / aspect } : { w: box.h * aspect, h: box.h }
+}
+
+// An image shape resized to its bitmap's ratio inside the box it has now, centered in that
+// box or kept at its top left; the side it does not fill is rounded to a whole unit. Null
+// when the shape already has that ratio (to the unit) or shows a crop.
+export function fitImageToAsset(shape, asset, { center = false } = {}) {
+  const box = { w: Number(shape?.props?.w), h: Number(shape?.props?.h) }
+  const aspect = Number(asset?.props?.w) / Number(asset?.props?.h)
+  if (shape?.type !== 'image' || shape.props.crop || !(box.w > 0 && box.h > 0 && Number.isFinite(aspect) && aspect > 0)) return null
+  const size = containSize(box, aspect)
+  const w = size.w < box.w ? Math.max(1, Math.min(box.w, Math.round(size.w))) : box.w
+  const h = size.h < box.h ? Math.max(1, Math.min(box.h, Math.round(size.h))) : box.h
+  if (box.w - w < 1 && box.h - h < 1) return null
+  let x = Number(shape.x) || 0
+  let y = Number(shape.y) || 0
+  if (center) {
+    // The offset is in the shape's own frame, which turns about its top left.
+    const dx = (box.w - w) / 2
+    const dy = (box.h - h) / 2
+    const rotation = Number(shape.rotation) || 0
+    x += dx * Math.cos(rotation) - dy * Math.sin(rotation)
+    y += dx * Math.sin(rotation) + dy * Math.cos(rotation)
+  }
+  return { ...shape, x, y, props: { ...shape.props, w, h } }
+}
+
 export function shapesOnPage(snapshot, pageId) {
   const store = snapshot?.store ?? {}
   return storeRecords(snapshot).filter(

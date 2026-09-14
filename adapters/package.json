@@ -6,8 +6,12 @@
   "description": "Host adapters for the Cowart fork (Claude Code, Codex). See ../FORK.md.",
   "scripts": {
     "check:contract": "node ./claude/scripts/check-contract.mjs",
-    "test:claude": "node ./claude/scripts/smoke-test.mjs",
-    "dev:claude": "node ./claude/scripts/dev-host.mjs"
+    "test:claude": "node ./claude/scripts/smoke-test.mjs && node ./claude/scripts/multi-session-test.mjs && node ./claude/scripts/generation-test.mjs",
+    "test:multi": "node ./claude/scripts/multi-session-test.mjs",
+    "test:generation": "node ./claude/scripts/generation-test.mjs",
+    "dev:claude": "node ./claude/scripts/dev-host.mjs",
+    "service:status": "node ./service/bin/cowart-service.mjs --status",
+    "service:stop": "node ./service/bin/cowart-service.mjs --stop"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

@@ -512,24 +512,36 @@
     })
   }
 
-  // The adapter turns the panel's choices into request text (saving uploaded materials),
-  // then the host delivers it to the agent like any other canvas message.
+  // A host that generates by itself (the Claude canvas service) takes the panel's choices
+  // and runs the model on the click: { direct: true, request }. Otherwise, or when it cannot
+  // (no generation gateway on this machine), the adapter turns the choices into request text
+  // (saving uploaded materials) and the host delivers it to the agent like any other canvas
+  // message: { direct: false, text }.
   async function sendGenerationRequest({ kind, holderShapeId, body }) {
     const args = { ...body, kind, holderShapeId, ...projectArgs() }
-    let prepared
-    try {
-      prepared = await callTool(PREPARE_REQUEST_TOOL, args)
-    } catch (error) {
-      // A just-created holder may not be autosaved yet; give the page one more save cycle.
-      if (!/还没保存/.test(error.message)) throw error
-      await delay(1500)
-      prepared = await callTool(PREPARE_REQUEST_TOOL, args)
-    }
-    if (!prepared.text) throw new Error('生成请求是空的。')
     const bridge = window.cowartMcp
+    // A just-created holder may not be autosaved yet; give the page one more save cycle.
+    const retryUnsaved = async (call) => {
+      try {
+        return await call()
+      } catch (error) {
+        if (!/还没保存/.test(error.message)) throw error
+        await delay(1500)
+        return call()
+      }
+    }
+    if (kind !== 'web' && bridge && typeof bridge.startGeneration === 'function') {
+      try {
+        return { direct: true, request: await retryUnsaved(() => bridge.startGeneration(args)) }
+      } catch (error) {
+        if (!error || !error.fallback) throw error
+      }
+    }
+    const prepared = await retryUnsaved(() => callTool(PREPARE_REQUEST_TOOL, args))
+    if (!prepared.text) throw new Error('生成请求是空的。')
     if (!bridge || typeof bridge.sendFollowUpMessage !== 'function') throw new Error(`${HOST_NAME} 没有可用的消息通道。`)
     await bridge.sendFollowUpMessage({ prompt: prepared.text, cowart: { kind, holderShapeId } })
-    return prepared
+    return { ...prepared, direct: false }
   }
 
   // ---- Prompt triggers (/ and @) -------------------------------------------------------
@@ -1303,10 +1315,10 @@
       draft.statusKind = ''
       render()
       try {
-        await sendGenerationRequest({ kind: spec.kind, holderShapeId: holder.id, body: { prompt: draft.prompt.trim(), ...spec.payload(ctx) } })
-        draft.status = HOST === 'codex' ? '已发送给 Codex' : `已发送，请到 ${HOST_NAME} 对话里确认`
+        const sent = await sendGenerationRequest({ kind: spec.kind, holderShapeId: holder.id, body: { prompt: draft.prompt.trim(), ...spec.payload(ctx) } })
+        draft.status = sent.direct ? '开始生成了，进度看画布顶部' : HOST === 'codex' ? '已发送给 Codex' : `已发送，请到 ${HOST_NAME} 对话里确认`
         draft.statusKind = 'sent'
-        renameHolder(holder.id, `${spec.label} · 已发送`)
+        renameHolder(holder.id, `${spec.label} · ${sent.direct ? '生成中…' : '已发送'}`)
       } catch (sendError) {
         setError(draft, sendError instanceof Error ? sendError.message : String(sendError))
       } finally {

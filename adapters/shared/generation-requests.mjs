@@ -189,7 +189,7 @@ export function buildImageRequestText({ holderShapeId, holder, settings, refs, p
   }
   lines.push(
     '- 产物用 Read 看一眼，确认没有明显问题再插入。',
-    `- 调用 insert_cowart_image：imagePath 传本地文件路径，anchorShapeId: "${holderShapeId}"（默认替换 AI 图片框，按框的大小放）。`
+    `- 调用 insert_cowart_image：imagePath 传本地文件路径，anchorShapeId: "${holderShapeId}"（默认替换 AI 图片框：图按原比例等比放进框里并居中，不用自己裁图、补边，也不用传尺寸）。`
   )
   if (settings.count > 1) {
     lines.push(
@@ -273,8 +273,11 @@ export function buildWebRequestText({ holderShapeId, holder, card, screenshotPat
   return lines.join('\n')
 }
 
-// Called for the page-only prepare tool; returns the text to send plus request metadata.
-export async function prepareGenerationRequest({ upstream, host, args = {} }) {
+// Reads what a panel sent against the stored canvas: the holder and its page, the settings
+// clamped to the model, and every material as a local file (uploads are saved next to the
+// holder). The request text for an agent and the canvas service's own generation
+// (adapters/service/lib/generation-jobs.mjs) both start from this.
+export async function resolveGeneration({ upstream, host, args = {} }) {
   const kind = args.kind === 'image' || args.kind === 'video' || args.kind === 'web' ? args.kind : null
   if (!kind) throw new Error('不支持的生成类型。')
   const label = kind === 'image' ? 'AI 图片' : kind === 'video' ? 'AI 视频' : 'AI HTML'
@@ -289,7 +292,9 @@ export async function prepareGenerationRequest({ upstream, host, args = {} }) {
   const holder = store[holderShapeId]
   // The page retries once on this wording: a just-created holder is saved a moment later.
   if (!holder) throw new Error(`${label}框还没保存到画布文件里，等一两秒再发送。`)
-  const assetsDir = join(canvasDir, 'pages', pageDirName(pageIdOfShape(store, holder) ?? 'page:page'), 'assets')
+  const pageId = pageIdOfShape(store, holder)
+  const base = { kind, holderShapeId, holder, projectDir, canvasDir, pageId, pageName: store[pageId]?.name ?? null, prompt }
+  const assetsDir = join(canvasDir, 'pages', pageDirName(pageId ?? 'page:page'), 'assets')
   const holderKey = holderShapeId.split(':')[1] || 'holder'
 
   async function resolveMaterial(material, role) {
@@ -320,7 +325,6 @@ export async function prepareGenerationRequest({ upstream, host, args = {} }) {
     return refs
   }
 
-  let text
   if (kind === 'web') {
     const card = store[nonEmpty(args.sourceShapeId) || '']
     if (!card || card.meta?.cowartWebReference !== true) throw new Error('找不到这张网页参考卡片，等一两秒再发送。')
@@ -331,16 +335,16 @@ export async function prepareGenerationRequest({ upstream, host, args = {} }) {
       if (crop && crop.kind !== 'images') throw new Error('标注截图只能是图片。')
       notes.push({ note: note.note === true, text: nonEmpty(note.text), x: Math.round(note.x), y: Math.round(note.y), cropPath: crop?.path ?? null })
     }
-    text = buildWebRequestText({
-      holderShapeId,
-      holder,
+    return {
+      ...base,
       card,
-      screenshotPath: localPathForAssetSrc(canvasDir, store[card.props?.assetId]?.props?.src),
-      htmlPath: localPathForAssetSrc(canvasDir, card.meta.cowartWebHtmlAsset),
       notes,
-      prompt
-    })
-  } else if (kind === 'video') {
+      screenshotPath: localPathForAssetSrc(canvasDir, store[card.props?.assetId]?.props?.src),
+      htmlPath: localPathForAssetSrc(canvasDir, card.meta.cowartWebHtmlAsset)
+    }
+  }
+
+  if (kind === 'video') {
     const settings = normalizeVideoSettings(args)
     const mode = args.mode === 'refs' ? 'refs' : 'frames'
     let firstFrame = null
@@ -361,16 +365,36 @@ export async function prepareGenerationRequest({ upstream, host, args = {} }) {
         }
       }
     }
-    text = buildVideoRequestText({ holderShapeId, settings, mode, firstFrame, lastFrame, refs, prompt })
-  } else {
-    if (!imageModelsForHost(host).some((model) => model.id === (args.model || 'auto'))) {
-      throw new Error('这个宿主不支持所选的图片模型。')
-    }
-    const settings = normalizeImageSettings(args, host)
-    const refs = await resolveRefs()
-    if (refs.some((ref) => ref.kind !== 'images')) throw new Error('参考图只能用图片。')
-    if (refs.length > settings.model.maxRefs) throw new Error(`${settings.model.label} 最多 ${settings.model.maxRefs} 张参考图。`)
-    text = buildImageRequestText({ holderShapeId, holder, settings, refs: refs.map((ref) => ref.path), prompt, host })
+    return { ...base, settings, mode, firstFrame, lastFrame, refs }
   }
-  return { kind, holderShapeId, projectDir, canvasDir, text }
+
+  if (!imageModelsForHost(host).some((model) => model.id === (args.model || 'auto'))) {
+    throw new Error('这个宿主不支持所选的图片模型。')
+  }
+  const settings = normalizeImageSettings(args, host)
+  const refs = await resolveRefs()
+  if (refs.some((ref) => ref.kind !== 'images')) throw new Error('参考图只能用图片。')
+  if (refs.length > settings.model.maxRefs) throw new Error(`${settings.model.label} 最多 ${settings.model.maxRefs} 张参考图。`)
+  return { ...base, settings, refs }
+}
+
+// The request text an agent gets for a resolved panel request.
+export function generationRequestText(resolved, host) {
+  const { kind, holderShapeId, holder, prompt } = resolved
+  if (kind === 'web') {
+    const { card, screenshotPath, htmlPath, notes } = resolved
+    return buildWebRequestText({ holderShapeId, holder, card, screenshotPath, htmlPath, notes, prompt })
+  }
+  if (kind === 'video') {
+    const { settings, mode, firstFrame, lastFrame, refs } = resolved
+    return buildVideoRequestText({ holderShapeId, settings, mode, firstFrame, lastFrame, refs, prompt })
+  }
+  return buildImageRequestText({ holderShapeId, holder, settings: resolved.settings, refs: resolved.refs.map((ref) => ref.path), prompt, host })
+}
+
+// Called for the page-only prepare tool; returns the text to send plus request metadata.
+export async function prepareGenerationRequest({ upstream, host, args = {} }) {
+  const resolved = await resolveGeneration({ upstream, host, args })
+  const { kind, holderShapeId, projectDir, canvasDir } = resolved
+  return { kind, holderShapeId, projectDir, canvasDir, text: generationRequestText(resolved, host) }
 }
