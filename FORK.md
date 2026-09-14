@@ -108,6 +108,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - **空闲退出**：没有会话连着、也没有打开的画布页面，10 分钟后退出（`COWART_SERVICE_IDLE_MS` 可改）。
 - **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop` 时，桥不提供工具、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
 - Claude / ZCode 网页和 Codex 原生 MCP Apps widget 使用相同的页面功能与差异保存脚本；宿主传输分别是 HTTP / SSE 和 MCP Apps 工具调用 / 轮询。共享服务保存相同的 page 与素材，切换宿主不用转换画布。
+- **Codex 媒体加载**：原生 widget 通过 MCP 分段读取视频并生成 Blob URL，资源 metadata 的 `ui.csp` / `openai/widgetCSP` 必须同时声明 `blob:` / `data:` 本地资源与 frame 权限，不能假定宿主自动放行。HTML data URL 在页面内直接解码，不经过 `fetch`。资源读取失败不再回退到原生 widget 无法访问的相对路径；视频读取或解码失败时卡片显示「视频加载失败 / 重试」。重试只使该素材的本地 resolver 失效，不修改画布记录或重载其它视频。`test:codex` 在带 CSP 的 Chromium MCP Apps 宿主夹具中验证中文 HTML、分段完整性、播放 / 暂停 / seek、同步前后 DOM / Blob 身份及读取 / 解码失败后的恢复；最终原生宿主表现仍需在 Codex 中验收。
 
 ## 反馈（2026-09-14）
 
@@ -142,3 +143,4 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 | `src/App.jsx` | 标注绑定：`cowartAnnotationNotices` 到 `registerAnnotationBindings()` 一组函数和新的 `collectAnnotationTargetShapeIds`（替换了原来按距离、颜色收集标注的辅助函数和常量）、`CowartAnnotationPointing` 的 `updateArrowEnd` / `complete` / `cancel`、`CowartAnnotationToolbarItem` 的提示、5 个按标注请求构建函数的 `annotationLines`、`handleMount` 里的注册和去掉的 `unsubscribeAnnotationEditingToolLock` 监听（均标 `[fork-patch]`） | 上游按「卡片周围一圈里的红 / 橙 / 黄箭头和文字」猜标注归谁：挨得近的卡片互相串、离得远的漏掉。改成画的时候必须指到卡片（图片 / 视频 / 网页卡片 / AI HTML / AI Slides，松手不在卡片上就撤掉并提示），箭头尖用 tldraw 箭头绑定钉在松手点、随画布保存；卡片移动时标注整条跟着走、删卡片一起删；拖箭头尖换卡片按松手点改绑，拖到空白处退回原位；写要求时回车完成（Shift+回车换行），完成后回到选择工具（去掉了上游写完字又切回标注工具的监听），没写字就结束的标注直接撤掉；新增「注释」工具（`CowartNoteTool`，蓝色虚线，`meta.cowartAnnotationNote`，常驻说明，请求里单列为背景）和各卡片工具栏的「清理标注」（`CowartClearAnnotationsButton`，只删标注、留注释；视频工具栏为此换成 `CowartVideoToolbar`）；只认「标注」「注释」工具的箭头，旧的未绑定标注在打开画布时按箭头尖位置补绑；请求里除截图外再逐条列出每个标注的字和指向的位置（占卡片宽高的百分比） | 未提（改的是上游行为，可以作为提案提） |
 | `src/App.jsx` | `followUpSender(sourceShapeId)` 及各图片 / 标注 / HTML / Slides 请求入口、Slides 截图后的页面检查（均标 `[fork-patch]`） | 开始准备截图或上传时固定来源页，通过 `message.cowart.pageId/pageName` 发给共享桥；等待期间翻页也不会把请求发给另一页负责者。Slides 需要先建新框，截图期间翻页则明确终止，避免在新页误建框 | 未提（通用消息来源元数据） |
 | `src/App.jsx` | `buildCowartAssetUrls()` 的中文语言资源补全（标 `[fork-patch]`） | 在 tldraw 校验语言包之前补齐尚缺的 `page-menu.max-pages-reached`、`page-menu.resize`，消除中文菜单缺词警告 | 未提 |
+| `src/App.jsx` | `readCowartHtmlDataUrl()`、`CowartHtmlDraftEmbed` 的来源选择、`resolveCowartTldrawAssetUrl()`、本地重试 signal 和 `CowartVideoShapeUtil` / `CowartVideoRetryBoundary`（均标 `[fork-patch]`） | HTML data URL 直接解码；相同素材的并发读取共用一个 Blob URL，换源时过滤旧请求结果。MCP 读取失败返回空并通过带素材版本的 `cowart:asset-load` 事件报告，适配层呈现视频错误；`cowart:retry-asset` 使素材缓存失效，由 React 边界订阅 signal 并只重建失败播放器，缩放后也能重试，不往共享画布写重试状态 | 未提（通用资源加载与恢复能力） |

@@ -6,6 +6,102 @@
   if (!kit || window.__cowartVideoPlayback) return
   window.__cowartVideoPlayback = true
 
+  // Media failures belong to the card, not the connection pill. A connected
+  // service does not mean a file transferred or decoded successfully.
+  const failures = new Map()
+  const notices = new Map()
+  const failureStyle = document.createElement('style')
+  failureStyle.textContent = `
+    .cowart-video-failed .tl-video-container > :not(video) { display: none !important; }
+    .cowart-video-error { position: fixed; z-index: 2147481900; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 8px; padding: 10px; box-sizing: border-box;
+      background: #fff1f2; color: #9f1239; border: 1px solid #fda4af; border-radius: 6px;
+      font: 13px/1.4 system-ui, sans-serif; text-align: center; overflow: hidden; }
+    .cowart-video-error[hidden] { display: none; }
+    .cowart-video-error button { padding: 4px 14px; cursor: pointer; }
+  `
+  document.head.appendChild(failureStyle)
+
+  function assetForVideo(video) {
+    const name = [...video.classList].find((value) => value.startsWith('tl-video-shape-'))
+    const shape = name && window.__cowartEditor?.getShape(`shape:${name.slice('tl-video-shape-'.length)}`)
+    return shape?.props.assetId
+  }
+
+  function mediaFailed(video) {
+    const assetId = assetForVideo(video)
+    if (!assetId) return
+    const message = video.error?.message || '视频被宿主阻止、文件损坏或格式不受支持。'
+    failures.set(assetId, { message, src: window.__cowartEditor.getAsset(assetId)?.props.src })
+  }
+
+  window.addEventListener('cowart:asset-load', ({ detail }) => {
+    if (!detail?.assetId) return
+    const props = window.__cowartEditor?.getAsset(detail.assetId)?.props
+    if (!props || detail.cacheKey !== [props.src ?? '', props.fileSize ?? '', props.mimeType ?? '', props.name ?? ''].join('\u001f')) return
+    if (detail.error) failures.set(detail.assetId, { message: detail.error, src: props.src })
+    else failures.delete(detail.assetId)
+  })
+
+  function renderFailures(editor) {
+    const visible = new Set()
+    for (const shape of editor.getCurrentPageShapes()) {
+      if (shape.type !== 'video') continue
+      const assetId = shape.props.assetId
+      const failure = failures.get(assetId)
+      if (!failure) continue
+      if (failure.src !== editor.getAsset(assetId)?.props.src) { failures.delete(assetId); continue }
+      visible.add(shape.id)
+      let notice = notices.get(shape.id)
+      if (!notice) {
+        const element = document.createElement('div')
+        element.className = 'cowart-video-error'
+        element.dataset.shapeId = shape.id
+        element.setAttribute('role', 'status')
+        const label = document.createElement('span')
+        const retry = document.createElement('button')
+        retry.type = 'button'
+        retry.textContent = '重试'
+        element.append(label, retry)
+        kit.stopCanvasEvents(element)
+        retry.addEventListener('click', () => {
+          const currentAssetId = editor.getShape(shape.id)?.props.assetId
+          const current = failures.get(currentAssetId)
+          if (!current) return
+          current.retrying = true
+          const src = editor.getAsset(currentAssetId)?.props.src || ''
+          if (/^\/(page-assets|assets)\//.test(src)) {
+            window.dispatchEvent(new CustomEvent('cowart:retry-asset', { detail: { assetId: currentAssetId } }))
+          } else {
+            videoElementForShape(shape.id)?.load()
+          }
+        })
+        document.body.appendChild(element)
+        notice = { element, label, retry, container: null }
+        notices.set(shape.id, notice)
+      }
+      const container = document.getElementById(shape.id)
+      notice.container?.classList.toggle('cowart-video-failed', notice.container === container)
+      container?.classList.add('cowart-video-failed')
+      notice.container = container
+      notice.label.textContent = failure.retrying ? '正在重新加载视频…' : '视频加载失败'
+      notice.element.title = failure.message
+      notice.retry.disabled = Boolean(failure.retrying)
+      const bounds = editor.getShapePageBounds(shape.id)
+      const topLeft = editor.pageToScreen({ x: bounds.minX, y: bounds.minY })
+      const bottomRight = editor.pageToScreen({ x: bounds.maxX, y: bounds.maxY })
+      Object.assign(notice.element.style, { left: `${topLeft.x}px`, top: `${topLeft.y}px`, width: `${bottomRight.x - topLeft.x}px`, height: `${bottomRight.y - topLeft.y}px` })
+      notice.element.hidden = editor.getCulledShapes().has(shape.id)
+    }
+    for (const [id, notice] of notices) {
+      if (visible.has(id)) continue
+      notice.container?.classList.remove('cowart-video-failed')
+      notice.element.remove()
+      notices.delete(id)
+    }
+    for (const id of failures.keys()) if (!editor.getAsset(id)) failures.delete(id)
+  }
+
   function formatTime(seconds) {
     const total = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
@@ -42,6 +138,10 @@
     const startVideo = (video) => {
       if (video.dataset.cowartAutoplay) return
       video.dataset.cowartAutoplay = '1'
+      // A <source> error does not bubble, so listen in capture phase as well.
+      video.addEventListener('error', () => mediaFailed(video), true)
+      video.addEventListener('loadeddata', () => failures.delete(assetForVideo(video)))
+      if (video.error || video.networkState === 3) mediaFailed(video)
       video.addEventListener('pause', () => {
         if (video.controls) video.dataset.cowartUserPaused = '1'
       })
@@ -152,6 +252,7 @@
       requestAnimationFrame(frame)
       const editor = window.__cowartEditor
       if (!editor) return
+      if (failures.size || notices.size) renderFailures(editor)
 
       const shape = editor.getOnlySelectedShape()
       const element = shape && shape.type === 'video' ? videoElementForShape(shape.id) : null

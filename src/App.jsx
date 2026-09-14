@@ -46,7 +46,9 @@ import {
   TldrawUiMenuToolItem,
   TldrawUiToolbarButton,
   TriangleToolbarItem,
+  VideoShapeUtil, // [fork-patch] subscribe to media retries in the rendered component
   XBoxToolbarItem,
+  atom, // [fork-patch] local asset retry state
   createShapeId,
   DEFAULT_EMBED_DEFINITIONS,
   onDragFromToolbarToCreateShape,
@@ -66,7 +68,7 @@ import { AllSelection } from '@tiptap/pm/state'
 import html2canvas from 'html2canvas'
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, FileCode, Image as ImageIcon, Play, X } from 'lucide-react'
 import 'tldraw/tldraw.css'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import aiHtmlToolIconRaw from './assets/ai-html.svg?raw'
 import aiImageToolIconRaw from './assets/ai-image.svg?raw'
 import aiSlidesToolIconRaw from './assets/ai-slides.svg?raw'
@@ -316,6 +318,23 @@ const iconSvgSources = import.meta.glob(
 const cowartAssetUrls = buildCowartAssetUrls()
 const cowartAssetObjectUrlCache = new Map()
 const cowartAssetSourceKeys = new Map()
+// [fork-patch] Share an in-flight read and retry only the failed asset, without
+// changing persisted records or remounting the rest of the canvas.
+const cowartAssetReads = new Map()
+const cowartAssetRetries = new Map()
+function cowartAssetRetry(assetId) {
+  if (!assetId) return null
+  if (!cowartAssetRetries.has(assetId)) {
+    cowartAssetRetries.set(assetId, { version: atom(`Cowart asset retry ${assetId}`, 0), cacheKey: null, asset: null })
+  }
+  return cowartAssetRetries.get(assetId)
+}
+window.addEventListener('cowart:retry-asset', ({ detail }) => {
+  const retry = cowartAssetRetries.get(detail?.assetId)
+  if (!retry) return
+  revokeCowartCachedAsset(retry.cacheKey)
+  retry.version.update((version) => version + 1)
+})
 const cowartHtmlDraftIframes = new Map()
 const cowartHtmlDraftDomEditSessions = new Map()
 const cowartPendingSlidesPastes = new WeakMap()
@@ -402,6 +421,27 @@ function isCowartHtmlDraftDataUrl(src) {
   return typeof src === 'string' && /^data:text\/html(?:;[^,]*)?,/i.test(src)
 }
 
+// [fork-patch] A data URL is already local content. Decoding it must not depend
+// on the host's connect-src policy (fetch(data:) can be rejected by MCP Apps).
+async function readCowartHtmlDataUrl(src) {
+  const comma = src.indexOf(',')
+  // URL percent-decoding leaves literal '%' and malformed escapes intact.
+  // decodeURIComponent instead rejects valid raw HTML such as width:100%.
+  const encoded = new TextEncoder().encode(src.slice(comma + 1))
+  const bytes = []
+  for (let index = 0; index < encoded.length; index += 1) {
+    const hex = String.fromCharCode(encoded[index + 1], encoded[index + 2])
+    if (encoded[index] === 37 && /^[\da-f]{2}$/i.test(hex)) {
+      bytes.push(parseInt(hex, 16))
+      index += 2
+    } else bytes.push(encoded[index])
+  }
+  const body = new TextDecoder().decode(new Uint8Array(bytes))
+  return /;base64$/i.test(src.slice(0, comma))
+    ? blobFromBase64(body, 'text/html;charset=utf-8').text()
+    : body
+}
+
 function cowartHtmlDraftAssetUrlFromVirtualUrl(src) {
   if (isCowartHtmlDraftAssetUrl(src)) return src
   if (typeof src !== 'string') return null
@@ -466,6 +506,10 @@ async function resolveCowartTldrawAssetUrl(asset) {
   if (!hasCowartWidgetBridge() || !isCowartLocalAssetUrl(src)) return src
 
   const cacheKey = cowartAssetCacheKey(asset)
+  // [fork-patch] Keep the current request version so late results cannot replace it.
+  const retry = cowartAssetRetry(asset.id)
+  retry.cacheKey = cacheKey
+  retry.asset = asset
   const cached = cowartAssetObjectUrlCache.get(cacheKey)
   if (cached) return cached.objectUrl
 
@@ -474,15 +518,28 @@ async function resolveCowartTldrawAssetUrl(asset) {
     revokeCowartCachedAsset(previousKey)
   }
 
+  // [fork-patch] Concurrent consumers must get one URL; otherwise a zoom/sync
+  // during loading can replace a playing video and leak the first Blob URL.
+  if (!cowartAssetReads.has(cacheKey)) {
+    const read = (async () => {
+      const pageAsset = await readCowartPageAsset(src)
+      const objectUrl = URL.createObjectURL(blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType))
+      cowartAssetObjectUrlCache.set(cacheKey, { objectUrl, src })
+      cowartAssetSourceKeys.set(src, cacheKey)
+      return objectUrl
+    })().finally(() => cowartAssetReads.delete(cacheKey))
+    cowartAssetReads.set(cacheKey, read)
+  }
   try {
-    const pageAsset = await readCowartPageAsset(src)
-    const objectUrl = URL.createObjectURL(blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType))
-    cowartAssetObjectUrlCache.set(cacheKey, { objectUrl, src })
-    cowartAssetSourceKeys.set(src, cacheKey)
-    return objectUrl
+    const url = await cowartAssetReads.get(cacheKey)
+    if (retry.cacheKey !== cacheKey) return resolveCowartTldrawAssetUrl(retry.asset)
+    window.dispatchEvent(new CustomEvent('cowart:asset-load', { detail: { assetId: asset.id, cacheKey, error: null } }))
+    return url
   } catch (error) {
-    console.warn('Cowart could not resolve local page asset through MCP; falling back to source URL.', error)
-    return src
+    if (retry.cacheKey !== cacheKey) return resolveCowartTldrawAssetUrl(retry.asset)
+    console.warn('Cowart could not resolve local page asset through MCP.', error)
+    window.dispatchEvent(new CustomEvent('cowart:asset-load', { detail: { assetId: asset.id, cacheKey, error: error.message || String(error) } }))
+    return null
   }
 }
 
@@ -3406,9 +3463,11 @@ function CowartHtmlDraftEmbed({ shape }) {
       throw lastError || new Error('HTML 草稿加载失败')
     }
 
-    const htmlSourcePromise = shouldReadPageAsset
-      ? readDraftAssetWithRetry()
-      : window.fetch(browserSourceUrl).then((response) => {
+    const htmlSourcePromise = directHtmlUrl
+      ? readCowartHtmlDataUrl(directHtmlUrl) // [fork-patch] decode local content without fetch
+      : shouldReadPageAsset
+        ? readDraftAssetWithRetry()
+        : window.fetch(browserSourceUrl).then((response) => {
           if (!response.ok) throw new Error(`HTML 草稿加载失败：${response.status}`)
           return response.text()
         })
@@ -3535,7 +3594,22 @@ class CowartEmbedShapeUtil extends CowartConfiguredEmbedShapeUtil {
   }
 }
 
-const cowartShapeUtils = [CowartFrameShapeUtil, CowartEmbedShapeUtil]
+// [fork-patch] Subscribe in React, not inside assets.resolve: tldraw calls that
+// resolver from a debounced tick after zooming, outside its reactive tracking.
+// Only an explicit retry remounts this failed player; other videos retain their DOM.
+function CowartVideoRetryBoundary({ assetId, children }) {
+  const retry = cowartAssetRetry(assetId)
+  const version = useValue('Cowart video retry', () => retry?.version.get() ?? 0, [retry])
+  return <Fragment key={version}>{children}</Fragment>
+}
+
+class CowartVideoShapeUtil extends VideoShapeUtil {
+  component(shape) {
+    return <CowartVideoRetryBoundary assetId={shape.props.assetId}>{super.component(shape)}</CowartVideoRetryBoundary>
+  }
+}
+
+const cowartShapeUtils = [CowartFrameShapeUtil, CowartEmbedShapeUtil, CowartVideoShapeUtil]
 
 // [fork-patch] Host extension hook (see FORK.md). A host adapter can set
 // window.__cowartExtensions = {

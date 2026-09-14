@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "generatedBy": "adapters/scripts/build-artifacts.mjs",
   "node": ">=22.12.0",
-  "serviceBuild": "026ca317855b66de",
+  "serviceBuild": "8e5458b29e5b9b41",
   "artifacts": {
-    "cowart-service.mjs": "ad885b2cecc4dbdcc7cc593e80f8a3f24a4723e86311044ef94ac3a13619f222",
-    "cowart-codex-mcp.mjs": "4d8079ecf4f5f442a9be69739cdf2092ed62a945f8b49f07c6cba3a5cb4d7a2b",
-    "cowart-claude-mcp.mjs": "00db4a54361333a1f86ab1be9f5f7cca5bb422a999bdd06f5e02c50e8f7ec93d",
+    "cowart-service.mjs": "19d1e8b442371ff8f10ba48eb4f9b9f70aad5c725c3f670f50164a68424f0f1d",
+    "cowart-codex-mcp.mjs": "94c214ece1dad3cb0f8d4aa532774edf92003507f506a62e656f5beb73eb847c",
+    "cowart-claude-mcp.mjs": "7a6fb76c5ccfa11c1e04634a0e14d7ca83e86cea7d09fd240f62aea6c3065bb5",
     "cowart-listen.mjs": "06816e07b3d429e696dd8aea2dcebc232a9a84bafb93c5138d4761568d82cd62"
   },
   "resources": {
@@ -20,10 +20,10 @@
     "adapters/shared/web/canvas-chrome.js": "79be90e22e1709a185073e2d3277a40a4a4ca5d34086f725cb6ba81532ca4216",
     "adapters/shared/web/kit.js": "0753963d23f52bb1f1a58dece689a1381d503d65ff2c3e761acf80a60edc23f1",
     "adapters/shared/web/service-bridge.js": "71cc8164338ddf96fbed88291e39835e778cd9a7727a7967a20018354478fc04",
-    "adapters/shared/web/video-playback.js": "1a1d69236be59b4af2ad233c2938d400e76918fbb1325f4c46cec1100af501d7",
+    "adapters/shared/web/video-playback.js": "375d985e1cf3200e7bf81a5bbc694116a3cc7bc049d66b0e9d730da5657a5fe9",
     "adapters/shared/web/web-reference.js": "30bd9b8a520d45df06cb555bd036f06eeebe47f3ec209c22614736ce39098aad",
     "mcp/generated/cowart-mcp.mjs": "fe060d355ba87221fa957d162ec15c187bf6cad98de26d35f890ca6c6a57786e",
-    "mcp/generated/cowart-widget.html": "586ed5962a5569b5181dc04745564a1fc65b24cce7e2c7bb1cf4a66a20e2302a",
-    "mcp/generated/release-manifest.json": "d5f21db20d1bf581b3d124e0501860389aeec8b3ef73416d8b9f01ce9ee797b3"
+    "mcp/generated/cowart-widget.html": "ec6f7758a9d8a6d4c0083d4a588dc8cad5c19a9c8d1c5fa82775b5d4091dc390",
+    "mcp/generated/release-manifest.json": "ed14746ec42e7ab7d05cd53fad4f9dee43e8562c70723a25d2da0983d1d61208"
   }
 }
