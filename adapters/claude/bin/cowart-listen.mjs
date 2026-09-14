@@ -10,6 +10,11 @@ import { readToken } from '../../service/lib/token.mjs'
 const GIVE_UP_MS = 120_000
 const RETRY_MS = 2_000
 const ONCE = process.argv.includes('--once')
+// --once exits after the events go quiet, not after the very first one: the service replays
+// every undelivered request the moment a listener connects, and an exit on the first event
+// would drop the rest of that burst (they are marked delivered, so nobody re-sends them).
+const ONCE_DRAIN_MS = 750
+let onceDrainTimer = null
 
 function option(name) {
   const index = process.argv.indexOf(`--${name}`)
@@ -18,6 +23,12 @@ function option(name) {
 
 function emit(line) {
   process.stdout.write(`${line}\n`)
+}
+
+// --only with --once: after the first event, wait for the burst to finish before exiting.
+function armOnceDrain() {
+  if (!ONCE || onceDrainTimer) return
+  onceDrainTimer = setTimeout(() => process.exit(0), ONCE_DRAIN_MS)
 }
 
 // The line carries what the confirmation needs, so Claude asks before any other call.
@@ -64,11 +75,11 @@ async function listenOnce(token) {
       }
       if (event === 'request') {
         emit(formatRequest(data))
-        if (ONCE) process.exit(0)
+        armOnceDrain()
       }
       if (event === 'cancelled') {
         emit(`Cowart 画布请求 #${data.id}「${data.title}」已在画布上撤销：不用处理了（如果正在用 AskUserQuestion 问用户，这条就不必再执行）`)
-        if (ONCE) process.exit(0)
+        armOnceDrain()
       }
     })
   } finally {

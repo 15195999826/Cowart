@@ -867,8 +867,10 @@ export class CanvasServer {
       return
     }
     const held = validId(session) ? this.presence.pageOf(session) : null
+    const host = validId(session) ? this.#sessions.get(session)?.host ?? null : null
     const html = await this.renderPage(url.searchParams, {
-      heldPageId: held?.canvasDir === this.canvasDir ? held.pageId : null
+      heldPageId: held?.canvasDir === this.canvasDir ? held.pageId : null,
+      host
     })
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',

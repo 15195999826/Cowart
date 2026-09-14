@@ -10,7 +10,7 @@
 
   const hostConfig = window.__cowartHostConfig || {}
   const HOST = hostConfig.host === 'codex' ? 'codex' : 'claude'
-  const HOST_NAME = HOST === 'codex' ? 'Codex' : 'Claude'
+  const HOST_NAME = hostConfig.hostName || (HOST === 'codex' ? 'Codex' : 'Claude')
   const PREPARE_REQUEST_TOOL = 'prepare_cowart_generation_request'
   const HOLDER_GAP = 40
   // Same geometry as upstream's AI image panel (getAiImageGenerationPanelLayout).

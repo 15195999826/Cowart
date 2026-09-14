@@ -19,10 +19,12 @@ import { CanvasRequestQueue } from './requests.mjs'
 import { CanvasServer } from './server.mjs'
 import { loadOrCreateToken } from './token.mjs'
 
-// The canvas served to the browser is the local-server one; its host bridge lives with the
-// Claude adapter.
+// The canvas served to the browser is the local-server one (Claude Code desktop and ZCode
+// share it); its host bridge lives with the Claude adapter. `host` is the opening session's
+// host: it only changes the wording the page shows (hostLabel), not its behavior.
 const PAGE_BRIDGE_SCRIPT = join(ADAPTERS_DIR, 'claude', 'web', 'bridge.js')
 const PAGE_HOST = 'claude'
+const PAGE_HOST_LABELS = { zcode: 'ZCode' }
 const IDLE_MS = Number(process.env.COWART_SERVICE_IDLE_MS) || 10 * 60_000
 
 export async function startCanvasService({ port }) {
@@ -42,9 +44,10 @@ export async function startCanvasService({ port }) {
 
   // The page to show: the one the session is responsible for (heldPageId), else `pageId`
   // (where the pane was when it reloaded), else `page` (a name, from older URLs).
-  async function renderPage(searchParams, { heldPageId = null } = {}) {
+  async function renderPage(searchParams, { heldPageId = null, host = null } = {}) {
     // Whatever canvas an older URL names, the page shows the machine's one canvas.
     const { projectDir } = resolveCowartPaths({ projectDir: searchParams.get('projectDir') ?? undefined })
+    const hostLabel = PAGE_HOST_LABELS[host] || null
     const config = {
       token,
       session: searchParams.get('session') || '',
@@ -54,11 +57,13 @@ export async function startCanvasService({ port }) {
       pageId: searchParams.get('pageId') || null,
       heldPageId,
       title: searchParams.get('title') || 'Cowart Canvas',
+      hostLabel,
       version: identity.version,
       protocol: identity.protocol
     }
     const hostConfig = {
       host: PAGE_HOST,
+      hostName: hostLabel || undefined,
       videoModels: VIDEO_MODELS,
       defaultVideoModelId: DEFAULT_VIDEO_MODEL_ID,
       imageModels: imageModelsForHost(PAGE_HOST),
