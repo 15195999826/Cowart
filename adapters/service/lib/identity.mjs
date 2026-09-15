@@ -70,7 +70,8 @@ function compareVersions(a, b) {
   return 0
 }
 
-function sameRoot(a, b) {
+// Checkouts and canvases, compared the way the file system does (on Windows case does not matter).
+export function samePath(a, b) {
   if (!a || !b) return false
   const normalize = (value) => (process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value))
   return normalize(a) === normalize(b)
@@ -81,7 +82,7 @@ function sameRoot(a, b) {
 export function serviceVerdict(running, mine) {
   if (running.protocol === mine.protocol && running.build === mine.build) return 'reuse'
   // Same checkout, different code: the files on disk changed since the service started.
-  if (sameRoot(running.root, mine.root)) return 'replace'
+  if (samePath(running.root, mine.root)) return 'replace'
   // Another checkout (say Codex's plugin cache): the newer version wins and a tie keeps
   // the running one, so two checkouts never take turns restarting it.
   const order = compareVersions(mine.version, running.version) || Math.sign(mine.protocol - running.protocol)

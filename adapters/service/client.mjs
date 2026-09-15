@@ -54,8 +54,10 @@ export async function probeService(port, token) {
   return { kind: 'foreign' }
 }
 
-export async function findService({ port = DEFAULT_PORT, token } = {}) {
-  for (let offset = 0; offset < PORT_ATTEMPTS; offset += 1) {
+// The first canvas service from port upward, where a bridge would find it; exact: on this
+// port and no other.
+export async function findService({ port = DEFAULT_PORT, token, exact = false } = {}) {
+  for (let offset = 0; offset < (exact ? 1 : PORT_ATTEMPTS); offset += 1) {
     const probe = await probeService(port + offset, token)
     if (probe.kind === 'cowart') return { port: port + offset, status: probe.status }
   }

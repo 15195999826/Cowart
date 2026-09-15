@@ -21,7 +21,8 @@ adapters/
                 请求队列、写入保护、令牌、身份与代码指纹（identity.mjs）、
                 画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）、
                 用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）、右键「在资源管理器中显示」（reveal-file.mjs）
-    test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）
+    test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）、
+                手动查看 / 停止（stop-test.mjs：两个联调服务各占一个测试端口、各用一张画布，给了端口的 --stop 只停那一个）
     client.mjs  给各宿主的桥用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接 / 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
                 图片 / 视频模型清单（image-models.mjs / video-models.mjs）、
@@ -97,7 +98,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 
 以前每个 Claude Code 会话各起一套（适配层 + 上游子进程 + 网页服务，空闲约 76 MB、用过画布 130–170 MB），同一画布在两个会话里开着会两边各写一份文件。现在拆成全机一个画布服务 + 每个会话一个薄桥：
 
-- **全机一个**：端口（默认 43240，`COWART_CLAUDE_PORT` 可改）就是互斥锁。桥先带令牌 `GET /api/service` 做身份检查：是画布服务就复用；是别的程序（包括还没重启的旧版每会话适配层）就往后换端口；端口空着就在后台拉起一个（`detached`，环境里去掉会话的 Claude 变量和凭据，日志写 `~/.cowart-claude/service.log`）。几个桥同时拉起时，只有一个服务绑得上端口。
+- **全机一个**：端口（默认 43240，`COWART_CLAUDE_PORT` 可改）就是互斥锁。桥先带令牌 `GET /api/service` 做身份检查：是画布服务就复用；是别的程序（包括还没重启的旧版每会话适配层）就往后换端口；端口空着就在后台拉起一个（`detached`，环境里去掉会话的 Claude 变量和凭据，日志写 `~/.cowart-claude/service.log`）。几个桥同时拉起时，只有一个服务绑得上端口。手动停（`cowart-service.mjs --stop`）不给端口时照桥的找法找，只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停；给了端口（`--port` / `COWART_CLAUDE_PORT`）就只停那一个端口上的、不往后找：往后找曾把另一个会话的联调服务停掉（2026-09-15）。
 - **一个写入方**：服务里只有一个上游子进程、一个请求队列、一套写入排队与旧快照保护，同一画布在几个会话里开着也不会两边各写一份。
 - **一张画布**：画布是服务的，不属于哪个项目，全机只有一张：`~/.cowart/canvas`（`COWART_CANVAS_DIR` 可改，只管它拉起的服务；测试和联调宿主靠它另用临时画布）。Codex、Claude Code、ZCode 的所有会话和项目都在这张画布上按页分工；页面网址和工具调用里带的 `canvasDir` 一律换成它（旧网址照样能用），`projectDir` 只说明会话在哪个项目，模型的工具不再列这两个参数。Codex 插件已改走薄桥和共享服务；旧上游插件仍按 `<项目>/canvas` 整张保存，不能直接指向共享画布，否则会删掉它没见过的页目录。以前各项目画布上的页用 `cowart-service.mjs --import <画布目录> …` 搬进来：整个页目录原样拷过去（素材地址按页目录走），排在已有的页后面，已有的页跳过，原目录不动；正在跑的新版服务会先停下（会话马上会重新拉起），旧版服务不管这张画布，可以边跑边搬。
 - **会话**：Claude 桥用 Claude 的会话 id，Codex 桥优先用 `CODEX_THREAD_ID`（测试可设 `COWART_SESSION_ID`，缺少宿主 id 时为桥进程生成唯一 id）；桥连着一条事件流表示在线。Browser 面板或原生 widget 属于打开它的会话，`get / reply / list` 只看路由到本会话的请求。桥断开 5 秒没回来算会话结束：它负责的页放掉，页面提示重新打开，没处理的请求留着，同一个会话恢复后自动接上并补发。

@@ -87,7 +87,10 @@ npm --prefix adapters run install:skill
 ```bash
 npm --prefix adapters run service:status    # 在跑的服务、连着的会话和页面
 npm --prefix adapters run service:stop      # 停掉它，下次有会话要用时自动拉起
+node adapters/service/bin/cowart-service.mjs --stop --port <端口>   # 只停这个端口上的（测试服务、联调宿主）
 ```
+
+`service:status` / `service:stop` 像会话的桥一样从 43240 往后找；`service:stop` 只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停，要停就带上它的端口。给了端口（`--port` 或 `COWART_CLAUDE_PORT`），`--stop` 就只看这一个端口，不往后找；`--status` 找到的不是问的那个端口时会说。
 
 服务日志在 `~/.cowart-claude/service.log`。
 
@@ -103,7 +106,7 @@ npm --prefix adapters run service:stop      # 停掉它，下次有会话要用�
 ## 开发与检查
 
 ```bash
-npm --prefix adapters run test:claude       # 端到端：冒烟、多会话、直接生成、反馈测试（临时项目、测试端口，不碰真实画布和反馈目录）
+npm --prefix adapters run test:claude       # 端到端：冒烟、多会话、直接生成、反馈、手动停服务测试（临时项目、测试端口，不碰真实画布和反馈目录）
 npm --prefix adapters run test:multi        # 只跑多会话测试
 npm --prefix adapters run feedback          # 反馈收件箱：列出没处理的反馈（-- show / done / wontfix / reopen <编号>）
 npm --prefix adapters run check:contract    # 同步上游后跑：适配层依赖的上游接口是否还在
