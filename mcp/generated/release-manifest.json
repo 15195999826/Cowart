@@ -1,9 +1,9 @@
 {
-  "version": "0.1.28+codex.20260915051358",
+  "version": "0.1.28+codex.20260915090548",
   "generatedBy": "scripts/build-release-artifacts.mjs",
   "artifacts": {
     "mcp-apps-global-script.mjs": "d315cfc6b5fcb9384eb3f0ef89192d87bbf6cb56db199f6340b41ed41f034e23",
     "cowart-mcp.mjs": "4aa16b7646b28a520dddde1011a8dfdac4838546d93c782150d89d48e55346ba",
-    "cowart-widget.html": "a23932ef3ce924c951c402f02a335b2bb77842f5e17935e76ab82c73dd4f0c8c"
+    "cowart-widget.html": "50161abf56d1ab4611d75f7aca743ce712050b75c92ff1feb53ad5704cfe88aa"
   }
 }
