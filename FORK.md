@@ -57,6 +57,7 @@ FORK.md         本文件
 - 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成和反馈测试），都过了再推送。
 - 有补丁点以后，改了 `src/` 就要在仓库根目录 `npm ci && npm run build:artifacts` 重新生成 `mcp/generated/`，并和源码一起提交；`npm run check:artifacts` 能核对两者是否一致。
 - 改动适配层后运行 `npm --prefix adapters run build:artifacts` 和 `check:artifacts`，提交 `adapters/generated/`；`npm --prefix adapters run probe:cold` 用临时目录中的发布文件验证不依赖 `node_modules`、既有服务和真实用户画布。原生 Codex widget 的视频、外链和完整交互仍需宿主验收，协议测试不能替代。
+- **Git marketplace 发布也要更新外层插件版本**：只有 `adapters/package.json` 版本或 `main` 提交变了，已安装的 Codex 仍可能复用 `.codex/plugins/cache/<marketplace>/cowart/<插件版本>`。发布用 plugin-creator 的 `update_plugin_cachebuster.py` 给 `.codex-plugin/plugin.json` 加一个新的 `+codex.<时间戳>` 后缀，同时同步根 `package.json`、`package-lock.json` 和 `plugin.json` 的版本，再构建两套产物、检查并推送。此后通过 `codex plugin marketplace upgrade cowart-github` / `codex plugin add cowart@cowart-github` 更新安装时，必须核对实际缓存中的适配层版本、build 与启动入口，不能只看 marketplace 指向 `main`。
 - **Windows 上构建前必须按 LF 检出**：`git config core.autocrlf false`、`git config core.eol lf`，再重新检出（`git rm -r --cached -q . && git reset -q --hard`，先把未提交的改动存好）。否则 `index.html` 和 SVG 图标会以 CRLF 被打进页面，产物跟上游对不上。
 
 ## 已核实的接缝（2026-09-11，2026-09-12 补充）
