@@ -4,6 +4,11 @@
     const app = window.__COWART_MCP_APP__
     const nativeApi = { ...window.cowartMcp }
     const ready = app.ready
+    let active = false
+    let bootstrapDone = false
+    let onActivity = () => {}
+    const activeWaiters = new Set()
+    const bootstraps = new Set()
     window.openai = window.openai || {}
     window.openai.openExternal = async ({ href }) => {
       await ready
@@ -14,7 +19,57 @@
     let stopped = false
     let cursor = null
     let timer = null
-    window.addEventListener('pagehide', () => { stopped = true; clearTimeout(timer) }, { once: true })
+    function updateActivity() {
+      const next = !stopped && !document.hidden && window.openai?.displayMode === 'fullscreen'
+      if (active === next) return
+      if (!next) window.__cowartFlushView?.().catch(() => {})
+      active = next
+      window.dispatchEvent(new CustomEvent('cowart:activity', { detail: { active } }))
+      if (active) for (const resolve of [...activeWaiters]) resolve()
+      onActivity()
+    }
+
+    function waitUntilActive(signal) {
+      if (signal?.aborted) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
+      if (active && bootstrapDone) return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        const finish = () => {
+          if (!active || !bootstrapDone) return
+          cleanup(); resolve()
+        }
+        const abort = () => { cleanup(); reject(new DOMException('The operation was aborted.', 'AbortError')) }
+        const cleanup = () => { activeWaiters.delete(finish); signal?.removeEventListener('abort', abort) }
+        activeWaiters.add(finish)
+        signal?.addEventListener('abort', abort, { once: true })
+        finish()
+      })
+    }
+
+    async function bootstrap() {
+      await ready
+      updateActivity()
+      bootstrapDone = true
+      for (const resolve of [...activeWaiters]) resolve()
+      const payload = window.openai?.toolOutput
+      const renderId = payload?.widget === 'cowart-canvas-widget' && payload.renderId
+      if (!renderId || bootstraps.has(renderId)) return
+      bootstraps.add(renderId)
+      try {
+        const { autoExpand } = await invoke({ op: 'bootstrap', renderId }, 15000)
+        if (autoExpand && !active) await nativeApi.requestDisplayMode('fullscreen')
+      } catch { bootstraps.delete(renderId) }
+      updateActivity()
+    }
+    window.addEventListener('openai:set_globals', () => { updateActivity(); bootstrap().catch(() => {}) })
+    document.addEventListener('visibilitychange', updateActivity)
+    window.addEventListener('pagehide', () => { window.__cowartFlushView?.().catch(() => {}); stopped = true; clearTimeout(timer); updateActivity() })
+    window.addEventListener('pageshow', () => { stopped = false; updateActivity() })
+    app.onteardown = async () => {
+      await Promise.allSettled([window.__cowartFlushView?.(), window.__cowartKit?.saveCanvasNow?.()])
+      stopped = true; clearTimeout(timer); updateActivity()
+      return {}
+    }
+    bootstrap().catch(() => {})
 
     async function invoke(args, timeoutMs = 120000) {
       await ready
@@ -24,6 +79,9 @@
     }
 
     async function postJson(path, body, timeoutMs) {
+      // Reads may wait for a visible canvas. Writes already initiated by the user
+      // and the final state flush must finish even while the host tears it down.
+      if (path === '/api/tools/call' && ['get_cowart_canvas_state', 'read_cowart_page_asset'].includes(body?.name)) await waitUntilActive()
       const { status, payload } = await invoke({ op: 'call', path, body }, timeoutMs)
       if (status >= 400) throw Object.assign(new Error(payload.error || `Cowart ${status}`), { status, payload })
       return payload
@@ -53,8 +111,11 @@
     }
 
     function connectEvents(onEvent, onOnline) {
+      let polling = false
       async function poll() {
-        if (stopped) return
+        clearTimeout(timer)
+        if (stopped || !active || polling) return
+        polling = true
         try {
           const result = await invoke({ op: 'poll', cursor }, 20000)
           onOnline(true)
@@ -65,10 +126,12 @@
           }
           cursor = result.cursor
         } catch { onOnline(false) }
-        if (!stopped) timer = setTimeout(poll, 1200)
+        finally { polling = false }
+        if (!stopped && active) timer = setTimeout(poll, 1200)
       }
+      onActivity = () => { clearTimeout(timer); if (active) timer = setTimeout(poll, 0) }
       poll()
     }
-    return { ready, nativeApi, postJson, connectEvents }
+    return { ready, nativeApi, postJson, connectEvents, waitUntilActive, isActive: () => active }
   }
 })()

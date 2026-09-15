@@ -110,6 +110,14 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - Claude / ZCode 网页和 Codex 原生 MCP Apps widget 使用相同的页面功能与差异保存脚本；宿主传输分别是 HTTP / SSE 和 MCP Apps 工具调用 / 轮询。共享服务保存相同的 page 与素材，切换宿主不用转换画布。
 - **Codex 媒体加载**：原生 widget 通过 MCP 分段读取视频并生成 Blob URL，资源 metadata 的 `ui.csp` / `openai/widgetCSP` 必须同时声明 `blob:` / `data:` 本地资源与 frame 权限，不能假定宿主自动放行。HTML data URL 在页面内直接解码，不经过 `fetch`。资源读取失败不再回退到原生 widget 无法访问的相对路径；视频读取或解码失败时卡片显示「视频加载失败 / 重试」。重试只使该素材的本地 resolver 失效，不修改画布记录或重载其它视频。`test:codex` 在带 CSP 的 Chromium MCP Apps 宿主夹具中验证中文 HTML、分段完整性、播放 / 暂停 / seek、同步前后 DOM / Blob 身份及读取 / 解码失败后的恢复；最终原生宿主表现仍需在 Codex 中验收。
 
+## Codex 任务切换与恢复（2026-09-15）
+
+- 当前 Codex 宿主在离开任务时会销毁 MCP Apps sandbox，插件不能保留被销毁的 DOM。`codex/web/transport.js` 仅为新的 render 调用领取一次自动展开，历史 inline 卡片不加载完整画布、视频或队列；已加载的画布收起时暂停视频和轮询，展开后恢复。
+- 存储定位由适配层的 `getStorageTarget()` 提供，不依赖易被主题通知、历史结果或错误结果覆盖的 `openai.toolOutput`。上游客户端等到有效存储参数才结束监听；首次读取可重试，并显示真实错误和「重新连接」，未读到快照前不挂载可编辑的空画布。`src/App.jsx` 在初始视角应用后发送 `cowart:canvas-ready`，共享脚本再完成首次定位，不再用 800 毫秒定时器猜测（否则可能覆盖用户刚切到的页面）。
+- 原生页的 view state（当前页、camera、视频的时间/暂停/声音/速度）按服务会话保存，与共享画布内容及其它任务分离。任务切回后用该状态恢复；明确进入另一页时清除旧视角。状态在服务内保留最多 256 个会话，服务重启或 bridge 换成新的会话标识时不承诺恢复旧播放状态。
+- `codex/web/asset-cache.js` 使用有容量限制的 IndexedDB 保存完整视频传输（总计 128 MiB、单项上限 64 MiB，按 base64 长度计）。每次重建页面都向服务校验文件版本，命中只返回小型确认；文件变化、删除、分段期间换源和重试均不能使用旧数据。宿主禁用持久存储时正常退回 MCP 分段读取。
+- `test:codex` 包含初始化通知乱序、任务状态隔离、文件版本变化、真实 iframe 销毁/重建后页/视角/暂停进度恢复、缓存视频零字节重传、历史卡片不自动展开及点击恢复；依然需要真实 Codex 宿主验证其销毁与重新加载行为。
+
 ## 反馈（2026-09-14）
 
 用户在别的项目里用 Cowart（Claude Code、ZCode、Codex 都一样）觉得哪里不舒服，说「反馈：…」，那个会话的 AI 就调 `send_cowart_feedback` 记下来；我们在本仓库里按反馈改。
@@ -136,6 +144,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 
 | 文件 | 位置 | 原因 | 上游 PR |
 |---|---|---|---|
+| `src/cowartClient.js`、`src/App.jsx` | 有效存储参数等待、适配层 storage/activity 接口、首次加载重试、错误操作、view state 去重与隐藏页轮询（均标 `[fork-patch]`） | 初始化通知可能先给主题后给存储；一次性监听会误报文件加载失败。宿主重建 sandbox 后应从权威快照和会话状态恢复，错误可重试；隐藏时不积累读取，时间戳也不应导致无变化的视角持续写入 | 未提（通用初始化与生命周期恢复） |
 | `.mcp.json`、`.codex-plugin/plugin.json` | Codex MCP 启动入口、skills 路径和插件使用文案 | 保留 MCP Apps 原生画布，入口转到 `adapters/codex/bin/start.mjs` 的已打包薄桥，skills 转到 `adapters/codex/skills/`，让 Codex 使用共享服务和分页负责规则；上游入口与根 skills 保留在仓库供同步参考 | fork 专用 |
 | `src/App.jsx` | `cowartExtensionTools()` 等三个函数、`cowartUiOverrides.translations` / `tools`、`CowartToolbar`（均标 `[fork-patch]`） | 底部工具栏是写死的 React 组件，适配层没法从外面加按钮；开一个通用的工具栏扩展接口，适配层用它加「AI 视频」（AI 组）和「网页」（`after: 'asset'`，排在媒体后面）。未注册扩展时行为与上游一致 | 未提（接口是通用的，可以提） |
 | `src/App.jsx` | `cowartPanelTakenOver()`、`CowartCanvasOverlay` 里的 AI 图片面板、`CowartAiImageStyleControls` 的提前返回（均标 `[fork-patch]`） | 上游 AI 图片面板只有「参考图 + 描述 + 发送」，没法选模型和参数，尺寸比例又放在右上角；开一个面板接管开关，适配层画一个管全部控制项的面板。未接管时行为与上游一致 | 未提 |

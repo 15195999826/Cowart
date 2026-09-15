@@ -17,14 +17,17 @@ export async function readVideoAsset(args) {
   const handle = await open(target, 'r')
   try {
     const info = await handle.stat()
+    const version = `${info.size}:${info.mtimeMs}:${info.ctimeMs}`
+    if (args.expectedVersion && args.expectedVersion !== version) throw new Error('视频读取期间文件发生变化，请重试。')
+    if (offset === 0 && args.ifVersion === version) return { assetUrl: args.assetUrl, version, notModified: true }
     const length = Math.min(CHUNK_BYTES, Math.max(0, info.size - offset))
     const buffer = Buffer.alloc(length)
     let bytesRead = 0
     while (bytesRead < length) {
       const read = await handle.read(buffer, bytesRead, length - bytesRead, offset + bytesRead)
-      if (!read.bytesRead) break
+      if (!read.bytesRead) throw new Error('视频文件未完整读取，请重试。')
       bytesRead += read.bytesRead
     }
-    return { assetUrl: args.assetUrl, mimeType: TYPES[extname(file).toLowerCase()], dataBase64: buffer.subarray(0, bytesRead).toString('base64'), totalBytes: info.size, nextOffset: offset + bytesRead < info.size ? offset + bytesRead : null }
+    return { assetUrl: args.assetUrl, version, mimeType: TYPES[extname(file).toLowerCase()], dataBase64: buffer.subarray(0, bytesRead).toString('base64'), totalBytes: info.size, nextOffset: offset + bytesRead < info.size ? offset + bytesRead : null }
   } finally { await handle.close() }
 }

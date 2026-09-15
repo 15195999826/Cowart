@@ -79,20 +79,28 @@ try {
 
   const messages = []
   const methods = []
+  const assetTransfers = []
+  let initialMode = 'inline'
+  let initialFailures = 0
+  let canvasReads = 0
   let uploadGate = null
   let assetReadGate = null
   hostServer = http.createServer((req, res) => {
     res.setHeader('content-type', 'text/html; charset=utf-8')
-    if (req.url === '/widget') {
+      if (req.url?.startsWith('/widget')) {
       res.setHeader('content-security-policy', csp)
       return res.end(widget)
     }
     res.end(`<!doctype html><title>Cowart MCP Apps host fixture</title><style>body{margin:0}iframe{border:0;width:100vw;height:100vh}</style><script>
       window.addEventListener('message', async e => {
         const m=e.data; if(!m || m.jsonrpc!=='2.0') return;
+        const target=e.source;if(!target)return;
         if(m.id===undefined) return;
-        try {const result=await window.hostRpc(m);e.source.postMessage({jsonrpc:'2.0',id:m.id,result},'*')}
-        catch(error){e.source.postMessage({jsonrpc:'2.0',id:m.id,error:{code:-32000,message:error.message}},'*')}
+        try {const result=await window.hostRpc(m);target.postMessage({jsonrpc:'2.0',id:m.id,result},'*');
+          if(m.method==='ui/initialize')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:${JSON.stringify(rendered)}},'*');
+          if(m.method==='ui/request-display-mode')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{displayMode:result.mode}},'*');
+        }
+        catch(error){target.postMessage({jsonrpc:'2.0',id:m.id,error:{code:-32000,message:error.message}},'*')}
       });
     </script><iframe src="/widget" sandbox="allow-scripts allow-same-origin allow-downloads allow-forms"></iframe>`)
   })
@@ -113,10 +121,14 @@ try {
   await page.exposeFunction('hostRpc', async (message) => {
     methods.push(message.method)
     switch (message.method) {
-      case 'ui/initialize': return { protocolVersion: '2026-01-26', hostInfo: { name: 'Cowart test host', version: '1.0.0' }, hostCapabilities: { serverTools: {}, message: { text: {} }, openLinks: {} }, hostContext: { displayMode: 'fullscreen', availableDisplayModes: ['inline', 'fullscreen'], theme: 'light' } }
+      case 'ui/initialize': return { protocolVersion: '2026-01-26', hostInfo: { name: 'Cowart test host', version: '1.0.0' }, hostCapabilities: { serverTools: {}, message: { text: {} }, openLinks: {} }, hostContext: { displayMode: initialMode, availableDisplayModes: ['inline', 'fullscreen'], theme: 'light' } }
       case 'tools/call': {
         const args = message.params.arguments
         const pageTool = message.params.name === 'cowart_canvas_app' && args?.path === '/api/tools/call' ? args.body : null
+        if (pageTool?.name === 'get_cowart_canvas_state') {
+          canvasReads++
+          if (initialFailures > 0) { initialFailures--; throw new Error('Temporary host reconnection failure') }
+        }
         if (uploadGate && pageTool?.name === 'save_cowart_reference_image' && pageTool.arguments?.holderShapeId === uploadGate.holderShapeId) {
           const gate = uploadGate
           uploadGate = null
@@ -131,7 +143,12 @@ try {
           await gate.resume
           return result
         }
-        return call(message.params.name, args)
+        const result = await call(message.params.name, args)
+        if (pageTool?.name === 'read_cowart_page_asset') {
+          const data = result.structuredContent?.payload?.structuredContent
+          assetTransfers.push({ url: pageTool.arguments.assetUrl, bytes: data?.dataBase64?.length || 0, notModified: data?.notModified === true })
+        }
+        return result
       }
       case 'ui/message': messages.push(message.params); return {}
       case 'ui/request-display-mode': return { mode: message.params.mode }
@@ -496,6 +513,102 @@ try {
     assert.equal(afterOldSettled.hasError, false, 'an obsolete response must not show an error over the new video')
     passed(`a late old ${outcome} response preserves the replacement video's playback, DOM, URL and error state`)
   }
+  // A task switch really destroys the iframe. Restore state in a new document;
+  // retain the browser profile so IndexedDB has the same lifetime as Codex's sandbox.
+  const resumeState = await frame.evaluate(async (id) => {
+    const editor = window.__cowartEditor
+    const video = document.querySelector(`video.tl-video-shape-${id.slice('shape:'.length)}`)
+    video.dataset.cowartUserPaused = '1'
+    video.pause()
+    video.currentTime = video.duration * 0.4
+    const camera = { x: 19, y: 27, z: 0.7 }
+    editor.setCamera(camera, { immediate: true, force: true })
+    await window.__cowartFlushView()
+    return { pageId: editor.getCurrentPageId(), camera, time: video.currentTime }
+  }, insertedVideo.shapeId)
+  const transfersBeforeRemount = assetTransfers.length
+  initialMode = 'fullscreen'
+  initialFailures = 1
+  const remounted = page.waitForFrame((entry) => entry.url().includes('/widget?remounted'))
+  await page.evaluate(() => {
+    document.querySelector('iframe').remove()
+    const next = document.createElement('iframe')
+    next.src = '/widget?remounted'
+    next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads allow-forms')
+    document.body.append(next)
+  })
+  frame = await remounted
+  await frame.waitForFunction((id) => {
+    const v = document.querySelector(`video.tl-video-shape-${id.slice('shape:'.length)}`)
+    return window.__cowartEditor && v?.readyState >= 2 && v.paused && v.currentTime > 0
+  }, { timeout: 30000 }, insertedVideo.shapeId)
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  const restored = await frame.evaluate((id) => {
+    const editor = window.__cowartEditor, { x, y, z } = editor.getCamera()
+    const v = document.querySelector(`video.tl-video-shape-${id.slice('shape:'.length)}`)
+    return { pageId: editor.getCurrentPageId(), camera: { x, y, z }, time: v.currentTime, paused: v.paused }
+  }, insertedVideo.shapeId)
+  assert.equal(restored.pageId, resumeState.pageId)
+  assert.deepEqual(restored.camera, resumeState.camera)
+  assert.ok(restored.paused && Math.abs(restored.time - resumeState.time) < 0.1)
+  const playing = await frame.evaluate((id) => {
+    const v = [...document.querySelectorAll('video.tl-video')].find((entry) => !entry.classList.contains(`tl-video-shape-${id.slice('shape:'.length)}`))
+    window.__playingBeforeCollapse = v
+    return { time: v.currentTime, paused: v.paused }
+  }, insertedVideo.shapeId)
+  assert.equal(playing.paused, false, 'videos that were playing must resume playing')
+  const restoredTransfers = assetTransfers.slice(transfersBeforeRemount).filter((entry) => /\.(mp4|m4v|mov|webm)(?:[?#]|$)/i.test(entry.url))
+  assert.ok(restoredTransfers.some((entry) => entry.notModified), 'reload must revalidate the cached file')
+  assert.equal(restoredTransfers.reduce((sum, entry) => sum + entry.bytes, 0), 0, 'unchanged videos must not transfer base64 again')
+  passed('destroy/remount recovers from a transient first read, restores page/camera/paused seek, and revalidates media with zero retransferred bytes')
+  await page.screenshot({ path: join(tmpdir(), 'cowart-codex-remount-qa.png') })
+
+  // Collapse the current frame, then rehydrate a historical inline card. Neither
+  // may expand itself or keep fetching the full canvas and videos in the background.
+  await frame.evaluate(() => window.cowartMcp.requestDisplayMode('inline'))
+  await frame.waitForFunction(() => window.cowartMcp.isActive() === false)
+  assert.equal(await frame.evaluate(() => window.__playingBeforeCollapse.paused), true)
+  await frame.evaluate(() => window.cowartMcp.requestDisplayMode('fullscreen'))
+  await frame.waitForFunction(() => window.__playingBeforeCollapse && !window.__playingBeforeCollapse.paused)
+  assert.equal(await frame.evaluate(() => document.contains(window.__playingBeforeCollapse)), true, 'collapse/expand must retain the live media node')
+  await frame.evaluate(() => window.cowartMcp.requestDisplayMode('inline'))
+  await frame.waitForFunction(() => !window.cowartMcp.isActive())
+  initialMode = 'inline'
+  const readsBeforeHistory = canvasReads
+  const assetsBeforeHistory = assetTransfers.length
+  const expandsBeforeHistory = methods.filter((method) => method === 'ui/request-display-mode').length
+  await page.evaluate(() => {
+    const history = document.createElement('iframe')
+    history.src = '/widget?history'
+    history.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads allow-forms')
+    document.body.append(history)
+  })
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  const history = page.frames().find((entry) => entry.url().includes('/widget?history'))
+  assert.ok(history)
+  assert.equal(await history.evaluate(() => Boolean(window.__cowartEditor)), false)
+  assert.equal(canvasReads, readsBeforeHistory)
+  assert.equal(assetTransfers.length, assetsBeforeHistory)
+  assert.equal(methods.filter((method) => method === 'ui/request-display-mode').length, expandsBeforeHistory)
+  await history.$eval('main button', (button) => button.click())
+  await history.waitForFunction(() => window.__cowartEditor, { timeout: 20000 })
+  passed('historical inline cards stay dormant without reads or auto-expansion, and open on an explicit click')
+  frame = history
+  await frame.waitForFunction(() => window.__cowartEditor?.getCamera().z === 0.7)
+  await frame.evaluate(async (id) => {
+    const editor = window.__cowartEditor
+    editor.setCurrentPage(id)
+    editor.setCamera({ x: 42, y: 33, z: 0.8 }, { immediate: true, force: true })
+    await window.__cowartFlushView()
+  }, otherPageId)
+  initialMode = 'fullscreen'
+  const viewedAgain = page.waitForFrame((entry) => entry.url().includes('/widget?viewed-again'))
+  await page.evaluate(() => { document.querySelector('iframe[src="/widget?history"]').src = '/widget?viewed-again' })
+  frame = await viewedAgain
+  await frame.waitForFunction((id) => window.__cowartEditor?.getCurrentPageId() === id && window.__cowartEditor.getCamera().z === 0.8, { timeout: 20000 }, otherPageId)
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  assert.equal(await frame.evaluate(() => window.__cowartEditor.getCurrentPageId()), otherPageId, 'the page being viewed survives independently of the page this session owns')
+  passed('a task returns to the page it was viewing, even when it owns a different page')
   assert.deepEqual(directAssetRequests, [], 'the native widget must never fall back to relative page-asset HTTP requests')
   const screenshot=join(tmpdir(),'cowart-codex-native-qa.png')
   await page.screenshot({path:screenshot})

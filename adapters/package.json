@@ -1,6 +1,6 @@
 {
   "name": "cowart-adapters",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Host adapters for the Cowart fork (Claude Code, ZCode, Codex). See ../FORK.md.",
@@ -22,7 +22,7 @@
     "build:artifacts": "node ./scripts/build-artifacts.mjs",
     "check:artifacts": "node ./scripts/build-artifacts.mjs --check",
     "probe:cold": "node ./scripts/probe-cold-install.mjs",
-    "test:codex": "node ./codex/scripts/smoke-test.mjs"
+    "test:codex": "node --test ./codex/scripts/client-test.mjs ./service/test/widget-transport-test.mjs ./service/test/video-assets-test.mjs && node ./codex/scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

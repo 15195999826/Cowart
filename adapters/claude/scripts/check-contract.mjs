@@ -16,6 +16,7 @@ const WIDGET_MARKERS = [
   'openai:set_globals',
   'toolOutput',
   '__cowartEditor',
+  'cowart:canvas-ready',
   'getSelectedShapes',
   '__cowartExtensions?.tools',
   '__cowartExtensions?.panels',

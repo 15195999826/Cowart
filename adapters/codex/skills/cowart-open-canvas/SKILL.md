@@ -19,6 +19,8 @@ description: Open, reopen, or explicitly refresh the native Cowart MCP Apps canv
 
 工具返回 `openai/outputTemplate: ui://widget/cowart/canvas.html`，由 Codex 渲染原生 widget。无需打开 Browser 面板、启动旧本地网页脚本或运行 Claude 的 Monitor。当前会话工具不可见时先做工具发现再重试，不因一次没找到就要求用户开新任务。
 
+工具成功只表示已请求打开并选定页面，不能据此宣称界面已经加载完成。首次新调用会展开原生画布；切换任务时历史卡片保持轻量状态，可点「打开 Cowart 画布」展开。宿主销毁后会恢复本任务的页、视角和播放状态，并校验缓存视频，避免重新传输未变化的文件。实际有加载错误时再诊断或使用「重新连接」，不要用连续 render 叠加更多历史卡片。
+
 ## 共用 page
 
 画布在全机共享服务的 `~/.cowart/canvas`，Codex、Claude Code 和 ZCode 的所有项目共用同一组 page、素材和负责关系。**不传 `projectDir` / `canvasDir`**，也不在当前项目下创建画布目录。

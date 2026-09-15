@@ -32,6 +32,8 @@ export async function startCodexBridge() {
   const service = new CanvasServiceClient({ host: 'codex', session, cwd: process.cwd(), port: Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT })
   const server = new Server({ name: 'cowart_mcp', version: VERSION }, { capabilities: { tools: {}, resources: {} }, instructions: INSTRUCTIONS })
   let opened = null
+  let latestRenderId = null
+  let expandedRenderId = null
   let closing = false
   const shutdown = () => { if (closing) return; closing = true; service.close(); process.exit(0) }
   server.onclose = shutdown
@@ -52,7 +54,7 @@ export async function startCodexBridge() {
     })
     return { tools: [...own, ...(await service.call('model-tools')).tools, {
       name: APP_TOOL, description: 'Private canvas transport: widget page tools, events and request delivery.',
-      inputSchema: { type: 'object', properties: { op: { type: 'string', enum: ['call', 'poll'] }, pane: { type: 'string' }, path: { type: 'string' }, body: { type: 'object' }, cursor: {} }, required: ['op', 'pane'] },
+      inputSchema: { type: 'object', properties: { op: { type: 'string', enum: ['call', 'poll', 'bootstrap'] }, pane: { type: 'string' }, renderId: { type: 'string' }, path: { type: 'string' }, body: { type: 'object' }, cursor: {} }, required: ['op', 'pane'] },
       _meta: { ui: { visibility: ['app'] }, 'openai/widgetAccessible': true },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
     }] }
@@ -63,13 +65,16 @@ export async function startCodexBridge() {
     await ready
     opened = await service.call('open-canvas')
     const config = { ...opened, host: 'codex', hostLabel: 'Codex', protocol: PROTOCOL, version: VERSION }
-    const [raw, transport, runtime, shared] = await Promise.all([
+    const [raw, transport, cache, runtime, shared] = await Promise.all([
       readUpstreamWidgetHtml(), readFile(join(ADAPTERS_DIR, 'codex', 'web', 'transport.js'), 'utf8'),
+      readFile(join(ADAPTERS_DIR, 'codex', 'web', 'asset-cache.js'), 'utf8'),
       readFile(join(ADAPTERS_DIR, 'shared', 'web', 'service-bridge.js'), 'utf8'),
       sharedPageScripts({ host: 'codex', imageModels: imageModelsForHost('codex'), defaultImageModelId: DEFAULT_IMAGE_MODEL_ID, videoModels: VIDEO_MODELS, defaultVideoModelId: DEFAULT_VIDEO_MODEL_ID })
     ])
-    const html = injectIntoHead(inlineWidget({ html: raw, appVersion: VERSION, initialDisplayMode: 'fullscreen' }), [
+    // Expansion belongs to a new model render, not every historical widget mount.
+    const html = injectIntoHead(inlineWidget({ html: raw, appVersion: VERSION }), [
       scriptTag(`window.__COWART_SERVICE_PAGE__=${jsonForInlineScript(config)};`, 'cowartServiceConfig'),
+      scriptTag(cache, 'cowartCodexAssetCache'),
       scriptTag(transport, 'cowartCodexTransport'), scriptTag(runtime, 'cowartServiceBridge'), shared
     ].join('\n'))
     return { contents: [{ uri: WIDGET_URI, mimeType: 'text/html;profile=mcp-app', text: html, _meta: RESOURCE_META }] }
@@ -81,10 +86,16 @@ export async function startCodexBridge() {
       switch (params.name) {
         case 'render_cowart_canvas_widget': {
           opened = await service.call('open-canvas', args)
-          const payload = { ...opened, version: 1, widget: 'cowart-canvas-widget', rendering: 'native-widget', preferredDisplayMode: 'fullscreen' }
-          return { ...textResult(`已打开 Cowart 原生画布。${opened.sessionName}${opened.myPage ? `负责「${opened.myPage}」` : '尚未负责任何页'}；与 Claude 共用页面和素材。`, payload), _meta: { 'openai/outputTemplate': WIDGET_URI, widgetData: payload } }
+          latestRenderId = randomUUID()
+          const payload = { ...opened, renderId: latestRenderId, version: 1, widget: 'cowart-canvas-widget', rendering: 'native-widget', preferredDisplayMode: 'fullscreen' }
+          return { ...textResult(`已请求打开 Cowart 原生画布，界面正在连接和加载。${opened.sessionName}${opened.myPage ? `负责「${opened.myPage}」` : '尚未负责任何页'}。此返回值不代表画布已经显示完成。`, payload), _meta: { 'openai/outputTemplate': WIDGET_URI, widgetData: payload } }
         }
         case APP_TOOL: {
+          if (args.op === 'bootstrap') {
+            const autoExpand = Boolean(args.renderId && args.renderId === latestRenderId && expandedRenderId !== latestRenderId)
+            if (autoExpand) expandedRenderId = latestRenderId
+            return textResult('Cowart widget lifecycle', { autoExpand })
+          }
           if (!['call', 'poll'].includes(args.op)) throw new Error('Unknown widget operation')
           return textResult('Cowart app response', await service.call(args.op === 'poll' ? 'widget-poll' : 'widget-call', args))
         }

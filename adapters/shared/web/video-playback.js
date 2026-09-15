@@ -5,6 +5,35 @@
   const kit = window.__cowartKit
   if (!kit || window.__cowartVideoPlayback) return
   window.__cowartVideoPlayback = true
+  const isActive = () => !document.hidden && window.cowartMcp?.isActive?.() !== false
+  const remembered = new Map()
+  const restoring = new WeakSet()
+  const identity = (video) => {
+    const name = [...video.classList].find((value) => value.startsWith('tl-video-shape-'))
+    const shapeId = name && `shape:${name.slice('tl-video-shape-'.length)}`
+    const editor = window.__cowartEditor
+    const shape = shapeId && editor?.getShape(shapeId)
+    const props = shape && editor.getAsset(shape.props.assetId)?.props
+    return props ? { shapeId, source: [props.src, props.fileSize, props.mimeType, props.name].join('\u001f') } : null
+  }
+  function remember(video) {
+    const id = identity(video)
+    if (!id || restoring.has(video) || video.readyState < 1) return
+    remembered.set(id.shapeId, { source: id.source, time: video.currentTime, paused: Boolean(video.dataset.cowartUserPaused), muted: video.muted, rate: video.playbackRate })
+    if (remembered.size > 256) remembered.delete(remembered.keys().next().value)
+  }
+  window.__cowartVideoState = {
+    capture() {
+      document.querySelectorAll('video.tl-video').forEach(remember)
+      return Object.fromEntries(remembered)
+    },
+    restore(state) {
+      if (!state || typeof state !== 'object') return
+      for (const [key, value] of Object.entries(state).slice(0, 256)) {
+        if (value && typeof value.source === 'string' && Number.isFinite(value.time) && value.time >= 0) remembered.set(key, value)
+      }
+    }
+  }
 
   // Media failures belong to the card, not the connection pill. A connected
   // service does not mean a file transferred or decoded successfully.
@@ -131,29 +160,60 @@
   // again (browsers pause them in hidden tabs), and leave videos the user paused alone.
   function autoplayCanvasVideos() {
     const resume = (video) => {
-      if (video.paused && !video.controls && !video.dataset.cowartUserPaused && !document.hidden) {
+      if (video.paused && !video.controls && !video.dataset.cowartUserPaused && isActive() && !restoring.has(video)) {
         video.play().catch(() => {})
       }
     }
     const startVideo = (video) => {
       if (video.dataset.cowartAutoplay) return
       video.dataset.cowartAutoplay = '1'
+      const restore = () => {
+        const id = identity(video)
+        const saved = id && remembered.get(id.shapeId)
+        if (!saved || saved.source !== id.source) return
+        restoring.add(video)
+        if (saved.paused) video.dataset.cowartUserPaused = '1'
+        else delete video.dataset.cowartUserPaused
+        video.muted = saved.muted !== false
+        if (saved.rate > 0 && saved.rate <= 16) video.playbackRate = saved.rate
+        const finish = () => {
+          restoring.delete(video)
+          if (saved.paused || !isActive()) video.pause()
+          else resume(video)
+        }
+        const time = Number.isFinite(video.duration) ? Math.min(saved.time, Math.max(0, video.duration - 0.01)) : saved.time
+        if (Math.abs(video.currentTime - time) > 0.01) {
+          video.addEventListener('seeked', finish, { once: true })
+          video.currentTime = time
+        } else finish()
+      }
+      if (video.readyState >= 1) restore()
+      else video.addEventListener('loadedmetadata', restore, { once: true })
+      video.addEventListener('timeupdate', () => { if (isActive()) remember(video) })
+      video.addEventListener('seeked', () => remember(video))
+      video.addEventListener('volumechange', () => remember(video))
+      video.addEventListener('ratechange', () => remember(video))
       // A <source> error does not bubble, so listen in capture phase as well.
       video.addEventListener('error', () => mediaFailed(video), true)
       video.addEventListener('loadeddata', () => failures.delete(assetForVideo(video)))
       if (video.error || video.networkState === 3) mediaFailed(video)
       video.addEventListener('pause', () => {
-        if (video.controls) video.dataset.cowartUserPaused = '1'
+        if (video.controls && isActive() && !restoring.has(video)) video.dataset.cowartUserPaused = '1'
       })
       video.addEventListener('play', () => {
+        if (restoring.has(video)) return
+        if (!isActive()) { video.pause(); return }
         delete video.dataset.cowartUserPaused
       })
       if (video.readyState >= 2) resume(video)
       else video.addEventListener('loadeddata', () => resume(video), { once: true })
     }
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) document.querySelectorAll('video.tl-video').forEach(resume)
+    const activityChanged = () => document.querySelectorAll('video.tl-video').forEach((video) => {
+      if (isActive()) resume(video)
+      else { remember(video); video.pause() }
     })
+    document.addEventListener('visibilitychange', activityChanged)
+    window.addEventListener('cowart:activity', activityChanged)
     const scan = (root) => {
       if (root.matches && root.matches('video.tl-video')) startVideo(root)
       if (root.querySelectorAll) root.querySelectorAll('video.tl-video').forEach(startVideo)

@@ -17,8 +17,6 @@
   const MAX_TOASTS = 4
   const RESTART_WAIT_MS = 20000
   const PAGE_CHECK_MS = 400
-  // Upstream applies the first canvas load, then restores the saved view, right after it arrives.
-  const FIRST_LOAD_SETTLE_MS = 800
 
   const hostCapabilities = { message: { text: {} }, serverTools: {}, host: 'claude-code' }
   const toolOutput = {
@@ -163,7 +161,7 @@
   const pages = (() => {
     let editor = null
     let loaded = false
-    let loadTimer = null
+    let snapshotArrived = false
     let connected = false
     let reported = null
     // From the service: { pages: { [pageId]: { holder } }, names: { [session]: name } }
@@ -172,14 +170,14 @@
     let pendingGoto = null
     // Pages this pane has shown: tldraw remembers their cameras, new ones get fitted to content.
     const visited = new Set()
+    let restoredPageId = null
 
-    const findEditor = setInterval(() => {
-      if (!window.__cowartEditor) return
-      clearInterval(findEditor)
-      editor = window.__cowartEditor
+    window.addEventListener('cowart:canvas-ready', ({ detail }) => {
+      editor = detail.editor
       sync.attach(editor)
+      finishInitialLoad()
       applyRole()
-    }, 250)
+    })
 
     function randomPageId() {
       return `page:${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36)}`
@@ -190,7 +188,7 @@
     // creates the pages it hands to sessions).
     function requestedPage() {
       const all = editor.getPages()
-      for (const id of [config.heldPageId, config.pageId]) {
+      for (const id of [restoredPageId, config.heldPageId, config.pageId]) {
         const page = id && all.find((entry) => entry.id === id)
         if (page) return page
       }
@@ -219,6 +217,12 @@
     // URL asks for a page, the saved view only stays if it is of that very page.
     function adjustFirstView(structured) {
       const store = structured && structured.snapshot && structured.snapshot.store
+      if (structured?.sessionViewState && store?.[structured.viewState?.currentPageId]) {
+        restoredPageId = structured.viewState.currentPageId
+        visited.add(restoredPageId)
+        pendingGoto = null
+        return
+      }
       if (!store || !(config.heldPageId || config.pageId || config.page)) return
       const byName = config.page && Object.values(store).find((record) => record && record.typeName === 'page' && record.name === config.page)
       const wanted = [config.heldPageId, config.pageId].find((id) => id && store[id]) || (byName && byName.id) || null
@@ -227,20 +231,23 @@
       else visited.add(wanted)
     }
 
-    function goTo(pageId) {
+    function goTo(pageId, initial = false) {
+      if (initial && restoredPageId) return
+      if (!initial) restoredPageId = null
       pendingGoto = pageId
       check()
     }
 
     function canvasLoaded() {
-      if (loaded || loadTimer) return
-      loadTimer = setTimeout(() => {
-        loadTimer = null
-        if (!editor) return
-        loaded = true
-        openRequestedPage()
-        check()
-      }, FIRST_LOAD_SETTLE_MS)
+      snapshotArrived = true
+      finishInitialLoad()
+    }
+
+    function finishInitialLoad() {
+      if (loaded || !snapshotArrived || !editor) return
+      loaded = true
+      openRequestedPage()
+      check()
     }
 
     function send(pageId) {
@@ -341,15 +348,24 @@
   function installApi() {
   window.cowartMcp = {
     ...(transport?.nativeApi || {}),
+    getStorageTarget: () => ({ projectDir: config.projectDir, canvasDir: config.canvasDir }),
+    ...(transport ? { waitUntilActive: transport.waitUntilActive, isActive: transport.isActive } : {}),
     async callServerTool(request, options) {
       const name = request && request.name
       let args = (request && request.arguments) || {}
       let delta = null
+      if (transport && name === 'save_cowart_view_state') {
+        if (!transport.isActive()) return { structuredContent: { ok: true, inactive: true } }
+        args = { ...args, viewState: { ...args.viewState, cowartPlayback: window.__cowartVideoState?.capture() } }
+      }
       if (name === 'save_cowart_canvas_state') {
         delta = sync.delta(args.snapshot)
         if (delta) args = { ...args, cowartDelta: { put: delta.put, remove: delta.remove } }
       }
-      const result = await postJson('/api/tools/call', { name, arguments: args }, (options && options.timeoutMs) || 120000)
+      const read = (input) => postJson('/api/tools/call', { name, arguments: input }, (options && options.timeoutMs) || 120000)
+      const result = transport && name === 'read_cowart_page_asset' && /\.(mp4|m4v|mov|webm)(?:[?#]|$)/i.test(args.assetUrl || '')
+        ? await window.__cowartReadCachedVideo(args, read)
+        : await read(args)
       if (name === 'read_cowart_page_asset' && !result.isError && result.structuredContent?.nextOffset != null) {
         const parts = [result.structuredContent.dataBase64]
         let next = result.structuredContent.nextOffset
@@ -367,6 +383,7 @@
         if (!firstStateSeen) {
           firstStateSeen = true
           pages.adjustFirstView(result.structuredContent)
+          window.__cowartVideoState?.restore(result.structuredContent?.viewState?.cowartPlayback)
         }
         pages.canvasLoaded()
         // Upstream applies the snapshot as soon as this returns; look at what it kept then.
@@ -429,6 +446,16 @@
   }
   installApi()
   transport?.ready.then(installApi).catch(() => {})
+
+  // View/media state is session-local and flushes before native sandbox teardown.
+  if (transport) {
+    window.__cowartFlushView = async () => {
+      if (!window.__cowartEditor || !transport.isActive() || !firstStateSeen) return
+      const viewState = { ...window.__cowartViewState(), cowartPlayback: window.__cowartVideoState?.capture(), updatedAt: new Date().toISOString() }
+      await postJson('/api/tools/call', { name: 'save_cowart_view_state', arguments: { viewState } }, 8000)
+    }
+    setInterval(() => window.__cowartFlushView().catch(() => {}), 1000)
+  }
 
   function publishGlobals() {
     window.dispatchEvent(new CustomEvent('openai:set_globals', { detail: { globals: window.openai } }))
@@ -784,7 +811,7 @@
       case 'presence': overlay.setPresence(data); break
       case 'page-state': pages.setState(data); break
       case 'pages-deleted': pages.removePages(data.pageIds || []); break
-      case 'goto-page': pages.goTo(data.pageId); break
+      case 'goto-page': pages.goTo(data.pageId, data.initial === true); break
       case 'requests': for (const request of data.requests || []) overlay.upsert(request); break
       case 'request': overlay.upsert(data); break
     }

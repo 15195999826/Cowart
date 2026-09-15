@@ -165,6 +165,9 @@ export class CanvasServer {
   #pageStreams = new Map()
   #paneTimers = new Map()
   #widgets
+  // Viewing a canvas is local to a task. Native sandbox documents are disposable;
+  // their last view and playback state survive here while the service is running.
+  #widgetViews = new Map()
   #deliveryClaims = new Map()
   #deliveryReceipts = new Map()
   // Where the last «打开 Cowart 画布» pointed (path and query), for a bare address.
@@ -352,7 +355,24 @@ export class CanvasServer {
         case '/api/tools/call': {
           const args = body.arguments && typeof body.arguments === 'object' ? body.arguments : {}
           const pane = paneId ? this.#paneContext(paneId) : undefined
+          if (widget && session && body.name === 'save_cowart_view_state') {
+            const view = args.viewState
+            if (!view || typeof view.currentPageId !== 'string' || !view.camera ||
+                !['x', 'y', 'z'].every((key) => Number.isFinite(view.camera[key])) || view.camera.z <= 0 || JSON.stringify(view).length > 256 * 1024) {
+              return reply(400, { error: '画布查看状态无效。' })
+            }
+            this.#widgetViews.delete(session.id)
+            this.#widgetViews.set(session.id, structuredClone(view))
+            if (this.#widgetViews.size > 256) this.#widgetViews.delete(this.#widgetViews.keys().next().value)
+            return reply(200, textResult('已保存本任务的画布查看状态。', { ok: true }))
+          }
           const payload = await this.ops.callFromPage(String(body.name || ''), this.#oneCanvas(args), { host, pane })
+          if (widget && session && body.name === 'get_cowart_canvas_state' && !payload.isError) {
+            const viewState = this.#widgetViews.get(session.id)
+            if (viewState && payload.structuredContent?.snapshot?.store?.[viewState.currentPageId]?.typeName === 'page') {
+              return reply(200, { ...payload, structuredContent: { ...payload.structuredContent, viewState: structuredClone(viewState), sessionViewState: true } })
+            }
+          }
           return reply(200, payload)
         }
         case '/api/panes/page': {
@@ -717,7 +737,7 @@ export class CanvasServer {
           const events = this.#pageEvents(session, this.canvasDir)
           events.find((item) => item.event === 'page-state').data.allPageIds = currentPages.map((page) => page.id)
           const held = this.presence.pageOf(session.id)
-          if (held?.canvasDir === this.canvasDir) events.push({ event: 'goto-page', data: { pageId: held.pageId } })
+          if (held?.canvasDir === this.canvasDir) events.push({ event: 'goto-page', data: { pageId: held.pageId, initial: true } })
           return events
         })
       }
@@ -788,6 +808,7 @@ export class CanvasServer {
       entered = { id: pane.pageId, name: pane.pageName ?? pane.pageId, created: false }
     }
     if (entered) {
+      if (this.#widgetViews.get(session.id)?.currentPageId !== entered.id) this.#widgetViews.delete(session.id)
       previous = this.presence.enter(session.id, target.canvasDir, entered.id).previous
       // «打开 Cowart 画布 X» while the session's canvas pane is open: the pane goes to X.
       for (const [res, stream] of this.#pageStreams) {

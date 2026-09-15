@@ -57,6 +57,7 @@ test('mixed-host page transport and atomic native-message delivery', async (t) =
   ops.ensurePage = async (_args, name) => pages.find((page) => page.name === name)
   ops.callFromPage = async (name, args, context) => {
     toolCalls.push({ name, args, context })
+    if (name === 'get_cowart_canvas_state') return { structuredContent: { snapshot: { store: Object.fromEntries(pages.map((page) => [page.id, { ...page, typeName: 'page' }])) } } }
     return { structuredContent: { ok: true } }
   }
   const generationCalls = []
@@ -128,6 +129,17 @@ test('mixed-host page transport and atomic native-message delivery', async (t) =
       assert.equal((await action('native-a', 'pane-a', '/api/service/shutdown')).status, 404)
     })
     let requestId
+    await t.test('native views survive new panes and remain isolated per session', async () => {
+      const view = { currentPageId: 'page:first', camera: { x: 71, y: -29, z: 0.75 }, cowartPlayback: { 'shape:video': { time: 3.5, paused: true } } }
+      await action('native-a', 'pane-a', '/api/tools/call', { name: 'save_cowart_view_state', arguments: { viewState: view } })
+      const load = (session, pane) => action(session, pane, '/api/tools/call', { name: 'get_cowart_canvas_state' })
+      assert.deepEqual((await load('native-a', 'replacement-pane')).payload.structuredContent.viewState, view)
+      assert.equal((await load('native-b', 'pane-b')).payload.structuredContent.viewState, undefined)
+      await call('native-a', 'open-canvas', { page: 'Second' })
+      assert.equal((await load('native-a', 'replacement-pane')).payload.structuredContent.viewState, undefined)
+      // Leave responsibility as the later routing checks expect.
+      server.presence.release('native-a')
+    })
     await t.test('native message clicked elsewhere stays with its actual page owner', async () => {
       await action('native-b', 'pane-b', '/api/pages/enter')
       const sent = await action('native-a', 'pane-a', '/api/messages', { text: 'native owner request', pageId: 'page:second', pageName: 'Second' })

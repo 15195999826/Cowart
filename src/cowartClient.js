@@ -23,6 +23,10 @@ export function hasCowartWidgetBridge() {
 }
 
 function currentWidgetPayload() {
+  // [fork-patch] Service adapters own the storage boundary. Host metadata and
+  // historical/error tool results must not replace that authenticated target.
+  const target = window.cowartMcp?.getStorageTarget?.()
+  if (target) return target
   return window.openai?.toolOutput && typeof window.openai.toolOutput === 'object'
     ? window.openai.toolOutput
     : {}
@@ -81,8 +85,10 @@ async function waitForWidgetPayload(signal) {
       reject(abortError())
     }
 
-    window.addEventListener('openai:set_globals', handleGlobals, { once: true })
+    // [fork-patch] Theme/capability notifications can arrive before the payload.
+    window.addEventListener('openai:set_globals', handleGlobals)
     signal?.addEventListener('abort', handleAbort, { once: true })
+    handleGlobals()
   })
 }
 
@@ -110,6 +116,7 @@ async function fetchJson(url, options = {}) {
 
 export async function loadCowartCanvasState(signal) {
   if (hasCowartWidgetBridge()) {
+    await window.cowartMcp.waitUntilActive?.(signal)
     const state = await callCowartServerTool(
       TOOL_GET_CANVAS_STATE,
       { hydrateAssets: false },

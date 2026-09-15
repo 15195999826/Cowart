@@ -6464,29 +6464,45 @@ export default function App() {
   const [viewState, setViewState] = useState()
   const [loadError, setLoadError] = useState(null)
   const [skippedRecords, setSkippedRecords] = useState([])
+  // [fork-patch] Initial connection failures are recoverable; never mount an
+  // empty editable canvas while the authoritative snapshot is still pending.
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const [canvasActive, setCanvasActive] = useState(() => window.cowartMcp?.isActive?.() !== false)
+
+  useEffect(() => {
+    const update = () => setCanvasActive(window.cowartMcp?.isActive?.() !== false)
+    window.addEventListener('cowart:activity', update)
+    return () => window.removeEventListener('cowart:activity', update)
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
+    let retryTimer
+    let failures = 0
+    setLoadError(null)
 
     async function loadCanvas() {
       try {
         const canvasState = await loadCowartCanvasState(controller.signal)
+        if (controller.signal.aborted) return
         const sanitized = sanitizeCanvasSnapshotForTldraw(canvasState.snapshot)
         setSnapshot(sanitized.snapshot)
         setSkippedRecords(sanitized.skippedRecords)
         setViewState(canvasState.viewState ?? null)
       } catch (error) {
-        if (error.name === 'AbortError') return
+        if (error.name === 'AbortError' || controller.signal.aborted) return
+        if (failures < 3) {
+          retryTimer = window.setTimeout(loadCanvas, [500, 1500, 3000][failures++])
+          return
+        }
         setLoadError(error)
-        setSnapshot(null)
-        setViewState(null)
       }
     }
 
     loadCanvas()
 
-    return () => controller.abort()
-  }, [])
+    return () => { controller.abort(); window.clearTimeout(retryTimer) }
+  }, [loadAttempt])
 
   const handleMount = useCallback((editor) => {
     trackCanvasOpened()
@@ -6502,6 +6518,9 @@ export default function App() {
 
     editor.timers.requestAnimationFrame(() => {
       restoreCowartViewState(editor, viewState)
+      // [fork-patch] Adapters restore ownership/view exactly after tldraw has
+      // applied the initial camera, rather than guessing with a delayed timer.
+      window.dispatchEvent(new CustomEvent('cowart:canvas-ready', { detail: { editor } }))
     })
 
     async function syncSelectionState() {
@@ -6538,10 +6557,7 @@ export default function App() {
     const selectionStateTimer = window.setInterval(syncSelectionState, 250)
 
     async function syncViewState() {
-      const viewStateSnapshot = {
-        ...getCowartViewState(editor),
-        updatedAt: new Date().toISOString()
-      }
+      const viewStateSnapshot = getCowartViewState(editor)
 
       const nextViewState = JSON.stringify(viewStateSnapshot)
       if (nextViewState === lastSyncedViewState) return
@@ -6554,7 +6570,7 @@ export default function App() {
 
       isViewStateSaving = true
       try {
-        await saveCowartViewState(viewStateSnapshot)
+        await saveCowartViewState({ ...viewStateSnapshot, updatedAt: new Date().toISOString() })
       } catch (error) {
         console.error(error)
       } finally {
@@ -6665,6 +6681,8 @@ export default function App() {
     }
 
     async function loadRemoteCanvasSnapshot() {
+      // [fork-patch] A hidden native pane must not accumulate deferred polls.
+      if (window.cowartMcp?.isActive?.() === false) return
       remoteLoadController?.abort()
       const controller = new AbortController()
       remoteLoadController = controller
@@ -6798,18 +6816,20 @@ export default function App() {
     }
   }, [viewState])
 
-  if (snapshot === undefined || viewState === undefined) {
+  if (loadError) {
     return (
       <main className="cowart-status" aria-live="polite">
-        Loading canvas...
+        <div><p>画布暂时无法加载</p><p>{loadError.message}</p>
+          <button type="button" onClick={() => setLoadAttempt((value) => value + 1)}>重新连接</button>
+        </div>
       </main>
     )
   }
 
-  if (loadError) {
+  if (snapshot === undefined || viewState === undefined) {
     return (
       <main className="cowart-status" aria-live="polite">
-        Canvas file could not be loaded.
+        {canvasActive ? '正在加载画布…' : <button type="button" onClick={() => window.cowartMcp?.requestDisplayMode('fullscreen')}>打开 Cowart 画布</button>}
       </main>
     )
   }
