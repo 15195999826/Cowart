@@ -32,7 +32,7 @@ adapters/
                 kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、右键「在资源管理器中显示」、样式面板按需显示）、
                 AI 视频、接管后的 AI 图片、网页参考、视频播放
   claude/       Claude Code 适配（说明见 adapters/claude/README.md）
-    bin/        MCP 入口 cowart-claude-mcp.mjs（每个会话一个薄桥）、画布请求监听 cowart-listen.mjs（ZCode 也用，--once 见「宿主差异」）
+    bin/        MCP 入口 cowart-claude-mcp.mjs（每个会话一个薄桥）、画布请求监听 cowart-listen.mjs（Claude Code、ZCode 都用 Bash 后台跑 --once，见「宿主差异」）
     lib/        薄桥 bridge.mjs：工具定义、给 Claude 的说明、请求的宿主说明，工具都转给画布服务
     web/        Claude 网页的 HTTP / SSE 传输（bridge.js），画布行为使用 shared/web/service-bridge.js
     skills/     Claude 版 skill cowart：打开画布、画布请求怎么处理、结果放哪一页、标注怎么读（install:skill 链接进 ~/.claude/skills）
@@ -72,7 +72,7 @@ FORK.md         本文件
    - `imageToolbar: [{ id, label, title?, iconSvg?, isFor(shape), onSelect({ editor, shape, anchor }) }]`：选中图片时，`isFor` 认领的图片在上游那一排图片工具栏末尾多出这些按钮（网页参考卡片的「打开原网页」「照这个做 HTML」），样式和「按标注修改」一样。
    - `contextMenu: [{ id, label, isFor(shapes, editor), onSelect({ editor, shapes, addToast }) }]`：右键菜单在「复制为 / 导出为 / 下载原图」那组下面多一组，`isFor` 认领当前选中的图形时出现（「在资源管理器中显示」）。
    都没设置时跟上游完全一样。
-5. 共用面板先用 `prepare_cowart_generation_request` 保存上传素材、拼请求；猛兽 AI 图片 / AI 视频交画布服务直接执行，其余请求进同一队列并按页路由。Claude 通过 Monitor 收通知；Codex 由负责会话自己的 widget 领取，再用 `ui/message` 通知请求编号，模型通过 `get_cowart_request` 读取原文与状态。
+5. 共用面板先用 `prepare_cowart_generation_request` 保存上传素材、拼请求；猛兽 AI 图片 / AI 视频交画布服务直接执行，其余请求进同一队列并按页路由。Claude / ZCode 由后台跑的监听唤醒（来了请求才退出）；Codex 由负责会话自己的 widget 领取，再用 `ui/message` 通知请求编号，模型通过 `get_cowart_request` 读取原文与状态。
 6. 页面的存取调用都带上 `toolOutput` 里的 `projectDir` / `canvasDir`（`src/cowartClient.js` 的 `serverToolArgs`），上游工具也都接受 `canvasDir`。→ 一个上游子进程能服务任何画布目录；画布服务在入口把它们统一换成全机那一张（见「画布服务」的一张画布）。
 7. Claude Code 桌面版给它起的 MCP 服务进程传 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`、`CLAUDE_CODE_HOST_SESSION_ID`（桌面版会话 id）和 `CLAUDE_CODE_SESSION_ID`，进程工作目录是会话的项目目录（2026-09-12 读正在跑的 MCP 进程的环境核实）。命令行版和桌面版读同一份 MCP 配置，只能靠入口变量区分。→ 桥用会话 id 当会话标识，按入口决定提不提供工具。
 8. 页面的同步模型（`src/App.jsx` 的 `loadRemoteCanvasSnapshot` / `saveCanvas`）：每 1.6 秒拉一次整张快照，本地有未保存改动时跳过不应用；保存是整张快照（`getStoreSnapshot()`），远端同步只增改、只删 shape / asset / binding，从不删页；上游存盘时会把保存里缺的页整个目录删掉（`mcp/lib/canvas-storage.mjs` 的 `saveStoredCanvasSnapshot`）。→ 适配层在保存请求上多带一份差异（`cowartDelta`），服务按差异合并（见「画布服务」），上游文件不用改。
@@ -82,7 +82,7 @@ FORK.md         本文件
 | | Codex | Claude Code 桌面版 | ZCode |
 |---|---|---|---|
 | 画布显示 | 原生 MCP Apps widget；每个会话一个薄桥，同 Claude 共用全机画布服务、page、素材和差异保存 | 全机一个画布服务在本地提供网页，在 Browser 面板打开；每个会话只跑一个薄桥 | 同一张本地网页，ZCode 没有 Browser 面板也没有 MCP Apps widget（2026-09-14 核实：主程序包无 `ui://` 资源、无 `openai.toolOutput`），网址交给用户在任意浏览器打开；页面按打开它的会话的宿主换文案（`service.mjs` 注入 hostLabel，只改措辞不改行为） |
-| 画布 → AI 消息 | 猛兽生成由共享服务直接执行；其它请求先按页路由，再由负责会话自己的 widget 轮询领取，经 MCP Apps `ui/message` 通知编号；模型 get 原文、回 running / done / failed；目标 widget 未开时留队列，可 list 补读 | AI 图片 / AI 视频由画布服务直接生成，不经过会话、不用确认；其它请求进画布服务的队列，发给负责那一页的会话：Monitor 推事件（一次最多 30 分钟，监听快到点先提醒会话用同一条命令重开）→ 对话里确认后处理 | 生成和队列同 Claude；没有 Monitor：监听命令（`cowart-listen.mjs --once`）用 Bash 后台运行，收到一批事件（首事件后约 750ms 静默）就退出，后台任务的完成通知唤醒会话，处理完再启动一次；服务在监听重连时补发（`server.mjs` 的 deliverPending），不漏 |
+| 画布 → AI 消息 | 猛兽生成由共享服务直接执行；其它请求先按页路由，再由负责会话自己的 widget 轮询领取，经 MCP Apps `ui/message` 通知编号；模型 get 原文、回 running / done / failed；目标 widget 未开时留队列，可 list 补读 | AI 图片 / AI 视频由画布服务直接生成，不经过会话、不用确认；其它请求进画布服务的队列，发给负责那一页的会话：监听命令（`cowart-listen.mjs --once`）用 Bash 后台运行，平时一直等着、不唤醒会话，真来了请求才退出，后台任务的完成通知唤醒会话 → 对话里确认后处理，处理完再启动一次；监听没在跑时请求排队，用户说「看画布」时 `list_cowart_requests` 取走（算送达，之后的监听不再为它唤醒） | 生成、队列和监听同 Claude（同一条监听命令）：收到一批事件（首事件后约 750ms 静默）才退出；服务在监听重连时补发（`server.mjs` 的 deliverPending），不漏 |
 | 生图 | 同一 AI 图片面板与猛兽生成服务；额外提供 Codex imagegen，按页路由给负责会话用内置生图完成，结果回原 pageId | AI 图片面板按 beast-gen 模板选模型，点发送由画布服务直接调猛兽生成（面板上标着花不花钱）；上游其它按 Codex 写的生图提示词改用 beast-gen | 同 Claude（beast-gen 模板 + 直接生成）；ZCode 没装 beast-gen skill 时 `install:zcode` 会从 `~/.claude/skills` 链接一份 |
 | 视频 | 共用 AI 视频工具、生成面板、insert_cowart_video 和播放控制；widget 经 MCP 工具读取本地素材，实际解码与播放需 Codex 宿主验收 | 底部工具栏「AI 视频」（占位框 + 同款输入面板，生成后替换占位框，默认本地免费的 H3）+ `insert_cowart_video`，点发送由画布服务直接调猛兽生成；视频直接用本地服务的素材地址流式播放（服务按 Range 分段给，点开就出画面，不在页面里整段读成 Blob），画布上自动静音循环播放 | 同 Claude |
 
@@ -92,7 +92,8 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 
 - Claude Code 桌面版的 Code 标签页不渲染 MCP Apps：实测 `render_cowart_canvas_widget` 只返回 JSON，另见 [modelcontextprotocol/ext-apps#671](https://github.com/modelcontextprotocol/ext-apps/issues/671)。
 - Claude Code 的 channels 能让 MCP 服务往会话里推消息，但目前只有 CLI 能开（自建通道要加 `--dangerously-load-development-channels`），桌面版不能传启动参数。
-- Monitor 推来的事件不算用户输入，所以画布发给会话的请求每条都要在对话里确认后才执行；AI 图片 / AI 视频因此改由画布服务直接生成、不经过会话（见「画布服务」的画布直接生成）。
+- 后台通知（Monitor 事件、后台任务的完成通知）不算用户输入，所以画布发给会话的请求每条都要在对话里确认后才执行；AI 图片 / AI 视频因此改由画布服务直接生成、不经过会话（见「画布服务」的画布直接生成）。
+- （2026-09-15）画布请求怎么叫醒会话：会话挂着时不能有定时唤醒——每次唤醒都是一轮完整的模型调用，要把整段对话再读一遍，挂一晚上就是十几轮。调研结果：Monitor 每次最多 30 分钟，到点必定通知一次（没有常驻参数），不能拿来空等；桌面版的 `send_message` 只有会话里的模型能调，画布服务没有往会话里投递消息的入口；channels 只有命令行版能开。Bash / PowerShell 工具的后台任务（`run_in_background`）只在进程退出时通知一次，通知只带输出文件路径、命令描述和退出码（stdout、stderr 都写进那个文件，所以监听平时不往 stderr 写），实测跑了 30 分钟以上不被杀、期间零通知；TaskStop 会连 node 子进程一起结束，不留孤儿。所以监听改用 Bash 后台跑、只在来了请求时退出（`cowart-listen.mjs --once`；不带 --once 的旧 Monitor 命令只打一行新用法就退出）；没在跑时请求在服务里排队，用户说「看画布」时 `list_cowart_requests` 取走并记为已送达。
 
 ## 画布服务（2026-09-12）
 

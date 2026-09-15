@@ -17,7 +17,7 @@ description: Open, reopen, or explicitly refresh the native Cowart MCP Apps canv
 
 第一次打开选一个简短人名作为 `sessionName`，整个会话沿用，避开现有会话的名字。没有 `page` / `shownPage` 时打开原负责页或当前显示页；显示页空闲时自动接管，已有其他负责者则保留其负责关系，可点按钮明确接管。每个会话最多负责一页，每页同时一位负责者，翻页只是查看。
 
-工具返回 `openai/outputTemplate: ui://widget/cowart/canvas.html`，由 Codex 渲染原生 widget。无需打开 Browser 面板、启动旧本地网页脚本或运行 Claude 的 Monitor。当前会话工具不可见时先做工具发现再重试，不因一次没找到就要求用户开新任务。
+工具返回 `openai/outputTemplate: ui://widget/cowart/canvas.html`，由 Codex 渲染原生 widget。无需打开 Browser 面板、启动旧本地网页脚本或运行 Claude 的画布请求监听。当前会话工具不可见时先做工具发现再重试，不因一次没找到就要求用户开新任务。
 
 工具成功只表示已请求打开并选定页面，不能据此宣称界面已经加载完成。首次新调用会展开原生画布；切换任务时历史卡片保持轻量状态，可点「打开 Cowart 画布」展开。宿主销毁后会恢复本任务的页、视角和播放状态，并校验缓存视频，避免重新传输未变化的文件。实际有加载错误时再诊断或使用「重新连接」，不要用连续 render 叠加更多历史卡片。
 

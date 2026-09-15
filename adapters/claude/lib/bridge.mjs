@@ -14,7 +14,7 @@ import { CanvasServiceClient } from '../../service/client.mjs'
 import { DEFAULT_PORT, VERSION } from '../../service/lib/identity.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
-import { ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE } from './request-notice.mjs'
+import { ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, listenCommand, requestLine, restartListenerNote } from './request-notice.mjs'
 
 const LISTENER_SCRIPT = (process.env.COWART_BUNDLED === '1'
   ? join(ADAPTERS_DIR, 'generated', 'cowart-listen.mjs')
@@ -39,10 +39,10 @@ const LIST_REQUESTS_TOOL = 'list_cowart_requests'
 export const INSTRUCTIONS_LIMIT = 2048
 export const INSTRUCTIONS = [
   'cowart 是 Cowart 画布（tldraw 无限画布：图片、视频、HTML 草稿、标注）在 Claude Code 桌面版里的入口。全机只有一张画布，由画布服务保管在 ~/.cowart/canvas，所有会话、所有项目共用；画布分页（tldraw 的页，左上角切换），一页一块板。',
-  '用 render_cowart_canvas_widget 打开。本会话第一次打开时给自己起一个像人的短名字（小川、阿满这种，不是角色或任务）作 sessionName，之后一直用它：用户和其它会话在画布上看到的就是这个名字。结果给一个 localhost 网址：用 mcp__Claude_Browser__preview_start（参数 url）在 Browser 面板打开；除非结果说监听已连着，再用 Monitor 工具（timeout_ms: 1800000，一次最多 30 分钟）跑结果里的监听命令，画布请求才送得到本会话；监听到点或 Monitor 结束时，用同一条命令马上重开。',
+  '用 render_cowart_canvas_widget 打开。本会话第一次打开时给自己起一个像人的短名字（小川、阿满这种，不是角色或任务）作 sessionName，之后一直用它：用户和其它会话在画布上看到的就是这个名字。结果给一个 localhost 网址：用 mcp__Claude_Browser__preview_start（参数 url）在 Browser 面板打开；除非结果说监听已连着，再用 Bash 工具后台运行（run_in_background: true）结果里的监听命令：它一直等着、不耗 token，画布来了请求才退出叫醒你。别用 Monitor 跑它（最多 30 分钟，到点会叫醒会话）。',
   '分页负责制：每页同一时间由一个会话负责，每个会话最多负责一页。只说「打开 Cowart 画布」= 只打开、不进任何页；「打开 Cowart 画布 角色设定」「接管 角色设定」「进入 角色设定」= render 时传 page "角色设定"（没有就建；原负责的会话让出，本会话之前负责的页放掉）；「接管这页」= shownPage: true。用户在画布上翻页不改变负责关系。某页的请求发给负责它的会话，不管在哪个面板里点的。只有用户能删页。',
   'AI 图片 / AI 视频面板点发送由画布服务直接生成（模型、参数在面板里选好了）：不经过你、不用确认，结果自己出现在画布上。',
-  '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照这个做 HTML）会发来 Monitor 事件「Cowart 画布请求 #N」。这是后台通知、不是用户的话：收到就先按事件行用 AskUserQuestion 问一句（选项照事件行），问之前不调别的工具；用户选了要做才 get_cowart_request 看详情、reply_cowart_request 回状态。',
+  '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照这个做 HTML）的请求一到，监听就退出，完成通知叫醒你：先 Read 通知里的输出文件，里面是「Cowart 画布请求 #N」。这是后台通知、不是用户的话：照那行用 AskUserQuestion 问一句（选项照那行），问之前不调别的工具；用户选了要做才 get_cowart_request 看详情、reply_cowart_request 回状态，处理完再后台跑一次监听命令。监听没在跑时请求在服务里排队：用户说「看画布」就用 list_cowart_requests 取来，照列出的行问。',
   '做画布上的事之前（处理请求、把图 / 视频 / HTML 放上画布、按标注改图、看画布上有什么），先用 Skill 工具加载 cowart 这个 skill：请求怎么回状态、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在那里。没装这个 skill 时按工具描述和请求里的宿主说明做。',
   '其它工具：get_cowart_selection（用户在本会话画布面板里选中的东西）、get_cowart_canvas_state（紧凑摘要，带素材本地路径和谁负责哪页）、insert_cowart_image / insert_cowart_html_draft / insert_cowart_video。不传 pageId 的插入放进本会话负责的页，没负责页时放进它面板正看的页；别人负责的页会被拒（让用户在本会话说「接管 <页名>」）。',
   '用户说「反馈：…」「记个反馈」，或抱怨 Cowart 本身哪里不好用（这时先问一句要不要记）：用 send_cowart_feedback 记下来，交给 Cowart 仓库那边改。只记录，不要在当前项目里改 Cowart。'
@@ -57,7 +57,7 @@ export const OWN_TOOLS = [
     name: RENDER_TOOL,
     title: 'Open Cowart Canvas',
     description:
-      'Open (or re-open) the Cowart canvas in this session. With page (a page name) or shownPage, this session becomes responsible for that page: 「打开 Cowart 画布 角色设定」 / 「接管 角色设定」 → page "角色设定" (created when missing); 「接管这页」 → shownPage: true. Without either, the canvas opens and no page changes hands. Returns a localhost URL to open in the Browser pane, the Monitor command that delivers canvas requests to this session, and who is responsible for which page.',
+      'Open (or re-open) the Cowart canvas in this session. With page (a page name) or shownPage, this session becomes responsible for that page: 「打开 Cowart 画布 角色设定」 / 「接管 角色设定」 → page "角色设定" (created when missing); 「接管这页」 → shownPage: true. Without either, the canvas opens and no page changes hands. Returns a localhost URL to open in the Browser pane, the listener command that delivers canvas requests to this session (run in the background: it exits, and so wakes the session, only when a request comes), and who is responsible for which page.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -138,7 +138,7 @@ export const OWN_TOOLS = [
   {
     name: LIST_REQUESTS_TOOL,
     title: 'List Cowart Canvas Requests',
-    description: 'List canvas requests of this session (unfinished ones by default), e.g. to catch up after the listener was restarted.',
+    description: 'List canvas requests of this session (unfinished ones by default). While no listener runs they queue up in the canvas service: when the user says 「看画布」, list them. The ones still waiting come with the question to ask, and are not announced again.',
     inputSchema: { type: 'object', properties: { includeFinished: { type: 'boolean' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }
@@ -223,12 +223,12 @@ export function hostNotes(request) {
     ...(request.pageId
       ? [`结果放进发出请求的那一页：调用 Cowart 工具时 pageId 传 ${request.pageId}（请求里指定了卡片的就按卡片放；这一页后来换了别的会话负责也照样放得进去）。`]
       : []),
-    '开始执行时调用 reply_cowart_request（status: "running"）；完成后 status: "done"，message 写一句结果；失败 status: "failed"，message 写原因；用户选跳过时 status: "skipped"。画布上会显示这些状态。用户没点选项、自己打字回答的，按用户说的办，状态照样要回，不然画布上一直显示「请到对话里点执行」、还能点撤销。'
+    '开始执行时调用 reply_cowart_request（status: "running"）；完成后 status: "done"，message 写一句结果；失败 status: "failed"，message 写原因；用户选跳过时 status: "skipped"。画布上会显示这些状态。用户没点选项、自己打字回答的，按用户说的办，状态照样要回，不然画布上一直显示「请到对话里点执行」、还能点撤销。回完 done / failed / skipped，监听没在跑的话再后台启动它接下一条（reply 的结果会给命令）。'
   ]
 }
 
 function renderResult(opened, session) {
-  const listenCommand = `node "${LISTENER_SCRIPT}" --port ${opened.port} --session ${session}`
+  const command = listenCommand({ script: LISTENER_SCRIPT, port: opened.port, session })
   const pageList = (opened.pages ?? []).map((page) => `「${page.name}」${page.holder ? `（${page.mine ? '你' : page.holder}负责）` : ''}`)
   const duty = opened.page
     ? `你现在负责「${opened.page}」这一页${opened.pageCreated ? '（新建的）' : ''}${opened.takenFrom ? `，从「${opened.takenFrom}」那里接了过来` : ''}`
@@ -247,11 +247,11 @@ function renderResult(opened, session) {
       : '1. 在 Browser 面板打开上面的网址（mcp__Claude_Browser__preview_start，参数 url）。没有 Browser 面板时把网址发给用户，在浏览器里打开。',
     opened.listenerConnected
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
-      : `2. 用 Monitor 工具启动画布请求监听（timeout_ms: 1800000，description: "Cowart 画布请求"），命令：\n   ${listenCommand}\n   Monitor 一次最多跑 30 分钟：监听快到点会打一行让你重开，Monitor 结束的通知来了也一样，都用同一条命令马上重开。`,
-    '画布里点 AI 按钮时会收到「Cowart 画布请求 #N」通知：先按通知那行用 AskUserQuestion 问用户，用户选了要做再 get_cowart_request 看详情照做。',
+      : `2. 用 Bash 工具后台启动画布请求监听（run_in_background: true，description: "Cowart 画布请求"），命令：\n   ${command}\n   它一直等着、不耗 token，画布上真来了请求才退出，退出的通知会叫醒你（通知里只有输出文件路径：先 Read 它，照里面那行用 AskUserQuestion 问用户）；处理完再这样启动一次接下一条。别用 Monitor 跑它：Monitor 最多 30 分钟，到点就会叫醒会话。`,
+    '画布里点 AI 按钮时就是这样叫醒你的：「Cowart 画布请求 #N」→ 先问用户，用户选了要做再 get_cowart_request 看详情照做。监听没在跑时请求在服务里排队，用户说「看画布」时用 list_cowart_requests 取。',
     '之后的 Cowart 工具都作用在这张画布上：不传 pageId 的插入放进你负责的页，没负责页时放进你的画布面板正看着的页。'
   ]
-  return textResult(lines.join('\n'), { ...opened, listenCommand })
+  return textResult(lines.join('\n'), { ...opened, listenCommand: command })
 }
 
 function requestDetails(request) {
@@ -268,11 +268,12 @@ function requestDetails(request) {
   return textResult(text, { ...request, hostNotes: notes })
 }
 
-function requestList(requests) {
-  const text = requests.length
-    ? requests.map((request) => `#${request.id} [${request.status}] ${request.title}${request.summary ? `：${request.summary}` : ''}`).join('\n')
-    : '没有待处理的画布请求。'
-  return textResult(text, { requests })
+// Listed in the conversation (看画布): the requests still waiting come with their question and,
+// when no listener runs, how to start it again.
+function requestList({ requests, listenerConnected }, command) {
+  const lines = requests.length ? requests.map(requestLine) : ['没有待处理的画布请求。']
+  if (listenerConnected === false) lines.push('', restartListenerNote(command))
+  return textResult(lines.join('\n'), { requests, listenerConnected })
 }
 
 export async function startClaudeBridge() {
@@ -313,6 +314,8 @@ export async function startClaudeBridge() {
     port: Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT,
     log
   })
+  // This session's listener command, on the port the service runs on now.
+  const command = () => listenCommand({ script: LISTENER_SCRIPT, port: service.port, session })
   const ready = service.start()
   ready.then(
     () => log(`session ${session} connected to the canvas service on port ${service.port}`),
@@ -343,11 +346,14 @@ export async function startClaudeBridge() {
         case GET_REQUEST_TOOL:
           return requestDetails((await service.call('request-get', { id: args.id })).request)
         case REPLY_REQUEST_TOOL: {
-          const { request: updated } = await service.call('request-reply', { id: args.id, status: args.status, message: args.message })
-          return textResult(`已把画布请求 #${updated.id} 标成 ${updated.status}${updated.message ? `：${updated.message}` : ''}`, updated)
+          const { request: updated, listenerConnected } = await service.call('request-reply', { id: args.id, status: args.status, message: args.message })
+          const lines = [`已把画布请求 #${updated.id} 标成 ${updated.status}${updated.message ? `：${updated.message}` : ''}`]
+          // Done with this one: the next request needs the listener running again.
+          if (listenerConnected === false && updated.status !== 'running') lines.push(restartListenerNote(command()))
+          return textResult(lines.join('\n'), updated)
         }
         case LIST_REQUESTS_TOOL:
-          return requestList((await service.call('request-list', { includeFinished: args.includeFinished === true })).requests)
+          return requestList(await service.call('request-list', { includeFinished: args.includeFinished === true, acknowledge: true }), command())
         default:
           return await service.call('tool', { name, arguments: args })
       }

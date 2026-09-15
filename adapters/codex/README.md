@@ -33,7 +33,7 @@ Codex 保留原生 **MCP Apps widget**，每个会话只运行一个薄 bridge�
 
 AI 图片 / AI 视频的猛兽生成由共享服务执行，面板所选模型、参数、素材和目标页构成任务，进度和撤销显示在画布中。缺少 `beast` 命令行时服务会退回会话请求；Codex imagegen 始终走会话请求。
 
-HTML、Slides、标注和 Codex imagegen 等请求先进入服务队列，再按原页的负责关系路由。Claude 用 Monitor 收通知；Codex 由**负责会话自己的 widget**轮询领取，再发送 MCP Apps `ui/message` 通知请求编号。发起请求的面板不替另一个会话执行任务。
+HTML、Slides、标注和 Codex imagegen 等请求先进入服务队列，再按原页的负责关系路由。Claude / ZCode 由后台监听收通知（来了请求才退出、唤醒会话）；Codex 由**负责会话自己的 widget**轮询领取，再发送 MCP Apps `ui/message` 通知请求编号。发起请求的面板不替另一个会话执行任务。
 
 Codex 收到通知后：
 

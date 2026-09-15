@@ -502,6 +502,7 @@
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }
     .pill.agent .dot { background: #16a34a; }
     .pill.waiting .dot { background: #f59e0b; }
+    .pill.queue .dot { background: #64748b; }
     .pill.offline { color: #b91c1c; }
     .pill.offline .dot { background: #dc2626; }
     .pill.outdated { cursor: pointer; color: #92400e; }
@@ -600,13 +601,23 @@
       if (state.session === 'ended') return ['offline', `${name} 的会话已结束：回到 ${HOST_LABEL} 重新打开画布才能接上`, name]
       if (state.session === 'waiting') return ['waiting', `${name} · 等 ${AGENT_LABEL} 会话重新连上…`, name]
       const duty = state.role && state.role.myPage ? `负责「${state.role.myPage}」` : '没负责任何页'
-      if (!state.agentOnline) return ['waiting', `${name} · ${duty} · 监听暂时断开 · 请求先排队，${AGENT_LABEL} 空下来就会接上`, name]
-      return ['agent', `${name} · ${duty} · ${AGENT_LABEL} 已连接`, name]
+      if (state.agentOnline) return ['agent', `${name} · ${duty} · ${AGENT_LABEL} 在等请求`, name]
+      // No listener running is the normal state between requests, not a fault: requests wait in
+      // the service until the session runs it again, or the user says 看画布 in its conversation.
+      if (transport) return ['queue', `${name} · ${duty} · 请求先排队`, name]
+      if (handlingRequest()) return ['queue', `${name} · ${duty} · 正在处理请求 · 新请求先排队`, name]
+      return ['queue', `${name} · ${duty} · 请求会排队 · 到对话里说「看画布」`, name]
+    }
+
+    // A request of this pane's session that its conversation has: being asked about or worked on.
+    function handlingRequest() {
+      return [...state.requests.values()].some((request) => request.session === config.session && request.executor !== 'service'
+        && (request.status === 'running' || (request.status === 'pending' && request.delivered)))
     }
 
     function renderPill() {
       const [kind, text, name] = pillState()
-      pill.classList.remove('agent', 'waiting', 'offline', 'outdated')
+      pill.classList.remove('agent', 'waiting', 'queue', 'offline', 'outdated')
       if (kind) pill.classList.add(kind)
       pillLabel.replaceChildren()
       if (name && text.startsWith(name)) {
@@ -691,7 +702,11 @@
         case 'cancelled':
           return '↩️ 已撤销'
         default:
-          if (!request.delivered) return `📥 已排队，等${sessionName(request.session)}连上`
+          if (!request.delivered) {
+            return request.session === config.session && !transport
+              ? '📥 已排队 · 到对话里说「看画布」'
+              : `📥 已排队，等${sessionName(request.session)}来取`
+          }
           return request.session === config.session
             ? transport ? '📨 已发送给 Codex' : `👉 请到 ${HOST_LABEL} 对话里点「执行」`
             : `📨 已发送给${sessionName(request.session)}的对话`
@@ -770,6 +785,7 @@
         window.__cowartKit.resetHolderName(request.holderShapeId)
       }
       renderToasts()
+      renderPill()
     }
 
     // Each (re)connect brings the service's list. A request the page shows that the list lacks
@@ -785,6 +801,7 @@
       }
       for (const request of requests) upsert(request)
       renderToasts()
+      renderPill()
     }
 
     toastList.addEventListener('click', async (event) => {

@@ -13,7 +13,7 @@ import { importCanvasPages } from '../../service/lib/canvas-import.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { INSTRUCTIONS, INSTRUCTIONS_LIMIT } from '../lib/bridge.mjs'
-import { EMPTY_CANVAS, FIXTURES, finish, openEvents, rawGet, serviceStatus, startBridge, step, stopTestService, text, writePng } from './test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, rawGet, serviceStatus, startBridge, step, stopTestService, text, waitFor, writePng } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_SMOKE_PORT) || 43290
 const SESSION = 'smoke'
@@ -52,6 +52,22 @@ const sendTagged = (prepared) =>
     canvasDir
   })
 
+// The listener the way a session runs it (in the background, with --once unless args say
+// otherwise): what it printed so far, and done once it exits.
+const listeners = []
+function runListener(args = ['--once']) {
+  const child = spawn(process.execPath, [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs'), '--port', String(PORT), '--session', SESSION, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  listeners.push(child)
+  const output = { stdout: '', stderr: '' }
+  child.stdout.on('data', (chunk) => (output.stdout += chunk))
+  child.stderr.on('data', (chunk) => (output.stderr += chunk))
+  const done = new Promise((resolve) => child.on('close', (code) => resolve({ code, ...output })))
+  return { output, done, kill: () => child.kill() }
+}
+const hasListener = async () => Boolean((await serviceStatus(PORT))?.sessions.find((session) => session.id === SESSION)?.listener)
+
 // Adds a holder frame the way the canvas tools create it, saved like the page would.
 async function addHolder(id, props, meta) {
   const state = await api('/api/tools/call', { name: 'get_cowart_canvas_state', arguments: { projectDir, canvasDir } })
@@ -85,11 +101,15 @@ try {
   await step('bridge instructions fit what Claude Code keeps of them, and the skill they point to exists', async () => {
     assert.ok(INSTRUCTIONS.length <= INSTRUCTIONS_LIMIT, `bridge instructions are ${INSTRUCTIONS.length} characters, Claude Code keeps ${INSTRUCTIONS_LIMIT}`)
     assert.match(INSTRUCTIONS, /Skill 工具加载 cowart/)
-    // Claude Code's Monitor has no persistent watches: a watch ends after 30 minutes at most.
-    assert.match(INSTRUCTIONS, /timeout_ms: 1800000/)
-    assert.doesNotMatch(INSTRUCTIONS, /persistent/)
+    // The listener runs as a background task that ends only when a request comes: Claude Code's
+    // Monitor ends every watch within 30 minutes and wakes the session for it, idle or not.
+    assert.match(INSTRUCTIONS, /run_in_background: true/)
+    assert.match(INSTRUCTIONS, /看画布/)
+    assert.doesNotMatch(INSTRUCTIONS, /timeout_ms|persistent/)
     const skill = await readFile(join(ADAPTERS_DIR, 'claude', 'skills', 'cowart', 'SKILL.md'), 'utf8')
-    assert.doesNotMatch(skill, /persistent/)
+    assert.match(skill, /run_in_background: true/)
+    assert.match(skill, /看画布/)
+    assert.doesNotMatch(skill, /timeout_ms|persistent/)
     assert.match(skill, /^name: cowart$/m)
     assert.match(skill, /^description: .+/m)
   })
@@ -130,10 +150,10 @@ try {
     const { url, port, listenCommand, listenerConnected, sessionName, page } = result.structuredContent
     assert.equal(port, PORT)
     assert.match(url, new RegExp(`^http://127\\.0\\.0\\.1:${PORT}/\\?session=${SESSION}&projectDir=`))
-    assert.match(listenCommand, new RegExp(`cowart-listen\\.mjs" --port ${PORT} --session ${SESSION}$`))
+    assert.match(listenCommand, new RegExp(`cowart-listen\\.mjs" --port ${PORT} --session ${SESSION} --once$`))
     assert.equal(listenerConnected, false)
-    assert.match(text(result), /timeout_ms: 1800000/)
-    assert.match(text(result), /Monitor 一次最多跑 30 分钟/)
+    assert.match(text(result), /run_in_background: true/)
+    assert.doesNotMatch(text(result), /timeout_ms/)
     // A session that picks no name for itself gets a spare one.
     assert.ok(sessionName, 'no session name')
     assert.equal(page, null)
@@ -141,25 +161,45 @@ try {
     pageUrl = url
   })
 
-  await step('the listener leaves before the Monitor would end it, saying to start it again', async () => {
-    const child = spawn(process.execPath, [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs'), '--port', String(PORT), '--session', SESSION], {
-      env: { ...process.env, COWART_LISTEN_LIFETIME_MS: '1000' },
-      stdio: ['ignore', 'pipe', 'ignore']
-    })
-    let stdout = ''
-    child.stdout.on('data', (chunk) => (stdout += chunk))
-    const code = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        child.kill()
-        reject(new Error('the listener did not leave on its own'))
-      }, 15_000)
-      child.on('close', (exitCode) => {
-        clearTimeout(timer)
-        resolve(exitCode)
-      })
-    })
+  await step('an old Monitor listener command (no --once) says to run it in the background instead, and leaves', async () => {
+    const { code, stdout } = await runListener([]).done
     assert.equal(code, 0, stdout)
-    assert.match(stdout, /马上用同一条命令重新启动监听（Monitor，timeout_ms: 1800000）/)
+    assert.match(stdout, /别再用 Monitor/)
+    assert.ok(stdout.includes('run_in_background: true') && stdout.includes(`--port ${PORT} --session ${SESSION} --once`), stdout)
+    assert.equal(await hasListener(), false)
+  })
+
+  await step('the listener waits without a word until a request comes, then exits with its line; the reply says to start it again', async () => {
+    const run = runListener()
+    await waitFor(hasListener, { what: 'the listener to connect' })
+    await delay(1500)
+    assert.deepEqual(run.output, { stdout: '', stderr: '' }, 'the listener printed something with no request')
+    const created = await api('/api/messages', { text: '[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\nPrompt:\n一个登录页', session: SESSION, projectDir, canvasDir })
+    const { code, stdout } = await run.done
+    assert.equal(code, 0, stdout)
+    assert.match(stdout, new RegExp(`^Cowart 画布请求 #${created.request.id}「.+AskUserQuestion`, 'm'))
+    await waitFor(async () => !(await hasListener()), { what: 'the service to see the listener go' })
+    const skipped = await call('reply_cowart_request', { id: created.request.id, status: 'skipped' })
+    assert.match(text(skipped), new RegExp(`监听没在跑.+--port ${PORT} --session ${SESSION} --once`))
+  })
+
+  await step('with no listener, requests queue up; 看画布 (list_cowart_requests) hands them over with their question', async () => {
+    const queued = await api('/api/messages', { text: '[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\nPrompt:\n一个注册页', session: SESSION, projectDir, canvasDir })
+    assert.equal(queued.request.delivered, false)
+    const listed = await call('list_cowart_requests', {})
+    assert.match(text(listed), new RegExp(`Cowart 画布请求 #${queued.request.id}「.+AskUserQuestion`))
+    assert.match(text(listed), /监听没在跑.+run_in_background: true/)
+    assert.equal(listed.structuredContent.requests.find((request) => request.id === queued.request.id)?.delivered, true)
+    // Handed over: the next listener run does not wake the session with it again.
+    const next = runListener()
+    await waitFor(hasListener, { what: 'the listener to connect' })
+    await delay(1000)
+    assert.equal(next.output.stdout, '', 'a listed request was announced again')
+    // With a listener running, a reply does not ask to start one.
+    const skipped = await call('reply_cowart_request', { id: queued.request.id, status: 'skipped' })
+    assert.doesNotMatch(text(skipped), /监听没在跑/)
+    next.kill()
+    await waitFor(async () => !(await hasListener()), { what: 'the listener to go' })
   })
 
   await step('canvas page is served with the Claude bridge, its session and a CSP', async () => {
@@ -684,6 +724,8 @@ try {
     }
   })
 } finally {
+  // A listener run keeps waiting for a service that went away: end the ones still running.
+  for (const child of listeners) child.kill()
   await bridge.close()
   await stopTestService(PORT)
   await rm(projectDir, { recursive: true, force: true }).catch(() => {})

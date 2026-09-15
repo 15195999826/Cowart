@@ -628,8 +628,8 @@ export class CanvasServer {
     this.onActivity()
   }
 
-  // One listener per session: a newer Monitor replaces the previous one so requests are
-  // never announced twice.
+  // One listener per session (cowart-listen.mjs, run in the background until a request comes):
+  // a newer one replaces the previous one so requests are never announced twice.
   #openAgentStream(req, res, url) {
     const id = url.searchParams.get('session')
     if (!validId(id)) {
@@ -795,11 +795,15 @@ export class CanvasServer {
       case 'request-reply': {
         const request = this.#ownRequest(session, args.id)
         if (args.requestKey && args.requestKey !== request.requestKey) throw new Error('这条画布请求来自已经重启的旧服务，不能用旧编号处理新请求。')
-        return { request: publicRequest(this.queue.update(args.id, { status: args.status, message: args.message })) }
+        const updated = this.queue.update(args.id, { status: args.status, message: args.message })
+        return { request: publicRequest(updated), listenerConnected: Boolean(session.listener) }
       }
       case 'request-list': {
+        // Asked for in the conversation (the user said 看画布 while no listener ran): what waits
+        // is announced now, so the next listener does not wake the session with it again.
+        if (args.acknowledge === true) for (const request of this.queue.undelivered(session.id)) this.queue.markDelivered(request.id)
         const requests = this.queue.list(session.id).filter((request) => args.includeFinished === true || !FINAL_STATUSES.has(request.status))
-        return { requests: requests.map(publicRequest) }
+        return { requests: requests.map(publicRequest), listenerConnected: Boolean(session.listener) }
       }
       default:
         throw new Error(`画布服务不认识操作 ${op}。`)

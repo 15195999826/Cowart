@@ -20,6 +20,7 @@ import { PORT_ATTEMPTS, SERVICE_ENTRY, probeService } from '../../service/client
 import { canvasLockFile, canvasOwner } from '../../service/lib/canvas-lock.mjs'
 import { EXIT_CANVAS_BUSY } from '../../service/lib/identity.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
+import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_MULTI_PORT) || 43295
@@ -60,6 +61,18 @@ function events(path, headers) {
 // A canvas page: its event stream, with the pane id and canvas it shows.
 const pane = (session, id) => events(`/api/page-events?${new URLSearchParams({ token, session, pane: id, canvasDir })}`)
 const listener = (session) => events(`/api/agent-events?session=${session}`, { 'x-cowart-token': token })
+// The listener program the way a session runs it: in the background, with --once.
+const listenerRuns = []
+function runListener(session) {
+  const child = spawn(process.execPath, [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs'), '--port', String(PORT), '--session', session, '--once'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true
+  })
+  listenerRuns.push(child)
+  let stdout = ''
+  child.stdout.on('data', (chunk) => (stdout += chunk))
+  return { child, done: new Promise((resolve) => child.on('close', (code) => resolve({ code, stdout }))) }
+}
 
 async function api(path, body, headers = {}) {
   const response = await fetch(`${origin}${path}`, {
@@ -475,6 +488,10 @@ try {
     // A request waiting in the queue outlives the service, number and all.
     const kept = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换了版本也还在')
     assert.equal(kept.status, 200, JSON.stringify(kept.body))
+    // A listener run waiting in the background outlives the replacement, so the session is not
+    // woken for it; the next request still reaches it.
+    const waiting = runListener('multi-b')
+    await listenB.next((item) => item.event === 'replaced')
     // The code changes: the session that starts next replaces the service.
     await writeFile(SALT_FILE, 'changed-code')
     const c = await bridgeFor('multi-c')
@@ -492,8 +509,12 @@ try {
     assert.ok(!again.isError, text(again))
     assert.equal(again.structuredContent.requestKey, kept.body.request.requestKey)
     assert.equal(again.structuredContent.status, 'pending')
+    assert.equal(waiting.child.exitCode, null, 'the replacement ended the listener run')
     const next = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换版本后的第一条')
     assert.ok(next.body.request.id > kept.body.request.id, 'the replacement service numbered requests from 1 again')
+    const woken = await Promise.race([waiting.done, delay(15_000).then(() => ({ code: 'still waiting', stdout: '' }))])
+    assert.equal(woken.code, 0, woken.stdout)
+    assert.match(woken.stdout, new RegExp(`^Cowart 画布请求 #${next.body.request.id}「`, 'm'))
     for (const id of [kept.body.request.id, next.body.request.id]) {
       const skipped = await b.call('reply_cowart_request', { id, status: 'skipped' })
       assert.ok(!skipped.isError, text(skipped))
@@ -602,6 +623,7 @@ try {
     await allowed.close()
   })
 } finally {
+  for (const child of listenerRuns) child.kill()
   for (const stream of streams) stream.close()
   for (const bridge of bridges) await bridge.close()
   for (const status of await servicesOn(canvasDir)) await stopTestService(status.port)

@@ -2,7 +2,7 @@
 // End-to-end check of the ZCode adapter without ZCode: runs a session bridge over stdio
 // against a throwaway project (the bridge starts its own canvas service on a test port) and
 // exercises the ZCode-specific parts — the host it registers as, the page wording, the
-// --once listener that replaces Claude Code's Monitor, and a Claude Code session sharing the
+// --once listener (Claude Code runs the same one), and a Claude Code session sharing the
 // same service. The shared canvas behavior is covered by the Claude adapter's checks.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -16,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { INSTRUCTIONS, INSTRUCTIONS_LIMIT } from '../lib/bridge.mjs'
-import { EMPTY_CANVAS, FIXTURES, finish, serviceStatus, startBridge, step, stopTestService, text, waitFor } from '../../claude/scripts/test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, delay, finish, serviceStatus, startBridge, step, stopTestService, text, waitFor } from '../../claude/scripts/test-kit.mjs'
 
 const PORT = Number(process.env.COWART_ZCODE_SMOKE_PORT) || 43291
 const SESSION = 'zsmoke'
@@ -46,11 +46,13 @@ async function startZCodeBridge({ session }) {
 }
 
 // Runs the real listener with --once and resolves with { code, stdout } once it exits.
+const listeners = []
 function runOnceListener() {
   const child = spawn(process.execPath, [LISTENER, '--port', String(PORT), '--session', SESSION, '--once'], {
     cwd: projectDir,
     stdio: ['ignore', 'pipe', 'pipe']
   })
+  listeners.push(child)
   let stdout = ''
   child.stdout.on('data', (chunk) => (stdout += chunk))
   child.stderr.on('data', () => {})
@@ -68,6 +70,7 @@ try {
     assert.ok(INSTRUCTIONS.length <= INSTRUCTIONS_LIMIT, `bridge instructions are ${INSTRUCTIONS.length} characters, budget is ${INSTRUCTIONS_LIMIT}`)
     assert.match(INSTRUCTIONS, /run_in_background/)
     assert.match(INSTRUCTIONS, /AskUserQuestion/)
+    assert.match(INSTRUCTIONS, /看画布/)
     assert.match(INSTRUCTIONS, /Skill 工具加载 cowart/)
     const { readFile } = await import('node:fs/promises')
     const skill = await readFile(join(ADAPTERS_DIR, 'zcode', 'skills', 'cowart', 'SKILL.md'), 'utf8')
@@ -184,6 +187,22 @@ try {
     idle.kill()
   })
 
+  await step('with no listener running, 看画布 lists a queued request with its question and hands it over', async () => {
+    const noListener = async () => !(await serviceStatus(PORT)).sessions.find((entry) => entry.id === SESSION)?.listener
+    await waitFor(noListener, { what: 'the last listener to go' })
+    const queued = await sendMessage('[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\nPrompt:\n排队的')
+    const listed = await call('list_cowart_requests', {})
+    assert.match(text(listed), new RegExp(`Cowart 画布请求 #${queued.request.id}「.+AskUserQuestion`))
+    assert.match(text(listed), new RegExp(`监听没在跑.+--session ${SESSION} --once`))
+    const idle = runOnceListener()
+    const stayed = await Promise.race([idle.done.then(() => false), delay(1500).then(() => true)])
+    assert.ok(stayed, 'a listed request was announced again')
+    idle.kill()
+    await waitFor(noListener, { what: 'the listener to go' })
+    const skipped = await call('reply_cowart_request', { id: queued.request.id, status: 'skipped' })
+    assert.match(text(skipped), /监听没在跑/)
+  })
+
   await step('request details come with ZCode host notes', async () => {
     const created = await sendMessage('[@Cowart](plugin://cowart@cowart-github) 按标注修改\n\nPrompt:\n改背景')
     const details = await call('get_cowart_request', { id: created.request.id })
@@ -246,6 +265,8 @@ try {
     }
   })
 } finally {
+  // A listener run keeps waiting for a service that went away: end the ones still running.
+  for (const child of listeners) child.kill()
   await bridge.close()
   await stopTestService(PORT)
   await rm(projectDir, { recursive: true, force: true }).catch(() => {})

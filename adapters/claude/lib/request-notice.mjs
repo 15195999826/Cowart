@@ -1,8 +1,9 @@
-// The line the listener prints for each canvas request (Claude Code's Monitor, ZCode's --once
-// run). Claude asks the user before any other call — a canvas request is a background event,
-// not the user's words — so the line carries what that question needs: the choices that fit
-// the request and, when it comes with 标注, their words. The bridges' host notes reuse the
-// 按标注修改 wording.
+// The line for each canvas request: printed by the listener that Claude Code and ZCode run in
+// the background, and listed by list_cowart_requests when the user asks for queued requests
+// (看画布). Claude asks the user before any other call — a canvas request is a background
+// event, not the user's words — so the line carries what that question needs: the choices that
+// fit the request and, when it comes with 标注, their words. The bridges' host notes reuse the
+// 按标注修改 wording; the listener command and the reminder to start it again live here too.
 import { requestTask } from '../../service/lib/requests.mjs'
 
 const QUOTE_LENGTH = 60
@@ -55,4 +56,21 @@ export function requestNotice(request) {
   }
   const options = task === 'generate-image' ? '执行（免费本地模型）/ 执行（云端，消耗团队额度）/ 跳过' : '执行 / 跳过'
   return `${head} → 马上用 AskUserQuestion 问用户一句（${options}），${proceed}`
+}
+
+// A request in list_cowart_requests: one that still waits for the user comes with the question
+// to ask, the way the listener prints it.
+export function requestLine(request) {
+  if (request.status === 'pending' && request.executor !== 'service') return requestNotice({ ...request, page: request.pageName ?? null })
+  return `#${request.id} [${request.status}] ${request.title}${request.summary ? `：${request.summary}` : ''}`
+}
+
+// How a session runs the listener: a background task that exits only when a request comes.
+export function listenCommand({ script, port, session }) {
+  return `node "${String(script).replaceAll('\\', '/')}" --port ${port} --session ${session} --once`
+}
+
+// For a session with no listener running, whose next requests would wait in the service.
+export function restartListenerNote(command) {
+  return `画布请求监听没在跑，新请求会在画布服务里排队：接着用 Bash 工具后台运行（run_in_background: true，description「Cowart 画布请求」）这条命令接下一条：${command}`
 }
