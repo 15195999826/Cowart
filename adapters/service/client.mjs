@@ -6,8 +6,9 @@ import { closeSync, mkdirSync, openSync, renameSync, statSync } from 'node:fs'
 import net from 'node:net'
 import { join } from 'node:path'
 
-import { ADAPTERS_DIR, REPO_ROOT } from '../shared/paths.mjs'
-import { DEFAULT_PORT, SERVICE_NAME, localIdentity, serviceVerdict } from './lib/identity.mjs'
+import { ADAPTERS_DIR, REPO_ROOT, SHARED_CANVAS_DIR } from '../shared/paths.mjs'
+import { canvasOwner, isAlive } from './lib/canvas-lock.mjs'
+import { DEFAULT_PORT, EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, SERVICE_NAME, localIdentity, serviceVerdict } from './lib/identity.mjs'
 import { RUNTIME_DIR, SERVICE_LOG, loadOrCreateToken } from './lib/token.mjs'
 
 export const SERVICE_ENTRY = process.env.COWART_BUNDLED === '1'
@@ -16,8 +17,14 @@ export const SERVICE_ENTRY = process.env.COWART_BUNDLED === '1'
 // Ports held by something else (another program, a pre-service adapter) are skipped.
 export const PORT_ATTEMPTS = 20
 const PROBE_TIMEOUT_MS = 4_000
+// How long a port that is taken but does not answer is asked again (see probeService).
+const UNSURE_MS = 10_000
+const RETRY_MS = 200
 const READY_TIMEOUT_MS = 20_000
 const STOP_TIMEOUT_MS = 10_000
+// Services a bridge starts for one port before it gives up: another bridge's service can
+// bind the port first, and a service that is stopping can still have the canvas.
+const START_ATTEMPTS = 5
 const CALL_TIMEOUT_MS = 600_000
 const RECONNECT_MAX_MS = 5_000
 const LOG_LIMIT_BYTES = 5 * 1024 * 1024
@@ -27,44 +34,66 @@ function delay(ms) {
 }
 
 // Binding is instant; on Windows a refused connection to a closed port takes a second or two.
+// But the test holds the port for that moment: a service that starts then cannot bind it,
+// and another bridge's probe then connects to the test (dropped at once). So only a
+// bridge's first look at a port binds it.
 function portIsFree(port) {
   return new Promise((resolveFree) => {
-    const tester = net.createServer()
+    const tester = net.createServer((socket) => socket.destroy())
     tester.once('error', () => resolveFree(false))
     tester.listen(port, '127.0.0.1', () => tester.close(() => resolveFree(true)))
   })
 }
 
-// free: nothing listens. cowart: a canvas service (with its status). foreign: anything else.
-export async function probeService(port, token) {
-  if (await portIsFree(port)) return { kind: 'free' }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/service`, {
-        headers: { 'x-cowart-token': token },
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
-      })
-      const payload = await response.json().catch(() => null)
-      if (response.ok && payload?.service === SERVICE_NAME) return { kind: 'cowart', status: payload }
-      return { kind: 'foreign' }
-    } catch (error) {
-      if (error?.cause?.code === 'ECONNREFUSED') return { kind: 'free' }
-    }
+// free: nothing listens. cowart: a canvas service (with its status). foreign: something else
+// answered, HTTP that is not a canvas service's status or not HTTP at all. unsure: the port
+// is taken but gave no answer (a reset or closed connection, a timeout). A canvas service
+// that is stopping or starting, and other bridges testing the port, look like that for a
+// moment, so callers ask again rather than take it for another program: on 2026-09-15 a
+// bridge that did started a second service on the same canvas. bind: false only connects.
+export async function probeService(port, token, { bind = true } = {}) {
+  if (bind && (await portIsFree(port))) return { kind: 'free' }
+  let response
+  let body
+  try {
+    response = await fetch(`http://127.0.0.1:${port}/api/service`, {
+      headers: { 'x-cowart-token': token },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
+    })
+    body = await response.text()
+  } catch (error) {
+    const code = String(error?.cause?.code ?? error?.name ?? 'error')
+    if (code === 'ECONNREFUSED') return { kind: 'free' }
+    return code.startsWith('HPE_') ? { kind: 'foreign', reason: code } : { kind: 'unsure', reason: code }
   }
-  return { kind: 'foreign' }
+  let payload = null
+  try {
+    payload = JSON.parse(body)
+  } catch {
+    // Not JSON: not a canvas service.
+  }
+  if (response.ok && payload?.service === SERVICE_NAME) return { kind: 'cowart', status: payload }
+  return { kind: 'foreign', reason: `HTTP ${response.status}` }
 }
 
-// The first canvas service from port upward, where a bridge would find it; exact: on this
-// port and no other.
+// The first canvas service from port upward, where a bridge would find it (a port that does
+// not answer yet is asked again); exact: on this port and no other.
 export async function findService({ port = DEFAULT_PORT, token, exact = false } = {}) {
   for (let offset = 0; offset < (exact ? 1 : PORT_ATTEMPTS); offset += 1) {
-    const probe = await probeService(port + offset, token)
+    let probe = await probeService(port + offset, token)
+    for (const deadline = Date.now() + UNSURE_MS; probe.kind === 'unsure' && Date.now() < deadline; ) {
+      await delay(RETRY_MS)
+      probe = await probeService(port + offset, token, { bind: false })
+    }
     if (probe.kind === 'cowart') return { port: port + offset, status: probe.status }
   }
   return null
 }
 
-export async function stopService(port, token, reason = 'requested') {
+// Asks the service on `port` to stop and waits until its process is gone: its port closes
+// first, but it has the canvas until its last write.
+export async function stopService(port, token, reason = 'requested', { pid } = {}) {
+  pid ??= (await probeService(port, token, { bind: false })).status?.pid
   await fetch(`http://127.0.0.1:${port}/api/service/shutdown`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-cowart-token': token },
@@ -73,7 +102,7 @@ export async function stopService(port, token, reason = 'requested') {
   }).catch(() => {})
   const deadline = Date.now() + STOP_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if (await portIsFree(port)) return true
+    if (pid ? !isAlive(pid) : await portIsFree(port)) return true
     await delay(100)
   }
   return false
@@ -100,6 +129,7 @@ function openServiceLog() {
 }
 
 // Detached so the service is not tied to this bridge: the session ending must not end it.
+// exitCode stays null while the service runs (EXIT_* in identity.mjs say why one did not).
 export function spawnService(port, { entry = SERVICE_ENTRY } = {}) {
   const out = openServiceLog()
   try {
@@ -110,22 +140,18 @@ export function spawnService(port, { entry = SERVICE_ENTRY } = {}) {
       stdio: ['ignore', out, out],
       env: serviceEnv()
     })
-    child.on('error', () => {})
+    const started = { pid: child.pid, exitCode: null }
+    child.on('error', () => {
+      started.exitCode ??= -1
+    })
+    child.on('exit', (code) => {
+      started.exitCode = code ?? -1
+    })
     child.unref()
-    return child.pid
+    return started
   } finally {
     closeSync(out)
   }
-}
-
-async function waitForService(port, token) {
-  const deadline = Date.now() + READY_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    const probe = await probeService(port, token)
-    if (probe.kind !== 'free') return probe
-    await delay(150)
-  }
-  return null
 }
 
 // Calls back (event, data) for each server-sent event until the stream ends.
@@ -217,8 +243,16 @@ export class CanvasServiceClient {
   async #connect({ allowReplace }) {
     this.#connecting ??= (async () => {
       this.#token ??= await loadOrCreateToken()
-      this.#port = await this.#locate({ allowReplace })
-      await this.#openSessionStream()
+      for (let attempt = 0; ; attempt += 1) {
+        this.#port = await this.#locate({ allowReplace: allowReplace && attempt === 0 })
+        try {
+          return await this.#openSessionStream()
+        } catch (error) {
+          // The service stopped between answering and taking the session (it was being
+          // replaced): find the one that runs now.
+          if (attempt >= 2 || this.#closed) throw error
+        }
+      }
     })().finally(() => {
       this.#connecting = null
     })
@@ -227,32 +261,103 @@ export class CanvasServiceClient {
 
   async #locate({ allowReplace }) {
     for (let offset = 0; offset < PORT_ATTEMPTS; offset += 1) {
-      const port = this.basePort + offset
-      const probe = await probeService(port, this.#token)
-      if (probe.kind === 'foreign') continue
-      if (probe.kind === 'cowart') {
-        const verdict = serviceVerdict(probe.status, this.#mine)
-        if (verdict === 'reuse') return port
-        if (verdict !== 'replace' || !allowReplace) {
-          if (probe.status.protocol === this.#mine.protocol) return port
-          throw new Error(`画布服务（${probe.status.version}，协议 ${probe.status.protocol}）比这个会话的 cowart 新：重开这个会话即可。`)
-        }
-        this.log(`replacing the canvas service on ${port} (build ${probe.status.build} → ${this.#mine.build})`)
-        if (!(await stopService(port, this.#token, 'replaced'))) throw new Error(`旧的画布服务（端口 ${port}）没有按时退出。`)
-      }
-      // Nobody serves this port: start the service. Bridges racing here are fine, the port
-      // lets exactly one of the services they start bind.
-      spawnService(port, { entry: this.entry })
-      const started = await waitForService(port, this.#token)
-      if (!started) throw new Error(`画布服务没能启动（端口 ${port}），日志在 ${SERVICE_LOG}。`)
-      if (started.kind === 'foreign') continue
-      if (started.status.protocol !== this.#mine.protocol) {
-        throw new Error(`画布服务（${started.status.version}，协议 ${started.status.protocol}）跟这个会话的 cowart 不兼容：重开这个会话即可。`)
-      }
-      this.log(`canvas service on ${port} (pid ${started.status.pid})`)
-      return port
+      const port = await this.#settle(this.basePort + offset, { allowReplace })
+      if (port) return port
     }
     throw new Error(`端口 ${this.basePort}–${this.basePort + PORT_ATTEMPTS - 1} 都被别的程序占着，画布服务起不来。`)
+  }
+
+  // Gets a canvas service this bridge can use on `port`: the one there (replaced first, at
+  // startup and once, when it runs older code of this checkout) or one this bridge starts.
+  // Returns the port to use; null only when another program holds the port for sure. A
+  // port that is taken but does not answer is asked again, not skipped: moving on would
+  // start a second service on the same canvas (which the canvas lock turns away).
+  async #settle(port, { allowReplace }) {
+    let mayReplace = allowReplace
+    let started = null
+    let starts = 0
+    let waitingFor = null
+    let unsureSince = null
+    let deadline = Date.now() + READY_TIMEOUT_MS
+    for (let look = 0; ; look += 1) {
+      // Only the first look binds the port: later ones must not take it from a service that
+      // is starting.
+      const probe = await probeService(port, this.#token, { bind: look === 0 })
+      unsureSince = probe.kind === 'unsure' ? (unsureSince ?? Date.now()) : null
+      if (probe.kind === 'foreign') {
+        this.log(`port ${port} is held by another program (${probe.reason})`)
+        return null
+      }
+      if (probe.kind === 'cowart') {
+        const { status } = probe
+        const verdict = serviceVerdict(status, this.#mine)
+        if (verdict === 'reuse') return port
+        if (verdict === 'replace' && mayReplace) {
+          this.log(`replacing the canvas service on ${port} (build ${status.build} → ${this.#mine.build})`)
+          if (!(await stopService(port, this.#token, 'replaced', { pid: status.pid }))) throw new Error(`旧的画布服务（端口 ${port}）没有按时退出。`)
+          // Once: the service that runs next may be one that another bridge started.
+          mayReplace = false
+          deadline = Date.now() + READY_TIMEOUT_MS
+          continue
+        }
+        if (status.protocol !== this.#mine.protocol) {
+          throw new Error(starts > 0
+            ? `画布服务（${status.version}，协议 ${status.protocol}）跟这个会话的 cowart 不兼容：重开这个会话即可。`
+            : `画布服务（${status.version}，协议 ${status.protocol}）比这个会话的 cowart 新：重开这个会话即可。`)
+        }
+        if (starts > 0) this.log(`canvas service on ${port} (pid ${status.pid})`)
+        return port
+      }
+      if (Date.now() > deadline) throw new Error(`画布服务没能启动（端口 ${port}），日志在 ${SERVICE_LOG}。`)
+      if (probe.kind === 'unsure') {
+        if (Date.now() - unsureSince > UNSURE_MS) {
+          throw new Error(`端口 ${port} 被占着却一直没有回应（${probe.reason}）：可能是卡住的画布服务，也可能是别的程序。结束它，或设 COWART_CLAUDE_PORT 换个端口。`)
+        }
+        await delay(RETRY_MS)
+        continue
+      }
+      // Free. Wait while the service this bridge started is coming up, or while the service
+      // that has the canvas finishes on this port.
+      if ((started && started.exitCode === null) || (waitingFor && isAlive(waitingFor))) {
+        await delay(RETRY_MS)
+        continue
+      }
+      if (started) {
+        const { exitCode } = started
+        started = null
+        if (exitCode === EXIT_CANVAS_BUSY) {
+          const owner = canvasOwner(SHARED_CANVAS_DIR)
+          if (owner && owner.port !== port) return this.#joinOwner(owner, port)
+          waitingFor = owner?.pid ?? null
+        } else if (exitCode !== EXIT_PORT_TAKEN) {
+          throw new Error(`画布服务没能启动（端口 ${port}，退出码 ${exitCode}），日志在 ${SERVICE_LOG}。`)
+        }
+        continue
+      }
+      if (starts >= START_ATTEMPTS) throw new Error(`画布服务没能启动（端口 ${port}），日志在 ${SERVICE_LOG}。`)
+      // Bridges racing here are fine: the port lets one of the services they start bind, and
+      // the canvas lock lets one of them have the canvas.
+      started = spawnService(port, { entry: this.entry })
+      starts += 1
+      mayReplace = false
+    }
+  }
+
+  // The canvas is served on another port (its lock says so), so no service starts on this
+  // one: use that service once it answers.
+  async #joinOwner(owner, port) {
+    const deadline = Date.now() + UNSURE_MS
+    for (;;) {
+      const probe = await probeService(owner.port, this.#token, { bind: false })
+      if (probe.kind === 'cowart' && probe.status.protocol === this.#mine.protocol) {
+        this.log(`the canvas is served on port ${owner.port} (pid ${probe.status.pid}), not on ${port}`)
+        return owner.port
+      }
+      if (probe.kind === 'foreign' || probe.kind === 'cowart' || !isAlive(owner.pid) || Date.now() > deadline) {
+        throw new Error(`这张画布（${SHARED_CANVAS_DIR}）由端口 ${owner.port} 上的画布服务（pid ${owner.pid}）在用，端口 ${port} 上不能再起一个，而那个服务这个会话连不上（${probe.reason ?? probe.kind}）。`)
+      }
+      await delay(RETRY_MS)
+    }
   }
 
   // Stays open while the session lives: the service counts the session as connected, and

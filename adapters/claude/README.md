@@ -75,7 +75,7 @@ npm --prefix adapters run install:skill
 
 环境变量：
 
-- `COWART_CLAUDE_PORT`：画布服务的端口，默认 43240；被别的程序占着就往后找。
+- `COWART_CLAUDE_PORT`：画布服务的端口，默认 43240；被别的程序占着就往后找（回了话确认是别的程序才换；占着不回话的先等，免得给同一张画布再起一个服务）。
 - `COWART_CANVAS_DIR`：全机那张画布放在哪，默认 `~/.cowart/canvas`；只管会话拉起的那个服务，平时不用设。
 - `COWART_ALLOW_CLI=1`：命令行版等非桌面入口也提供工具（没有 Browser 面板，网址在浏览器里打开）。
 - `COWART_SERVICE_IDLE_MS`：画布服务空闲多久退出，默认 10 分钟。
@@ -92,7 +92,7 @@ node adapters/service/bin/cowart-service.mjs --stop --port <端口>   # 只停�
 
 `service:status` / `service:stop` 像会话的桥一样从 43240 往后找；`service:stop` 只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停，要停就带上它的端口。给了端口（`--port` 或 `COWART_CLAUDE_PORT`），`--stop` 就只看这一个端口，不往后找；`--status` 找到的不是问的那个端口时会说。
 
-服务日志在 `~/.cowart-claude/service.log`。
+服务日志在 `~/.cowart-claude/service.log`。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
 
 ## 使用
 

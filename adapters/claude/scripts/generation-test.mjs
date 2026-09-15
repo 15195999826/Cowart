@@ -259,9 +259,16 @@ try {
   })
 
   await step('without a beast command line the panel is told to send the request to Claude', async () => {
-    const other = await startBridge({ cwd: projectDir, port: FALLBACK_PORT, session: 'gen-fallback', env: { COWART_BEAST_CLI: join(projectDir, 'no-beast.mjs') } })
+    // A service of its own, so a canvas of its own: the canvas above keeps its one service.
+    const other = await startBridge({
+      cwd: projectDir,
+      port: FALLBACK_PORT,
+      session: 'gen-fallback',
+      env: { COWART_BEAST_CLI: join(projectDir, 'no-beast.mjs'), COWART_CANVAS_DIR: join(projectDir, 'fallback-canvas') }
+    })
     try {
       const opened = await other.call('render_cowart_canvas_widget', { projectDir })
+      assert.equal(opened.structuredContent.port, FALLBACK_PORT)
       const answer = await api(
         '/api/generations',
         { kind: 'image', holderShapeId: 'shape:gen_img3', prompt: '一只猫', model: 'krea2', projectDir, canvasDir },

@@ -41,7 +41,7 @@ if (process.argv.includes('--import')) {
   // A service on this canvas could save a page that never saw the moved pages and drop them;
   // the sessions start it again right away.
   if (found?.status.canvasDir === SHARED_CANVAS_DIR) {
-    if (!(await stopService(found.port, token, 'importing pages'))) {
+    if (!(await stopService(found.port, token, 'importing pages', { pid: found.status.pid }))) {
       console.log(`端口 ${found.port} 上的画布服务没有按时退出，没搬。`)
       process.exit(1)
     }
@@ -84,7 +84,7 @@ if (process.argv.includes('--import')) {
     process.exit(1)
   } else {
     console.log(`停止${service}…`)
-    const stopped = await stopService(found.port, token, 'stopped by hand')
+    const stopped = await stopService(found.port, token, 'stopped by hand', { pid: found.status.pid })
     console.log(stopped ? '已停止。' : '没有按时退出。')
     process.exit(stopped ? 0 : 1)
   }

@@ -2,12 +2,12 @@
   "version": "0.2.3",
   "generatedBy": "adapters/scripts/build-artifacts.mjs",
   "node": ">=22.12.0",
-  "serviceBuild": "2a483aea9a647fc9",
+  "serviceBuild": "bb4798c8dc663d4c",
   "artifacts": {
-    "cowart-service.mjs": "44671b7eabcfe37a4d89335605a29e0e24354f4237487264f223fe8cfc704cea",
-    "cowart-codex-mcp.mjs": "5b29adb34301cd2bd8192c67bce84ebc010fd2fd0bb18a3c79d0e7f66ba09ac5",
-    "cowart-claude-mcp.mjs": "1a83ff943308d6bf2729f03aa3c8c6e829e778eb2c070927f132d9f63bf7d570",
-    "cowart-listen.mjs": "37c8c1f17d42b6fb4896d7ee5d0739f5dbcceb0759b46056d7226a540395ad70"
+    "cowart-service.mjs": "32b5ad45765a40ebc70426112d73c109fab8d07e76eee42c38efcbffb6731907",
+    "cowart-codex-mcp.mjs": "32462eb352b76a56dacea65c1da3931550c01a99af252e3d6999cc0178bfe3ff",
+    "cowart-claude-mcp.mjs": "872fc5297b93cc1668e3c71912243c9eade4828fdf77a90e1100cf00ed19f871",
+    "cowart-listen.mjs": "dc1c415444fb2f89dde82e2465d1c9152c80d210901a9bbad90c7354c1df5d1e"
   },
   "resources": {
     ".codex-plugin/plugin.json": "ab1640bf63911ceff8e25e88e079884428558f9f7d4a740e0452d2e33203395a",

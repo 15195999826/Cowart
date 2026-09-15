@@ -9,6 +9,10 @@ import { ADAPTERS_DIR, REPO_ROOT, UPSTREAM_RELEASE_MANIFEST } from '../../shared
 export const SERVICE_NAME = 'cowart-canvas'
 // Where bridges look first (COWART_CLAUDE_PORT overrides it); taken ports are skipped.
 export const DEFAULT_PORT = 43240
+// How a service that does not start tells the bridge that started it why (its exit code):
+// another service bound the port first, or another service has the canvas (canvas-lock.mjs).
+export const EXIT_PORT_TAKEN = 3
+export const EXIT_CANVAS_BUSY = 4
 // Bump when the API between bridges, pages and the service changes incompatibly.
 // 2: page responsibility (分页负责制) and delta saves replaced per-pane editing locks.
 export const PROTOCOL = 3
@@ -50,9 +54,22 @@ export function sourceCodeFingerprint() {
   return hash.digest('hex').slice(0, 16)
 }
 
+// A check stands in for changed code with a salt: COWART_SERVICE_BUILD_SALT for a process and
+// the services it starts, or COWART_SERVICE_BUILD_SALT_FILE, read by every process as it
+// starts, so that changing the file is like changing the code on disk.
+function buildSalt() {
+  const file = process.env.COWART_SERVICE_BUILD_SALT_FILE
+  if (process.env.COWART_SERVICE_BUILD_SALT || !file) return process.env.COWART_SERVICE_BUILD_SALT
+  try {
+    return readFileSync(file, 'utf8').trim()
+  } catch {
+    return ''
+  }
+}
+
 export function codeFingerprint() {
   const base = typeof __COWART_SERVICE_BUILD__ === 'string' ? __COWART_SERVICE_BUILD__ : sourceCodeFingerprint()
-  const salt = process.env.COWART_SERVICE_BUILD_SALT
+  const salt = buildSalt()
   return salt ? createHash('sha256').update(base).update(salt).digest('hex').slice(0, 16) : base
 }
 

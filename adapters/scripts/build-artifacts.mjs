@@ -27,8 +27,10 @@ const NODE_MODULES = new Set(builtinModules.flatMap((name) => [name, `node:${nam
 // bundle; both paths apply any runtime test salt after selecting the base value.
 const previousRoot = process.env.COWART_ADAPTERS_ROOT
 const previousSalt = process.env.COWART_SERVICE_BUILD_SALT
+const previousSaltFile = process.env.COWART_SERVICE_BUILD_SALT_FILE
 process.env.COWART_ADAPTERS_ROOT = ADAPTERS_DIR
 delete process.env.COWART_SERVICE_BUILD_SALT
+delete process.env.COWART_SERVICE_BUILD_SALT_FILE
 let serviceBuild
 try {
   const identity = await import(pathToFileURL(join(ADAPTERS_DIR, 'service/lib/identity.mjs')).href)
@@ -36,6 +38,7 @@ try {
 } finally {
   restoreEnv('COWART_ADAPTERS_ROOT', previousRoot)
   restoreEnv('COWART_SERVICE_BUILD_SALT', previousSalt)
+  restoreEnv('COWART_SERVICE_BUILD_SALT_FILE', previousSaltFile)
 }
 
 const artifacts = new Map()

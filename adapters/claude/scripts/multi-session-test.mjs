@@ -3,21 +3,37 @@
 // session responsible for each page (the one that entered it last, from the session or
 // from the canvas), requests routed to that session, delta saves from panes that edit the
 // same canvas at once, model writes kept out of other sessions' pages, each session's own
-// selection, a session ending and coming back, a changed checkout replacing the service,
-// idle exit, and the desktop-only switch. Bridges run over stdio like Claude Code runs
-// them; canvas pages are played by event streams and the page API, on a test port.
+// selection, a session ending and coming back, a changed checkout replacing the service
+// (with more bridges starting meanwhile, all ending up on one service), one service per
+// canvas, ports that do not answer yet waited for rather than skipped, idle exit, and the
+// desktop-only switch. Bridges run over stdio like Claude Code runs them; canvas pages are
+// played by event streams and the page API, on a test port.
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import http from 'node:http'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { PORT_ATTEMPTS, SERVICE_ENTRY, probeService } from '../../service/client.mjs'
+import { canvasLockFile, canvasOwner } from '../../service/lib/canvas-lock.mjs'
+import { EXIT_CANVAS_BUSY } from '../../service/lib/identity.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_MULTI_PORT) || 43295
+// Ports of their own for the checks of ports that do not answer and ports another program
+// holds, and for services started by hand.
+const QUIET_PORT = PORT + 40
+const BUSY_PORT = PORT + 60
+const HAND_PORTS = [PORT + 1, PORT + 70, PORT + 71]
+// This checkout's code, for the replacement checks: writing another salt into the file is
+// like changing the code on disk, for every bridge and service that starts afterwards.
+const SALT_FILE = join(tmpdir(), `cowart-check-build-salt-${process.pid}.txt`)
 // Short timers so the session and idle checks take seconds; bridges pass COWART_* on to
 // the service they start.
-const FAST = { COWART_SESSION_GRACE_MS: '300', COWART_SESSION_WAIT_MS: '1500', COWART_SERVICE_IDLE_MS: '1500' }
+const FAST = { COWART_SESSION_GRACE_MS: '300', COWART_SESSION_WAIT_MS: '1500', COWART_SERVICE_IDLE_MS: '1500', COWART_SERVICE_BUILD_SALT_FILE: SALT_FILE }
 
 const token = await loadOrCreateToken()
 const projectDir = await mkdtemp(join(tmpdir(), 'cowart-claude-multi-'))
@@ -86,6 +102,42 @@ function frame(id, parentId, x) {
 
 const connectedSessions = async () =>
   (await serviceStatus(PORT))?.sessions.filter((session) => session.bridge).map((session) => session.id).sort() ?? []
+
+// The canvas services for a canvas on the test's ports: the main one and those bridges move on to.
+async function servicesOn(canvas) {
+  const found = []
+  for (let port = PORT; port < PORT + PORT_ATTEMPTS; port += 1) {
+    const probe = await probeService(port, token)
+    if (probe.kind === 'cowart' && probe.status.canvasDir === canvas) found.push(probe.status)
+  }
+  return found
+}
+
+// A service started by hand for a canvas: { code } when it does not start, { status } once it answers.
+async function runService(canvas, port) {
+  const child = spawn(process.execPath, [SERVICE_ENTRY, '--port', String(port)], {
+    env: { ...process.env, ...FAST, COWART_CANVAS_DIR: canvas, COWART_SESSION_NAMES_FILE: join(projectDir, 'hand-names.json') },
+    stdio: 'ignore',
+    windowsHide: true
+  })
+  let code = null
+  child.on('exit', (exitCode) => {
+    code = exitCode
+  })
+  return waitFor(async () => {
+    if (code !== null) return { code }
+    const status = await serviceStatus(port)
+    return status?.pid === child.pid && { status }
+  }, { timeoutMs: 15_000, what: `the service started by hand on ${port}` })
+}
+
+const listen = (server, port) => new Promise((resolve, reject) => server.once('error', reject).listen(port, '127.0.0.1', resolve))
+function closeServer(server) {
+  if (!server.listening) return Promise.resolve()
+  const closed = new Promise((resolve) => server.close(() => resolve()))
+  server.closeAllConnections?.()
+  return closed
+}
 
 let a
 let b
@@ -423,7 +475,9 @@ try {
     // A request waiting in the queue outlives the service, number and all.
     const kept = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换了版本也还在')
     assert.equal(kept.status, 200, JSON.stringify(kept.body))
-    const c = await bridgeFor('multi-c', { COWART_SERVICE_BUILD_SALT: 'changed-code' })
+    // The code changes: the session that starts next replaces the service.
+    await writeFile(SALT_FILE, 'changed-code')
+    const c = await bridgeFor('multi-c')
     await c.client.listTools()
     const after = await waitFor(async () => {
       const status = await serviceStatus(PORT)
@@ -448,6 +502,87 @@ try {
     assert.equal((await serviceStatus(PORT)).pid, after.pid, 'an older bridge replaced the service back')
   })
 
+  await step('bridges that start while the service is being replaced all end up on one service', async () => {
+    const before = await serviceStatus(PORT)
+    // The code changes again and several sessions start at once: each one replaces the
+    // service at the same moment, while the connected bridges come back to whichever runs.
+    await writeFile(SALT_FILE, 'changed-again')
+    const herd = Array.from({ length: 6 }, (_, index) => `multi-herd-${index}`)
+    const started = await Promise.all(herd.map((session) => bridgeFor(session)))
+    await Promise.all(started.map((bridge) => bridge.client.listTools()))
+    const everyone = ['multi-a', 'multi-b', 'multi-c', ...herd].sort().join()
+    const after = await waitFor(async () => {
+      const status = await serviceStatus(PORT)
+      const connected = status?.sessions.filter((session) => session.bridge).map((session) => session.id).sort().join()
+      return status && status.pid !== before.pid && connected === everyone && status
+    }, { timeoutMs: 30_000, what: 'every bridge on one replacement service' }).catch(async (error) => {
+      const services = (await servicesOn(canvasDir)).map((status) => `${status.port} (pid ${status.pid}): ${status.sessions.filter((session) => session.bridge).map((session) => session.id).join(', ')}`)
+      throw new Error(`${error.message}; services on the canvas: ${services.join(' | ')}`)
+    })
+    assert.notEqual(after.build, before.build, 'the service does not run the changed code')
+    await delay(1500)
+    assert.equal((await serviceStatus(PORT)).pid, after.pid, 'the service was replaced again')
+    assert.deepEqual((await servicesOn(canvasDir)).map((status) => status.port), [PORT], 'a second service runs on the canvas')
+    assert.equal(canvasOwner(canvasDir)?.pid, after.pid, 'the canvas lock does not name the service')
+  })
+
+  await step('one service per canvas: a second one for the same canvas stays down; a lock left behind by a service that is gone does not', async () => {
+    const running = await serviceStatus(PORT)
+    const owner = canvasOwner(canvasDir)
+    assert.deepEqual([owner?.pid, owner?.port], [running.pid, PORT])
+    // What a bridge that moved on to the next port used to start: a second writer.
+    const second = await runService(canvasDir, PORT + 1)
+    assert.equal(second.code, EXIT_CANVAS_BUSY, 'a second service started on the canvas')
+    assert.equal(canvasOwner(canvasDir)?.pid, running.pid)
+
+    // Locks left behind an hour ago, answering nowhere: by a service whose process ended, and
+    // one whose pid another program runs now (this check's own).
+    const stale = join(projectDir, 'stale-canvas')
+    await mkdir(stale, { recursive: true })
+    const ended = spawn(process.execPath, ['-e', ''])
+    await new Promise((resolve) => ended.on('exit', resolve))
+    const earlier = new Date(Date.now() - 3_600_000).toISOString()
+    for (const [index, pid] of [ended.pid, process.pid].entries()) {
+      const port = HAND_PORTS[1 + index]
+      await writeFile(canvasLockFile(stale), JSON.stringify({ pid, port: port + 10, canvasDir: stale, startedAt: earlier, id: `left-${index}` }))
+      const started = await runService(stale, port)
+      assert.ok(started.status, `a lock left by pid ${pid} kept the service down (exit ${started.code})`)
+      assert.equal(canvasOwner(stale)?.pid, started.status.pid)
+      await stopTestService(port)
+      assert.equal(canvasOwner(stale), null, 'a stopped service kept the canvas')
+    }
+  })
+
+  await step('a port that is taken but does not answer yet is waited for, not skipped; a port another program answers on is skipped', async () => {
+    // Like a canvas service that is stopping or starting, or other bridges testing the port:
+    // taken, and every connection dropped.
+    const dropping = net.createServer((socket) => socket.resetAndDestroy())
+    const other = http.createServer((_, res) => res.writeHead(404).end('not a canvas service'))
+    await Promise.all([listen(dropping, QUIET_PORT), listen(other, BUSY_PORT)])
+    const projects = await Promise.all(['quiet', 'busy'].map((name) => mkdtemp(join(tmpdir(), `cowart-claude-${name}-`))))
+    try {
+      const waiting = await startBridge({ cwd: projects[0], port: QUIET_PORT, session: 'multi-quiet', env: FAST })
+      const skipping = await startBridge({ cwd: projects[1], port: BUSY_PORT, session: 'multi-busy', env: FAST })
+      bridges.push(waiting, skipping)
+      const listed = Promise.all([waiting.client.listTools(), skipping.client.listTools()])
+      await delay(1500)
+      await closeServer(dropping)
+      await listed
+      const quiet = await serviceStatus(QUIET_PORT)
+      assert.ok(quiet?.sessions.some((session) => session.id === 'multi-quiet' && session.bridge), 'the bridge did not wait for the port')
+      assert.equal(await serviceStatus(QUIET_PORT + 1), null, 'the bridge moved on and started a service on the next port')
+      const past = await serviceStatus(BUSY_PORT + 1)
+      assert.ok(past?.sessions.some((session) => session.id === 'multi-busy' && session.bridge), 'the bridge did not move past the other program')
+      await waiting.close()
+      await skipping.close()
+    } finally {
+      await closeServer(dropping)
+      await closeServer(other)
+      for (const port of [QUIET_PORT, QUIET_PORT + 1, BUSY_PORT + 1]) await stopTestService(port)
+      for (const dir of projects) await rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+
   await step('the service exits once no session and no page is left', async () => {
     for (const stream of streams) stream.close()
     for (const bridge of bridges) await bridge.close()
@@ -469,8 +604,11 @@ try {
 } finally {
   for (const stream of streams) stream.close()
   for (const bridge of bridges) await bridge.close()
+  for (const status of await servicesOn(canvasDir)) await stopTestService(status.port)
+  for (const port of HAND_PORTS) await stopTestService(port)
   await stopTestService(PORT)
   await rm(projectDir, { recursive: true, force: true }).catch(() => {})
+  await rm(SALT_FILE, { force: true })
 }
 
 finish()

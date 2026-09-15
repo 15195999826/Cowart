@@ -1,7 +1,8 @@
 // The machine-wide canvas service process: the machine's one canvas (SHARED_CANVAS_DIR),
 // one upstream Cowart server, one request queue and one writer, shared by every session
-// bridge (FORK.md). It exits after it has sat idle (no bridge connected, no canvas page
-// open) for a while.
+// bridge (FORK.md). It has the canvas (canvas-lock.mjs) from before it listens until its
+// last write, and exits after it has sat idle (no bridge connected, no canvas page open)
+// for a while.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -12,9 +13,10 @@ import { UpstreamCowart } from '../../shared/upstream.mjs'
 import { DEFAULT_VIDEO_MODEL_ID, VIDEO_MODELS } from '../../shared/video-models.mjs'
 import { injectIntoHead, jsonForInlineScript, readUpstreamWidgetHtml, scriptTag, sharedPageScripts } from '../../shared/widget-html.mjs'
 import { CanvasGuard } from './canvas-guard.mjs'
+import { acquireCanvasLock } from './canvas-lock.mjs'
 import { CanvasOps } from './canvas-ops.mjs'
 import { GenerationJobs } from './generation-jobs.mjs'
-import { localIdentity } from './identity.mjs'
+import { EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, localIdentity } from './identity.mjs'
 import { CanvasRequestQueue, REQUESTS_FILE_NAME } from './requests.mjs'
 import { CanvasServer } from './server.mjs'
 import { loadOrCreateToken } from './token.mjs'
@@ -31,6 +33,17 @@ export async function startCanvasService({ port }) {
   const log = (message) => process.stderr.write(`[cowart-service ${new Date().toISOString()}] ${message}\n`)
   const identity = localIdentity()
   const token = await loadOrCreateToken()
+  // One service per canvas: while another service has it (on another port, or finishing on
+  // this one), this one does not start.
+  let lock
+  try {
+    lock = await acquireCanvasLock(SHARED_CANVAS_DIR, { port })
+  } catch (error) {
+    if (error.code !== 'ECANVASBUSY') throw error
+    log(`canvas ${SHARED_CANVAS_DIR} is served by pid ${error.owner.pid} on port ${error.owner.port}, not starting a second service`)
+    process.exit(EXIT_CANVAS_BUSY)
+  }
+  process.on('exit', () => lock.release())
   // Upstream's own default canvas (for a call that names none) is the same one.
   process.env.COWART_CANVAS_DIR = SHARED_CANVAS_DIR
   const queue = new CanvasRequestQueue({ file: join(SHARED_CANVAS_DIR, REQUESTS_FILE_NAME) })
@@ -114,18 +127,23 @@ export async function startCanvasService({ port }) {
     if (stopping) return
     stopping = true
     log(`stopping (${reason})`)
+    lock.stopping()
     await server.close({ reason }).catch(() => {})
     await upstream.close()
+    // Its last write is done: the next service may have the canvas.
+    lock.release()
     process.exit(0)
   }
 
   try {
     await server.start({ port })
   } catch (error) {
-    // Another bridge started a service on this port first; that one serves everybody.
+    // Taken after all (a service of another canvas, or a bridge testing the port this
+    // moment): the bridge that started this one looks at the port again.
     if (error.code === 'EADDRINUSE') {
+      lock.release()
       log(`port ${port} is taken, leaving it to the service already there`)
-      process.exit(3)
+      process.exit(EXIT_PORT_TAKEN)
     }
     throw error
   }
