@@ -113,6 +113,8 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 
 ## Codex 任务切换与恢复（2026-09-15）
 
+- Codex 可注册已验证的本地发布副本 `~/.cowart/releases/<适配层版本>-<提交>/adapters/codex/bin/start.mjs`，避免直接加载正在开发的工作目录。副本按 `adapters/generated/release-manifest.json` 校验并复制产物/资源，再带上发布清单与启动脚本；升级时发布一个新目录，备份配置后只更新 `cowart_mcp` 的入口，并从实际安装目录验证版本与资源哈希。不能以工作目录已更新代替安装验证。
+
 - 原生工具调用先转成标准 JSON，再经 MCP Apps 的 postMessage 发出；可选字段的 `undefined` 不能穿过宿主的 JSON 参数校验（否则为 `-32602 Invalid tool call params`）。浏览器测试在转发到 stdio 之前执行同样的严格校验，不能靠测试桥的 JSON 序列化隐藏该错误。
 - 可缓存的 widget HTML 只含静态配置，当前 session、负责页和存储位置从当前 MCP 连接的 bootstrap 获取，读取和轮询必须等握手完成。打开空闲页时自动接管；其他会话已负责的页仍需明确点击接管。按钮把当前页登记与接管作为一次操作，并直接显示失败原因，成功后立即应用返回的负责状态。
 
