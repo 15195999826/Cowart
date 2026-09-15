@@ -2,11 +2,11 @@
   "version": "0.2.3",
   "generatedBy": "adapters/scripts/build-artifacts.mjs",
   "node": ">=22.12.0",
-  "serviceBuild": "95587d5146db6a25",
+  "serviceBuild": "23d76f6e6d69d9c9",
   "artifacts": {
-    "cowart-service.mjs": "94959a47dd90a230bf4077081ea91edb5bc5b2f38cc410ee02b77c28c6044c3f",
-    "cowart-codex-mcp.mjs": "f33fb3cd84d517361d6364935b8c096db13500ea0b792c733908273cc07043f2",
-    "cowart-claude-mcp.mjs": "2c546468bd6324c22b16f0cd3047ca542dbe9bab4986ec3ef20182ac801ddfd6",
+    "cowart-service.mjs": "36d698e266780ada17ce74d271c7361dd554ef7e05eb07822af2c3f134213d97",
+    "cowart-codex-mcp.mjs": "8e169fecca5be84faa430d05efd588369cb076495b35d6603dd79d5b731770a9",
+    "cowart-claude-mcp.mjs": "1b2b5a43e74dfae0b5ab20e01669250e2d38b065eb954c76848cb521aa64a5bb",
     "cowart-listen.mjs": "af03d6a21a31397f16ce2b84eb5a99332934d29bce065e184eac6e944163208a"
   },
   "resources": {
@@ -20,11 +20,11 @@
     "adapters/shared/web/ai-video.js": "fa84e2bb31979a5bc3df92668301a33d044465ba650898e7fb62e417c0cf6619",
     "adapters/shared/web/canvas-chrome.js": "53da04e6faf12154e57c8cfb8577779a244306b56b1d864bf049a585acf3e7b7",
     "adapters/shared/web/kit.js": "661e5986461d6e674db733e88396b531293a9f7bc1ad7e69937d10844956918e",
-    "adapters/shared/web/service-bridge.js": "0fa12fc70c65cc39a209c692ec4bec9a1b0edc224919c3c814c7018418008ad7",
+    "adapters/shared/web/service-bridge.js": "d3e9a9eaafa2c7d22d3e77a1dec7e4c1cad90226320da4855f90555f64f1e3ab",
     "adapters/shared/web/video-playback.js": "097c1d26efb6e56ad26c3ef46ad0b5e28ad7ec1caade1363b178c7c6f644d867",
     "adapters/shared/web/web-reference.js": "30bd9b8a520d45df06cb555bd036f06eeebe47f3ec209c22614736ce39098aad",
     "mcp/generated/cowart-mcp.mjs": "4aa16b7646b28a520dddde1011a8dfdac4838546d93c782150d89d48e55346ba",
-    "mcp/generated/cowart-widget.html": "1c0b5aefb15c80c41fe6147bbcc9311024353a833daf2d425986fec8ef24abfa",
-    "mcp/generated/release-manifest.json": "76347954784043e84188008af5f650e18a2c9ce6878b78982e63343cb6f122fd"
+    "mcp/generated/cowart-widget.html": "a23932ef3ce924c951c402f02a335b2bb77842f5e17935e76ab82c73dd4f0c8c",
+    "mcp/generated/release-manifest.json": "c8c5cb34e30c81fbfbaaa581a484386a9863471a808b4e7a55f29c456ca10596"
   }
 }

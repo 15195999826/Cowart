@@ -364,6 +364,9 @@
     ...(transport?.nativeApi || {}),
     getStorageTarget: () => ({ projectDir: config.projectDir, canvasDir: config.canvasDir }),
     ...(transport ? { waitUntilActive: transport.waitUntilActive, isActive: transport.isActive } : {}),
+    // A page the service serves plays its videos straight from it (range requests); the
+    // native widget cannot reach the service and reads them through MCP.
+    ...(transport ? {} : { directAssetUrl: (asset) => (asset && asset.type === 'video' ? asset.props.src : null) }),
     async callServerTool(request, options) {
       const name = request && request.name
       let args = (request && request.arguments) || {}

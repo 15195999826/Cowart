@@ -22,6 +22,8 @@ const WIDGET_MARKERS = [
   '__cowartExtensions?.panels',
   '__cowartExtensions?.imageToolbar',
   '__cowartExtensions?.contextMenu',
+  // Service-served pages stream videos from the service instead of reading them through MCP.
+  'directAssetUrl',
   'tool.cowart-extension-',
   'cowartAiImageHolder',
   // The annotation binding patch: the 标注 / 注释 tools bind arrows to cards, prompts list

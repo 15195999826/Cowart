@@ -517,6 +517,12 @@ async function resolveCowartTldrawAssetUrl(asset) {
   const retry = cowartAssetRetry(asset.id)
   retry.cacheKey = cacheKey
   retry.asset = asset
+  // [fork-patch] A page the canvas service serves itself streams videos from it: the
+  // service answers range requests, so playback starts at once and no copy of the file
+  // sits in page memory. A host whose widget cannot reach the service (Codex) returns
+  // nothing here and keeps reading the file through MCP.
+  const direct = window.cowartMcp?.directAssetUrl?.(asset)
+  if (direct) return direct
   const cached = cowartAssetObjectUrlCache.get(cacheKey)
   if (cached) return cached.objectUrl
 
