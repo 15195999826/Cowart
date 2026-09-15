@@ -18,6 +18,7 @@ import { structuredOrThrow } from '../../shared/upstream.mjs'
 import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
 import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
 import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
+import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
 import { readVideoAsset } from './video-assets.mjs'
 
 // A canvas nobody has opened yet gets its first page from this (the schema of the bundled
@@ -255,6 +256,14 @@ export class CanvasOps extends EventEmitter {
       try {
         const captured = await captureWebReference({ args })
         return textResult(`已截下 ${captured.url}（${captured.width}×${captured.height}）。`, captured)
+      } catch (error) {
+        return errorResult(error instanceof Error ? error.message : String(error))
+      }
+    }
+    if (name === REVEAL_FILE_TOOL) {
+      try {
+        const revealed = await revealCanvasFile({ canvasDir: resolveCowartPaths(args).canvasDir, assetUrl: args.assetUrl })
+        return textResult(`已在文件管理器里显示 ${revealed.filePath}。`, revealed)
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error))
       }

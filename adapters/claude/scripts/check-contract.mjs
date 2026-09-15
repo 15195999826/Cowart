@@ -21,6 +21,7 @@ const WIDGET_MARKERS = [
   '__cowartExtensions?.tools',
   '__cowartExtensions?.panels',
   '__cowartExtensions?.imageToolbar',
+  '__cowartExtensions?.contextMenu',
   'tool.cowart-extension-',
   'cowartAiImageHolder',
   // The annotation binding patch: the 标注 / 注释 tools bind arrows to cards, prompts list

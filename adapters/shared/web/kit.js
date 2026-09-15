@@ -73,6 +73,14 @@
     ext.imageToolbar = [...(Array.isArray(ext.imageToolbar) ? ext.imageToolbar : []), item]
   }
 
+  // A context menu item, in a group of its own under 复制为 / 导出为 / 下载原图:
+  // { id, label, isFor(shapes, editor), onSelect({ editor, shapes, addToast }) };
+  // label may be a function of the selected shapes.
+  function registerContextMenuItem(item) {
+    const ext = extensions()
+    ext.contextMenu = [...(Array.isArray(ext.contextMenu) ? ext.contextMenu : []), item]
+  }
+
   const editorListeners = []
   let knownEditor = null
 
@@ -1433,6 +1441,7 @@
     registerTool,
     takeOverPanel,
     registerImageToolbarItem,
+    registerContextMenuItem,
     onEditor,
     stopCanvasEvents,
     randomShapeId,

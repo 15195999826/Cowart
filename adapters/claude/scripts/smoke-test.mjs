@@ -24,7 +24,8 @@ await mkdir(join(canvasDir, 'pages', 'page'), { recursive: true })
 await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.json'))
 
 await stopTestService(PORT)
-const bridge = await startBridge({ cwd: projectDir, port: PORT, session: SESSION })
+// 在资源管理器中显示 is checked by the path it finds, without opening windows.
+const bridge = await startBridge({ cwd: projectDir, port: PORT, session: SESSION, env: { COWART_REVEAL_DRY_RUN: '1' } })
 const { call, client } = bridge
 
 let origin = ''
@@ -196,6 +197,18 @@ try {
     assert.match(partial.headers['content-range'], /^bytes 0-99\//)
     const crossSite = await rawGet(PORT, '/page-assets/page/tiny.mp4', { host: `127.0.0.1:${PORT}`, 'sec-fetch-site': 'cross-site' })
     assert.equal(crossSite.statusCode, 403)
+  })
+
+  await step('在资源管理器中显示 shows only files of the canvas', async () => {
+    const reveal = (assetUrl) => api('/api/tools/call', { name: 'reveal_cowart_file', arguments: { assetUrl, projectDir, canvasDir } })
+    const shown = await reveal('/page-assets/page/tiny.mp4?v=1')
+    assert.ok(!shown.isError, JSON.stringify(shown))
+    assert.equal(shown.structuredContent.filePath, join(canvasDir, 'pages', 'page', 'assets', 'tiny.mp4'))
+    // A file beside the canvas, reachable only by climbing out of it.
+    await writeFile(join(projectDir, 'outside.txt'), 'not a canvas file')
+    for (const assetUrl of ['/page-assets/page/..%2F..%2F..%2F..%2Foutside.txt', '/page-assets/page/missing.png', join(projectDir, 'outside.txt')]) {
+      assert.ok((await reveal(assetUrl)).isError, `${assetUrl} was shown`)
+    }
   })
 
   await step('a stale page save cannot drop a freshly inserted video', async () => {

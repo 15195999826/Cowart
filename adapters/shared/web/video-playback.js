@@ -317,7 +317,9 @@
       const shape = editor.getOnlySelectedShape()
       const element = shape && shape.type === 'video' ? videoElementForShape(shape.id) : null
       const dragging = editor.inputs.getIsDragging ? editor.inputs.getIsDragging() : editor.inputs.isDragging
-      if (!element || (dragging && !seeking)) {
+      // The bar sits above everything on the page, a right-click menu over the video too.
+      const menuOpen = Boolean(editor.menus && editor.menus.hasAnyOpenMenus())
+      if (!element || (dragging && !seeking) || menuOpen) {
         bar.hidden = true
         video = null
         return

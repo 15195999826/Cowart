@@ -48,6 +48,19 @@ import {
   TriangleToolbarItem,
   VideoShapeUtil, // [fork-patch] subscribe to media retries in the rendered component
   XBoxToolbarItem,
+  // [fork-patch] tldraw's context menu content, rebuilt with a group for adapter items
+  ArrangeMenuSubmenu,
+  ClipboardMenuGroup,
+  ConversionsMenuGroup,
+  CursorChatItem,
+  DefaultContextMenu,
+  EditMenuSubmenu,
+  MoveToPageMenu,
+  ReorderMenuSubmenu,
+  SelectAllMenuItem,
+  TldrawUiMenuGroup,
+  TldrawUiMenuItem,
+  useShowCollaborationUi,
   atom, // [fork-patch] local asset retry state
   createShapeId,
   DEFAULT_EMBED_DEFINITIONS,
@@ -3609,13 +3622,16 @@ const cowartShapeUtils = [CowartFrameShapeUtil, CowartEmbedShapeUtil, CowartVide
 // window.__cowartExtensions = {
 //   tools: [{ id, label, iconSvg, onSelect(editor, source), after? }],
 //   panels: ['ai-image'],
-//   imageToolbar: [{ id, label, title?, iconSvg?, isFor(shape), onSelect({ editor, shape, anchor }) }]
+//   imageToolbar: [{ id, label, title?, iconSvg?, isFor(shape), onSelect({ editor, shape, anchor }) }],
+//   contextMenu: [{ id, label, isFor(shapes, editor), onSelect({ editor, shapes, addToast }) }]
 // }
 // before the app loads to add tools to the toolbar (with the AI tools, or after the media
 // tool with after: 'asset'), to draw a built-in generation panel itself (the app then
 // skips rendering it, and for 'ai-image' also the holder's size / ratio controls in the
-// style panel), or to add buttons to the selected image's toolbar, after the app's own
-// (label and title may be functions of the shape). Nothing changes when it is unset.
+// style panel), to add buttons to the selected image's toolbar, after the app's own
+// (label and title may be functions of the shape), or to add items to the context menu,
+// under its export group (label may be a function of the selected shapes). Nothing changes
+// when it is unset.
 function cowartExtensionTools() {
   const tools = globalThis.__cowartExtensions?.tools
   return Array.isArray(tools) ? tools.filter((tool) => typeof tool?.id === 'string' && tool.id) : []
@@ -3630,6 +3646,18 @@ function cowartImageToolbarItems(shape) {
       item.id &&
       typeof item.onSelect === 'function' &&
       (typeof item.isFor !== 'function' || item.isFor(shape))
+  )
+}
+
+function cowartContextMenuItems(editor, shapes) {
+  const items = globalThis.__cowartExtensions?.contextMenu
+  if (!Array.isArray(items)) return []
+  return items.filter(
+    (item) =>
+      typeof item?.id === 'string' &&
+      item.id &&
+      typeof item.onSelect === 'function' &&
+      (typeof item.isFor !== 'function' || item.isFor(shapes, editor))
   )
 }
 
@@ -3884,10 +3912,64 @@ const cowartUiOverrides = {
   }
 }
 
+// [fork-patch] tldraw's context menu, plus the items host adapters register
+// (__cowartExtensions.contextMenu) as a group of their own under 复制为 / 导出为 / 下载原图.
+// tldraw's DefaultContextMenuContent has no slot between its groups, so this is its content
+// (tldraw 5.1) with that group added.
+function CowartContextMenu(props) {
+  return (
+    <DefaultContextMenu {...props}>
+      <CowartContextMenuContent />
+    </DefaultContextMenu>
+  )
+}
+
+function CowartContextMenuContent() {
+  const editor = useEditor()
+  const { addToast } = useToasts()
+  const showCollaborationUi = useShowCollaborationUi()
+  const selectToolActive = useValue('isSelectToolActive', () => editor.getCurrentToolId() === 'select', [editor])
+  const isSinglePageMode = useValue('isSinglePageMode', () => editor.options.maxPages <= 1, [editor])
+  const shapes = useValue('cowart context menu shapes', () => editor.getSelectedShapes(), [editor])
+  if (!selectToolActive) return null
+  const items = cowartContextMenuItems(editor, shapes)
+
+  return (
+    <>
+      {showCollaborationUi && <CursorChatItem />}
+      <TldrawUiMenuGroup id="modify">
+        <EditMenuSubmenu />
+        <ArrangeMenuSubmenu />
+        <ReorderMenuSubmenu />
+        {!isSinglePageMode && <MoveToPageMenu />}
+      </TldrawUiMenuGroup>
+      <ClipboardMenuGroup />
+      <ConversionsMenuGroup />
+      {items.length > 0 && (
+        <TldrawUiMenuGroup id="cowart-extensions">
+          {items.map((item) => (
+            <TldrawUiMenuItem
+              id={`cowart-extension-${item.id}`}
+              key={item.id}
+              label={(typeof item.label === 'function' ? item.label(shapes) : item.label) || item.id}
+              onSelect={() => item.onSelect({ editor, shapes: editor.getSelectedShapes(), addToast })}
+              readonlyOk
+            />
+          ))}
+        </TldrawUiMenuGroup>
+      )}
+      <TldrawUiMenuGroup id="select-all">
+        <SelectAllMenuItem />
+      </TldrawUiMenuGroup>
+    </>
+  )
+}
+
 const cowartComponents = {
   Toolbar: CowartToolbar,
   ImageToolbar: CowartSelectionToolbar,
   VideoToolbar: CowartVideoToolbar, // [fork-patch] tldraw's, plus 清理标注
+  ContextMenu: CowartContextMenu, // [fork-patch] tldraw's, plus the adapters' items
   InFrontOfTheCanvas: CowartCanvasOverlay,
   StylePanel: CowartStylePanel
 }

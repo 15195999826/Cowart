@@ -20,7 +20,7 @@ adapters/
                 视频插入、插入的图片保持原比例、差异保存、给会话建页）、差异合并（delta-merge.mjs）、谁负责哪一页（presence.mjs）、
                 请求队列、写入保护、令牌、身份与代码指纹（identity.mjs）、
                 画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）、
-                用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）
+                用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）、右键「在资源管理器中显示」（reveal-file.mjs）
     test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）
     client.mjs  给各宿主的桥用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接 / 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
@@ -28,7 +28,7 @@ adapters/
                 把面板选项变成请求文本的 prepare_cowart_generation_request（generation-requests.mjs）
                 网页截图 web-capture.mjs（puppeteer-core 驱动本机 Chrome / Edge）
     web/        各端共用的画布页面脚本：service-bridge.js（差异保存、页同步、负责状态、生成与队列）、
-                kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、样式面板按需显示）、
+                kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、右键「在资源管理器中显示」、样式面板按需显示）、
                 AI 视频、接管后的 AI 图片、网页参考、视频播放
   claude/       Claude Code 适配（说明见 adapters/claude/README.md）
     bin/        MCP 入口 cowart-claude-mcp.mjs（每个会话一个薄桥）、画布请求监听 cowart-listen.mjs（ZCode 也用，--once 见「宿主差异」）
@@ -69,6 +69,7 @@ FORK.md         本文件
    - `tools: [{ id, label, iconSvg, onSelect(editor), after? }]`：工具出现在底部工具栏的 AI 工具组里（AI 视频）；`after: 'asset'` 则排在「媒体」后面（网页）。
    - `panels: ['ai-image']`：上游不再渲染自己的 AI 图片输入面板和右上角的「尺寸 / 比例」，由适配层画一个面板管全部（模型、画幅、参数）；画幅直接改框的形状并锁定比例。占位框本身、`insert_cowart_image` 替换占位框还是上游的。
    - `imageToolbar: [{ id, label, title?, iconSvg?, isFor(shape), onSelect({ editor, shape, anchor }) }]`：选中图片时，`isFor` 认领的图片在上游那一排图片工具栏末尾多出这些按钮（网页参考卡片的「打开原网页」「照这个做 HTML」），样式和「按标注修改」一样。
+   - `contextMenu: [{ id, label, isFor(shapes, editor), onSelect({ editor, shapes, addToast }) }]`：右键菜单在「复制为 / 导出为 / 下载原图」那组下面多一组，`isFor` 认领当前选中的图形时出现（「在资源管理器中显示」）。
    都没设置时跟上游完全一样。
 5. 共用面板先用 `prepare_cowart_generation_request` 保存上传素材、拼请求；猛兽 AI 图片 / AI 视频交画布服务直接执行，其余请求进同一队列并按页路由。Claude 通过 Monitor 收通知；Codex 由负责会话自己的 widget 领取，再用 `ui/message` 通知请求编号，模型通过 `get_cowart_request` 读取原文与状态。
 6. 页面的存取调用都带上 `toolOutput` 里的 `projectDir` / `canvasDir`（`src/cowartClient.js` 的 `serverToolArgs`），上游工具也都接受 `canvasDir`。→ 一个上游子进程能服务任何画布目录；画布服务在入口把它们统一换成全机那一张（见「画布服务」的一张画布）。
@@ -109,6 +110,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - **空闲退出**：没有会话连着、也没有打开的画布页面，10 分钟后退出（`COWART_SERVICE_IDLE_MS` 可改）。
 - **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop` 时，桥不提供工具、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
 - Claude / ZCode 网页和 Codex 原生 MCP Apps widget 使用相同的页面功能与差异保存脚本；宿主传输分别是 HTTP / SSE 和 MCP Apps 工具调用 / 轮询。共享服务保存相同的 page 与素材，切换宿主不用转换画布。
+- **在资源管理器中显示**（右键菜单）：选中一张背后有画布文件的卡片（图片、网页卡片、视频、AI HTML）右键，「复制为 / 导出为 / 下载原图」下面多这一项（Mac 上叫「在访达中显示」）。页面脚本（`canvas-chrome.js`）只把卡片的素材地址交给页面工具 `reveal_cowart_file`，画布服务（`reveal-file.mjs`）只认画布目录里的文件，在本机打开：Windows 由一段隐藏的 PowerShell 复用已经开着这个文件夹的资源管理器窗口（没有才新开）、用 Shell COM 选中文件，再借前台线程的输入把窗口提到最前（后台进程开的窗口会被 Windows 压在用户点的程序后面；服务直接起的 `explorer /select` 也没选中文件）；Mac 用 `open -R`，Linux 只开文件夹。服务就在本机，所以 Claude Code、ZCode、Codex 都能用。检查用 `COWART_REVEAL_DRY_RUN=1` 只核对路径、不开窗口。
 - **Codex 媒体加载**：原生 widget 通过 MCP 分段读取视频并生成 Blob URL，资源 metadata 的 `ui.csp` / `openai/widgetCSP` 必须同时声明 `blob:` / `data:` 本地资源与 frame 权限，不能假定宿主自动放行。HTML data URL 在页面内直接解码，不经过 `fetch`。资源读取失败不再回退到原生 widget 无法访问的相对路径；视频读取或解码失败时卡片显示「视频加载失败 / 重试」。重试只使该素材的本地 resolver 失效，不修改画布记录或重载其它视频。`test:codex` 在带 CSP 的 Chromium MCP Apps 宿主夹具中验证中文 HTML、分段完整性、播放 / 暂停 / seek、同步前后 DOM / Blob 身份及读取 / 解码失败后的恢复；最终原生宿主表现仍需在 Codex 中验收。
 
 ## Codex 任务切换与恢复（2026-09-15）
@@ -158,6 +160,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 | `src/App.jsx` | `cowartExtensionTools()` 等三个函数、`cowartUiOverrides.translations` / `tools`、`CowartToolbar`（均标 `[fork-patch]`） | 底部工具栏是写死的 React 组件，适配层没法从外面加按钮；开一个通用的工具栏扩展接口，适配层用它加「AI 视频」（AI 组）和「网页」（`after: 'asset'`，排在媒体后面）。未注册扩展时行为与上游一致 | 未提（接口是通用的，可以提） |
 | `src/App.jsx` | `cowartPanelTakenOver()`、`CowartCanvasOverlay` 里的 AI 图片面板、`CowartAiImageStyleControls` 的提前返回（均标 `[fork-patch]`） | 上游 AI 图片面板只有「参考图 + 描述 + 发送」，没法选模型和参数，尺寸比例又放在右上角；开一个面板接管开关，适配层画一个管全部控制项的面板。未接管时行为与上游一致 | 未提 |
 | `src/App.jsx` | `cowartImageToolbarItems()`、`CowartImageToolbarContent` 里的 `imageShape` 和扩展按钮、`CowartExtensionImageToolbarButton`（均标 `[fork-patch]`） | 图片工具栏也是写死的 React 组件；网页参考卡片的按钮要并进这一排（用户不要两排），从外面往 React 管的节点里塞按钮会被重渲染冲掉、也不参与工具栏的定位。开一个通用的图片工具栏扩展接口。未注册扩展时行为与上游一致 | 未提（接口是通用的，可以提） |
+| `src/App.jsx` | `cowartContextMenuItems()`、`CowartContextMenu` / `CowartContextMenuContent`、`cowartComponents.ContextMenu` 和对应的 tldraw 导入（均标 `[fork-patch]`） | 右键菜单同样是写死的 React 组件，tldraw 的 `DefaultContextMenuContent` 各组之间没有插槽；开一个通用的右键菜单扩展接口，适配层用它在「复制为 / 导出为 / 下载原图」下面加「在资源管理器中显示」。内容照抄 tldraw 5.1 的 `DefaultContextMenuContent` 再加一组，升级 tldraw 时要对一下。未注册扩展时与上游一致 | 未提（接口是通用的，可以提） |
 | `src/App.jsx` | 标注绑定：`cowartAnnotationNotices` 到 `registerAnnotationBindings()` 一组函数和新的 `collectAnnotationTargetShapeIds`（替换了原来按距离、颜色收集标注的辅助函数和常量）、`CowartAnnotationPointing` 的 `updateArrowEnd` / `complete` / `cancel`、`CowartAnnotationToolbarItem` 的提示、5 个按标注请求构建函数的 `annotationLines`、`handleMount` 里的注册和去掉的 `unsubscribeAnnotationEditingToolLock` 监听（均标 `[fork-patch]`） | 上游按「卡片周围一圈里的红 / 橙 / 黄箭头和文字」猜标注归谁：挨得近的卡片互相串、离得远的漏掉。改成画的时候必须指到卡片（图片 / 视频 / 网页卡片 / AI HTML / AI Slides，松手不在卡片上就撤掉并提示），箭头尖用 tldraw 箭头绑定钉在松手点、随画布保存；卡片移动时标注整条跟着走、删卡片一起删；拖箭头尖换卡片按松手点改绑，拖到空白处退回原位；写要求时回车完成（Shift+回车换行），完成后回到选择工具（去掉了上游写完字又切回标注工具的监听），没写字就结束的标注直接撤掉；新增「注释」工具（`CowartNoteTool`，蓝色虚线，`meta.cowartAnnotationNote`，常驻说明，请求里单列为背景）和各卡片工具栏的「清理标注」（`CowartClearAnnotationsButton`，只删标注、留注释；视频工具栏为此换成 `CowartVideoToolbar`）；只认「标注」「注释」工具的箭头，旧的未绑定标注在打开画布时按箭头尖位置补绑；请求里除截图外再逐条列出每个标注的字和指向的位置（占卡片宽高的百分比） | 未提（改的是上游行为，可以作为提案提） |
 | `src/App.jsx` | `followUpSender(sourceShapeId)` 及各图片 / 标注 / HTML / Slides 请求入口、Slides 截图后的页面检查（均标 `[fork-patch]`） | 开始准备截图或上传时固定来源页，通过 `message.cowart.pageId/pageName` 发给共享桥；等待期间翻页也不会把请求发给另一页负责者。Slides 需要先建新框，截图期间翻页则明确终止，避免在新页误建框 | 未提（通用消息来源元数据） |
 | `src/App.jsx` | `buildCowartAssetUrls()` 的中文语言资源补全（标 `[fork-patch]`） | 在 tldraw 校验语言包之前补齐尚缺的 `page-menu.max-pages-reached`、`page-menu.resize`，消除中文菜单缺词警告 | 未提 |
