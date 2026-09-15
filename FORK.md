@@ -117,6 +117,8 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - 存储定位由适配层的 `getStorageTarget()` 提供，不依赖易被主题通知、历史结果或错误结果覆盖的 `openai.toolOutput`。上游客户端等到有效存储参数才结束监听；首次读取可重试，并显示真实错误和「重新连接」，未读到快照前不挂载可编辑的空画布。`src/App.jsx` 在初始视角应用后发送 `cowart:canvas-ready`，共享脚本再完成首次定位，不再用 800 毫秒定时器猜测（否则可能覆盖用户刚切到的页面）。
 - 原生页的 view state（当前页、camera、视频的时间/暂停/声音/速度）按服务会话保存，与共享画布内容及其它任务分离。任务切回后用该状态恢复；明确进入另一页时清除旧视角。状态在服务内保留最多 256 个会话，服务重启或 bridge 换成新的会话标识时不承诺恢复旧播放状态。
 - `codex/web/asset-cache.js` 使用有容量限制的 IndexedDB 保存完整视频传输（总计 128 MiB、单项上限 64 MiB，按 base64 长度计）。每次重建页面都向服务校验文件版本，命中只返回小型确认；文件变化、删除、分段期间换源和重试均不能使用旧数据。宿主禁用持久存储时正常退回 MCP 分段读取。
+- 浏览器缓存始终是可选优化：打开、读取、写入事务均有 1 秒等待上限，失败后本页面停用缓存；视频字节到达后立即交给播放器，缓存写入在后台完成。宿主 `hostcontextchanged` 是增量通知，必须合并已有 context；只有主题/尺寸的通知不能清掉 displayMode 并把正在显示的画布误判为休眠。
+- 视频 Blob URL 在素材明确失效时释放，文档销毁时由浏览器回收；不能在 `beforeunload` 提前全部撤销，因为视频解码器还可能读取分段，导航也可能被取消。媒体回归可通过 `COWART_QA_VIDEO` 指定真实视频，在隔离画布里验证完整读取、解码、播放、切页与销毁重建。
 - `test:codex` 包含初始化通知乱序、任务状态隔离、文件版本变化、真实 iframe 销毁/重建后页/视角/暂停进度恢复、缓存视频零字节重传、历史卡片不自动展开及点击恢复；依然需要真实 Codex 宿主验证其销毁与重新加载行为。
 
 ## 反馈（2026-09-14）
@@ -145,6 +147,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 
 | 文件 | 位置 | 原因 | 上游 PR |
 |---|---|---|---|
+| `mcp/lib/widget-resource.mjs` | `applyHostContext`（标 `[fork-patch]`） | 合并宿主增量 context，保留通知中未提供的 displayMode、widget identity 和能力字段，避免主题或尺寸更新中断视频分段读取 | 未提（通用 MCP Apps 增量 context 契约） |
 | `src/cowartClient.js`、`src/App.jsx` | 有效存储参数等待、适配层 storage/activity 接口、首次加载重试、错误操作、view state 去重与隐藏页轮询（均标 `[fork-patch]`） | 初始化通知可能先给主题后给存储；一次性监听会误报文件加载失败。宿主重建 sandbox 后应从权威快照和会话状态恢复，错误可重试；隐藏时不积累读取，时间戳也不应导致无变化的视角持续写入 | 未提（通用初始化与生命周期恢复） |
 | `.mcp.json`、`.codex-plugin/plugin.json` | Codex MCP 启动入口、skills 路径和插件使用文案 | 保留 MCP Apps 原生画布，入口转到 `adapters/codex/bin/start.mjs` 的已打包薄桥，skills 转到 `adapters/codex/skills/`，让 Codex 使用共享服务和分页负责规则；上游入口与根 skills 保留在仓库供同步参考 | fork 专用 |
 | `src/App.jsx` | `cowartExtensionTools()` 等三个函数、`cowartUiOverrides.translations` / `tools`、`CowartToolbar`（均标 `[fork-patch]`） | 底部工具栏是写死的 React 组件，适配层没法从外面加按钮；开一个通用的工具栏扩展接口，适配层用它加「AI 视频」（AI 组）和「网页」（`after: 'asset'`，排在媒体后面）。未注册扩展时行为与上游一致 | 未提（接口是通用的，可以提） |

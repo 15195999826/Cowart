@@ -3,20 +3,44 @@
 // transfer is presented as a healthy cache entry. Storage denial falls back to MCP.
 (() => {
   const LIMIT = 128 * 1024 * 1024
+  const STORAGE_WAIT_MS = 1000
   let database
+  let connection
+  let disabled = false
   const inflight = new Map()
   const bypass = new Set()
+  function disable() {
+    disabled = true
+    connection?.close()
+    connection = null
+  }
+  function bounded(promise, cancel = () => {}) {
+    let timer
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { cancel() } catch { /* The transaction may already be finished. */ }
+        reject(new Error('Optional media cache did not respond'))
+      }, STORAGE_WAIT_MS)
+    })
+    return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
+  }
   async function db() {
-    if (!database) database = new Promise((resolve, reject) => {
+    if (disabled) return null
+    if (!database) database = bounded(new Promise((resolve, reject) => {
       const request = indexedDB.open('cowart-native-media-v1', 1)
       request.onupgradeneeded = () => {
         request.result.createObjectStore('assets')
         request.result.createObjectStore('meta', { keyPath: 'key' })
       }
-      request.onsuccess = () => resolve(request.result)
+      request.onsuccess = () => {
+        if (disabled) { request.result.close(); return }
+        connection = request.result
+        connection.onversionchange = disable
+        resolve(connection)
+      }
       request.onerror = () => reject(request.error)
       request.onblocked = () => reject(new Error('Media cache unavailable'))
-    }).catch(() => null)
+    })).catch(() => { disable(); return null })
     return database
   }
   const resultOf = (request) => new Promise((resolve, reject) => {
@@ -27,22 +51,26 @@
     try {
       const store = await db()
       if (!store) return null
-      const value = await resultOf(store.transaction('assets').objectStore('assets').get(key))
-      return value?.version && typeof value.dataBase64 === 'string' ? value : null
-    } catch { return null }
+      const tx = store.transaction('assets')
+      const value = await bounded(resultOf(tx.objectStore('assets').get(key)), () => tx.abort())
+      return value?.version && Number.isSafeInteger(value.totalBytes) && value.totalBytes >= 0 &&
+        typeof value.dataBase64 === 'string' && value.dataBase64.length === 4 * Math.ceil(value.totalBytes / 3) ? value : null
+    } catch { disable(); return null }
   }
-  async function put(key, value) {
+  async function put(key, value, touchOnly = false) {
     try {
       const bytes = value.dataBase64.length
       if (bytes > LIMIT / 2) return
       const store = await db()
       if (!store) return
-      await new Promise((resolve, reject) => {
-        const tx = store.transaction(['assets', 'meta'], 'readwrite')
+      const tx = store.transaction(touchOnly ? ['meta'] : ['assets', 'meta'], 'readwrite')
+      await bounded(new Promise((resolve, reject) => {
         tx.oncomplete = resolve
         tx.onerror = () => reject(tx.error)
         tx.onabort = () => reject(tx.error)
-        const assets = tx.objectStore('assets'), meta = tx.objectStore('meta')
+        const meta = tx.objectStore('meta')
+        if (touchOnly) { meta.put({ key, bytes, usedAt: Date.now() }); return }
+        const assets = tx.objectStore('assets')
         const request = meta.getAll()
         request.onsuccess = () => {
           const entries = request.result.filter((entry) => entry.key !== key).sort((a, b) => a.usedAt - b.usedAt)
@@ -54,8 +82,8 @@
           assets.put(value, key)
           meta.put({ key, bytes, usedAt: Date.now() })
         }
-      })
-    } catch { /* Private/ephemeral sandboxes and quota failures still use MCP. */ }
+      }), () => tx.abort())
+    } catch { disable() }
   }
   window.addEventListener('cowart:retry-asset', ({ detail }) => {
     const src = window.__cowartEditor?.getAsset(detail?.assetId)?.props.src
@@ -70,7 +98,7 @@
       if (result.isError) return result
       let data = result.structuredContent
       if (data?.notModified && cached) {
-        await put(key, cached)
+        void put(key, cached, true)
         return { ...result, structuredContent: cached }
       }
       if (!data?.version) return result
@@ -85,7 +113,9 @@
         offset = next.nextOffset
       }
       data = { ...data, dataBase64: parts.join(''), nextOffset: null }
-      await put(key, data)
+      // Delivery never waits for optional storage. In native sandboxes even an
+      // IndexedDB request without an error callback can remain pending forever.
+      void put(key, data)
       return { ...result, structuredContent: data }
     })().finally(() => inflight.delete(key))
     inflight.set(key, work)

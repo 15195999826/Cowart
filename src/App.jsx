@@ -345,9 +345,9 @@ const cowartTldrawAssetStore = {
   resolve: resolveCowartTldrawAssetUrl
 }
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', revokeCowartAssetObjectUrls, { once: true })
-}
+// [fork-patch] The browser releases document-owned Blob URLs on destruction.
+// beforeunload is too early (and navigation may be cancelled): active decoders
+// can still request ranges. Only explicit asset invalidation revokes a live URL.
 
 function buildCowartAssetUrls() {
   const icons = {}
@@ -476,12 +476,6 @@ function revokeCowartCachedAsset(cacheKey) {
   cowartAssetObjectUrlCache.delete(cacheKey)
   if (cowartAssetSourceKeys.get(cached.src) === cacheKey) {
     cowartAssetSourceKeys.delete(cached.src)
-  }
-}
-
-function revokeCowartAssetObjectUrls() {
-  for (const cacheKey of Array.from(cowartAssetObjectUrlCache.keys())) {
-    revokeCowartCachedAsset(cacheKey)
   }
 }
 

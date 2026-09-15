@@ -20,7 +20,10 @@
     let cursor = null
     let timer = null
     function updateActivity() {
-      const next = !stopped && !document.hidden && window.openai?.displayMode === 'fullscreen'
+      // The MCP Apps SDK owns the merged context. Compatibility globals may
+      // still come from an older bridge that publishes partial notifications.
+      const mode = app.getHostContext?.()?.displayMode ?? window.openai?.displayMode
+      const next = !stopped && !document.hidden && mode === 'fullscreen'
       if (active === next) return
       if (!next) window.__cowartFlushView?.().catch(() => {})
       active = next

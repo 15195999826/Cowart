@@ -30,6 +30,7 @@ const client = new Client({ name: 'cowart-native-widget-test', version: '1.0.0' 
 let browser, hostServer, frame
 const errors = []
 const warnings = []
+const failedRequests = []
 const call = (name, args = {}) => client.callTool({ name, arguments: args }, undefined, { timeout: 120000 })
 const ok = (result) => { assert.ok(!result.isError, JSON.stringify(result)); return result.structuredContent }
 const passed = (name) => console.log(`PASS  ${name}`)
@@ -72,7 +73,7 @@ try {
 
   // Exercise actual chunking, rather than just a video small enough for one response.
   const videoPath = join(root, 'chunked-video.mp4')
-  const videoBytes = Buffer.concat([await readFile(join(ADAPTERS_DIR, 'claude/test/fixtures/tiny.mp4')), Buffer.alloc(2 * 1024 * 1024)])
+  const videoBytes = Buffer.concat([await readFile(process.env.COWART_QA_VIDEO || join(ADAPTERS_DIR, 'claude/test/fixtures/tiny.mp4')), Buffer.alloc(2 * 1024 * 1024)])
   await writeFile(videoPath, videoBytes)
   const insertedVideo = ok(await call('insert_cowart_video', { videoPath, pageId, videoWidth: 320, videoHeight: 180 }))
   ok(await call('insert_cowart_image', { imagePath: join(ADAPTERS_DIR, 'claude/test/fixtures/tiny.png'), pageId }))
@@ -89,16 +90,19 @@ try {
     res.setHeader('content-type', 'text/html; charset=utf-8')
       if (req.url?.startsWith('/widget')) {
       res.setHeader('content-security-policy', csp)
-      return res.end(widget)
+      return res.end(req.url.includes('cache-stalled') ? widget.replace('<head>', '<head><script>Object.defineProperty(window,"indexedDB",{value:{open:()=>({})},configurable:true})</script>') : widget)
     }
     res.end(`<!doctype html><title>Cowart MCP Apps host fixture</title><style>body{margin:0}iframe{border:0;width:100vw;height:100vh}</style><script>
       window.addEventListener('message', async e => {
         const m=e.data; if(!m || m.jsonrpc!=='2.0') return;
         const target=e.source;if(!target)return;
+        const sourceFrame=[...document.querySelectorAll('iframe')].find(frame=>frame.contentWindow===target);
+        const requestDocument=sourceFrame?.contentDocument;
         if(m.id===undefined) return;
-        try {const result=await window.hostRpc(m);target.postMessage({jsonrpc:'2.0',id:m.id,result},'*');
+        try {const result=await window.hostRpc(m);if(sourceFrame && sourceFrame.contentDocument!==requestDocument)return;target.postMessage({jsonrpc:'2.0',id:m.id,result},'*');
           if(m.method==='ui/initialize')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:${JSON.stringify(rendered)}},'*');
           if(m.method==='ui/request-display-mode')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{displayMode:result.mode}},'*');
+          if(m.method==='tools/call' && m.params?.arguments?.body?.name==='read_cowart_page_asset')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{theme:'light'}},'*');
         }
         catch(error){target.postMessage({jsonrpc:'2.0',id:m.id,error:{code:-32000,message:error.message}},'*')}
       });
@@ -114,6 +118,7 @@ try {
     if (request.url().startsWith('data:text/html')) htmlDataRequests.push(request.url())
   })
   page.on('pageerror', (error) => errors.push(error.message))
+  page.on('requestfailed', (request) => failedRequests.push({ url: request.url().slice(0, 200), frame: request.frame()?.url(), error: request.failure()?.errorText }))
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text())
     if (message.type() === 'warn') warnings.push(message.text())
@@ -164,6 +169,11 @@ try {
   assert.ok(await frame.$('[data-testid="tools.ai-video"]'))
   assert.ok(await frame.evaluate(() => window.__cowartHostConfig.imageModels.some((model) => model.id === 'codex-imagegen')))
   passed('MCP Apps handshake renders tldraw, owned page, model options and shared controls')
+  await frame.evaluate(() => {
+    window.openai.displayMode = undefined
+    window.dispatchEvent(new CustomEvent('openai:set_globals'))
+  })
+  assert.equal(await frame.evaluate(() => window.cowartMcp.isActive()), true, 'the native SDK context remains authoritative when older compatibility globals omit displayMode')
 
   await frame.evaluate(async () => {
     const editor = window.__cowartEditor
@@ -197,6 +207,11 @@ try {
   })
   assert.equal(loadedVideo.bytes, videoBytes.length, 'the decoded blob must contain every media chunk')
   assert.equal(loadedVideo.sha256, createHash('sha256').update(videoBytes).digest('hex'), 'the blob must be byte-identical to the inserted video')
+  assert.equal(await frame.evaluate(async () => {
+    const src = document.querySelector('video').currentSrc
+    window.dispatchEvent(new Event('beforeunload'))
+    return (await (await fetch(src)).arrayBuffer()).byteLength
+  }), videoBytes.length, 'a cancelled or unfinished navigation must not revoke a still-live video URL')
   await frame.waitForFunction((time) => {
     const video = document.querySelector('video')
     return !video.paused && video.currentTime !== time
@@ -609,18 +624,29 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 1500))
   assert.equal(await frame.evaluate(() => window.__cowartEditor.getCurrentPageId()), otherPageId, 'the page being viewed survives independently of the page this session owns')
   passed('a task returns to the page it was viewing, even when it owns a different page')
+  await frame.evaluate(async (id) => {
+    window.__cowartEditor.setCurrentPage(id)
+    window.__cowartEditor.zoomToFit({ animation: { duration: 0 } })
+    await window.__cowartFlushView()
+  }, pageId)
+  const withoutCache = page.waitForFrame((entry) => entry.url().includes('/widget?cache-stalled'))
+  await page.evaluate(() => { document.querySelector('iframe[src="/widget?viewed-again"]').src = '/widget?cache-stalled' })
+  frame = await withoutCache
+  await frame.waitForFunction(() => document.querySelector('video.tl-video')?.readyState >= 2, { timeout: 20000 })
+  assert.equal(await frame.evaluate(() => window.cowartMcp.isActive()), true)
+  passed('videos render with permanently stalled browser storage and partial host-context notifications during chunk transfers')
   assert.deepEqual(directAssetRequests, [], 'the native widget must never fall back to relative page-asset HTTP requests')
   const screenshot=join(tmpdir(),'cowart-codex-native-qa.png')
   await page.screenshot({path:screenshot})
   // The fork intentionally blocks upstream analytics in every host. The strict
   // CSP fixture now proves that policy, so these exact diagnostics are expected.
   const analyticsBlocked = (message) => message.includes("Loading the script 'https://www.googletagmanager.com/gtag/js?") && message.includes('Content Security Policy')
-  assert.deepEqual(errors.filter((message) => !analyticsBlocked(message)),[],`browser errors; methods=${methods.join(',')}`)
+  assert.deepEqual(errors.filter((message) => !analyticsBlocked(message)),[], 'browser errors')
   assert.deepEqual(warnings.filter((message)=>!/allow-scripts.*allow-same-origin|can escape its sandbox/.test(message) && message !== 'Cowart analytics could not load the Google tag.' && !message.startsWith('Cowart could not resolve local page asset through MCP.')),[])
   passed(`rendered widget has no app console errors; screenshot ${screenshot}`)
   console.log('All Codex checks passed.')
 } catch (error) {
-  console.error({ errors, warnings })
+  console.error({ errors, warnings, failedRequests })
   if (frame) console.error(await frame.evaluate(()=>({hostError:String(window.__COWART_MCP_HOST_ERROR__||''),body:document.body.innerText.slice(0,1500),videos:[...document.querySelectorAll('video')].map((v)=>({src:v.currentSrc,readyState:v.readyState,error:v.error?.message}))})).catch(()=>null))
   console.error(stderr)
   throw error

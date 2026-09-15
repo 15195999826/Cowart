@@ -862,6 +862,12 @@ ${t}`}function kXt(t){return t.replaceAll("</script","<\\/script").replaceAll("<
 
   function applyHostContext(context) {
     if (!context) return;
+    // [fork-patch] Host-context notifications are partial (theme, dimensions,
+    // etc.). Missing fields must not clear fullscreen or suspend media reads.
+    context = {
+      ...window.openai?.hostContext,
+      ...Object.fromEntries(Object.entries(context).filter(([_key, value]) => value !== undefined)),
+    };
     try {
       if (context.theme && typeof apps.applyDocumentTheme === "function") {
         apps.applyDocumentTheme(context.theme);
