@@ -15,7 +15,7 @@ description: Open, reopen, or explicitly refresh the native Cowart MCP Apps canv
 | 打开 Cowart 画布「角色设定」/ 进入「角色设定」/ 接管「角色设定」 | 加 `"page": "角色设定"`；没有该页则创建 |
 | 接管这页 | 加 `"shownPage": true` |
 
-第一次打开选一个简短人名作为 `sessionName`，整个会话沿用，避开现有会话的名字。没有 `page` / `shownPage` 时不改变负责关系；每个会话最多负责一页，每页同时一位负责者，翻页只是查看。
+第一次打开选一个简短人名作为 `sessionName`，整个会话沿用，避开现有会话的名字。没有 `page` / `shownPage` 时打开原负责页或当前显示页；显示页空闲时自动接管，已有其他负责者则保留其负责关系，可点按钮明确接管。每个会话最多负责一页，每页同时一位负责者，翻页只是查看。
 
 工具返回 `openai/outputTemplate: ui://widget/cowart/canvas.html`，由 Codex 渲染原生 widget。无需打开 Browser 面板、启动旧本地网页脚本或运行 Claude 的 Monitor。当前会话工具不可见时先做工具发现再重试，不因一次没找到就要求用户开新任务。
 

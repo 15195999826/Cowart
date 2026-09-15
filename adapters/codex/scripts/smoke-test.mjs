@@ -66,7 +66,9 @@ try {
   assert.equal(opened.rendering, 'native-widget')
   assert.equal(rendered._meta['openai/outputTemplate'], 'ui://widget/cowart/canvas.html')
   const resource = await client.readResource({ uri: 'ui://widget/cowart/canvas.html' })
-  const widget = resource.contents[0].text
+  let widget = resource.contents[0].text
+  assert.equal(widget.includes(session), false, 'cacheable HTML must not embed a live session identity')
+  widget = widget.replace(/window\.__COWART_SERVICE_PAGE__=(.*?);/, (_match, value) => `window.__COWART_SERVICE_PAGE__=${JSON.stringify({ ...JSON.parse(value), session: 'stale-cached-session', canvasDir: join(root, 'stale-canvas'), projectDir: join(root, 'old-project'), heldPageId: 'page:stale-cache' })};`)
   const csp = widgetCsp(resource.contents[0]._meta)
   for (const marker of ['cowartCodexTransport', 'cowartServiceBridge', 'cowartShared-ai-video', 'cowartShared-ai-image', 'cowartShared-web-reference']) assert.ok(widget.includes(marker), marker)
   passed('native resource includes shared page runtime and all extensions')
@@ -84,6 +86,7 @@ try {
   let initialMode = 'inline'
   let initialFailures = 0
   let canvasReads = 0
+  let rejectNextClaim = false
   let uploadGate = null
   let assetReadGate = null
   hostServer = http.createServer((req, res) => {
@@ -93,12 +96,23 @@ try {
       return res.end(req.url.includes('cache-stalled') ? widget.replace('<head>', '<head><script>Object.defineProperty(window,"indexedDB",{value:{open:()=>({})},configurable:true})</script>') : widget)
     }
     res.end(`<!doctype html><title>Cowart MCP Apps host fixture</title><style>body{margin:0}iframe{border:0;width:100vw;height:100vh}</style><script>
+      function isJson(value) {
+        if(value===null || typeof value==='string' || typeof value==='boolean')return true;
+        if(typeof value==='number')return Number.isFinite(value);
+        if(Array.isArray(value))return value.every(isJson);
+        return typeof value==='object' && value!==null && Object.values(value).every(isJson);
+      }
       window.addEventListener('message', async e => {
         const m=e.data; if(!m || m.jsonrpc!=='2.0') return;
         const target=e.source;if(!target)return;
         const sourceFrame=[...document.querySelectorAll('iframe')].find(frame=>frame.contentWindow===target);
         const requestDocument=sourceFrame?.contentDocument;
         if(m.id===undefined) return;
+        // Validate BEFORE the Puppeteer binding serializes the message. Native
+        // postMessage preserves undefined; stdio would otherwise hide the error.
+        if(m.method==='tools/call' && !isJson(m.params)) {
+          target.postMessage({jsonrpc:'2.0',id:m.id,error:{code:-32602,message:'Invalid tool call params'}},'*');return;
+        }
         try {const result=await window.hostRpc(m);if(sourceFrame && sourceFrame.contentDocument!==requestDocument)return;target.postMessage({jsonrpc:'2.0',id:m.id,result},'*');
           if(m.method==='ui/initialize')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:${JSON.stringify(rendered)}},'*');
           if(m.method==='ui/request-display-mode')target.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{displayMode:result.mode}},'*');
@@ -129,6 +143,7 @@ try {
       case 'ui/initialize': return { protocolVersion: '2026-01-26', hostInfo: { name: 'Cowart test host', version: '1.0.0' }, hostCapabilities: { serverTools: {}, message: { text: {} }, openLinks: {} }, hostContext: { displayMode: initialMode, availableDisplayModes: ['inline', 'fullscreen'], theme: 'light' } }
       case 'tools/call': {
         const args = message.params.arguments
+        if (args?.path === '/api/pages/enter' && rejectNextClaim) { rejectNextClaim = false; throw new Error('Claim temporarily unavailable') }
         const pageTool = message.params.name === 'cowart_canvas_app' && args?.path === '/api/tools/call' ? args.body : null
         if (pageTool?.name === 'get_cowart_canvas_state') {
           canvasReads++
@@ -635,6 +650,21 @@ try {
   await frame.waitForFunction(() => document.querySelector('video.tl-video')?.readyState >= 2, { timeout: 20000 })
   assert.equal(await frame.evaluate(() => window.cowartMcp.isActive()), true)
   passed('videos render with permanently stalled browser storage and partial host-context notifications during chunk transfers')
+  await frame.evaluate(async () => {
+    const editor = window.__cowartEditor
+    editor.createPage({ id: 'page:claim-button', name: '接管按钮验收' })
+    editor.setCurrentPage('page:claim-button')
+    await window.__cowartKit.saveCanvasNow()
+  })
+  await frame.waitForFunction(() => document.querySelector('#cowart-codex-overlay')?.shadowRoot.querySelector('.enter')?.hidden === false)
+  rejectNextClaim = true
+  await frame.evaluate(() => document.querySelector('#cowart-codex-overlay').shadowRoot.querySelector('.enter').click())
+  await frame.waitForFunction(() => document.querySelector('#cowart-codex-overlay').shadowRoot.querySelector('.page-error')?.textContent.includes('Claim temporarily unavailable'))
+  await frame.evaluate(() => document.querySelector('#cowart-codex-overlay').shadowRoot.querySelector('.enter').click())
+  await frame.waitForFunction(() => document.querySelector('#cowart-codex-overlay').shadowRoot.querySelector('.label').textContent.includes('负责「接管按钮验收」'))
+  assert.equal(await frame.evaluate(() => document.querySelector('#cowart-codex-overlay').shadowRoot.querySelector('.page-error').hidden), true)
+  assert.equal(ok(await call('get_cowart_canvas_state')).responsibilities.pages['page:claim-button'].holder, session)
+  passed('a cached resource binds the live session, and the real claim button reports failures and takes ownership on retry')
   assert.deepEqual(directAssetRequests, [], 'the native widget must never fall back to relative page-asset HTTP requests')
   const screenshot=join(tmpdir(),'cowart-codex-native-qa.png')
   await page.screenshot({path:screenshot})

@@ -248,6 +248,7 @@
       loaded = true
       openRequestedPage()
       check()
+      if (transport && config.claimShownPage) enter(true).catch((error) => overlay?.setPageError(error.message))
     }
 
     function send(pageId) {
@@ -336,8 +337,10 @@
     }
 
     // This pane's session takes the page on screen.
-    async function enter() {
-      return postJson('/api/pages/enter', { pane: PANE }, 8000)
+    async function enter(onlyIfFree = false) {
+      const result = await postJson('/api/pages/enter', { pane: PANE, ...current(), onlyIfFree }, 8000)
+      if (result.state) setState(result.state)
+      return result
     }
 
     return { canvasLoaded, adjustFirstView, goTo, setConnected, setState, removePages, current, enter, applyRole, names }
@@ -499,6 +502,8 @@
       height: 20px; padding: 0 10px; color: #fff; font-size: 12px; background: #2f6fed; border: 0;
       border-radius: 999px; cursor: pointer;
     }
+    .page-error { max-width: 420px; padding: 6px 10px; border-radius: 6px; background: #fff1f2;
+      color: #9f1239; font: 12px/1.5 system-ui, sans-serif; pointer-events: auto; }
     .enter:hover { background: #1d5bd8; }
     .enter:disabled { background: #9ca3af; cursor: default; }
     .toasts { display: flex; flex-direction: column; gap: 6px; align-items: center; }
@@ -538,6 +543,7 @@
           <span class="page-label"></span>
           <button class="enter" type="button" hidden title="这一页的 AI 请求改由这个会话处理"></button>
         </div>
+        <div class="page-error" role="status" hidden></div>
         <div class="toasts"></div>
       </div>`
     document.body.appendChild(hostElement)
@@ -548,6 +554,7 @@
     const pageLine = root.querySelector('.page')
     const pageLabel = root.querySelector('.page-label')
     const enterButton = root.querySelector('.enter')
+    const pageError = root.querySelector('.page-error')
     const toastList = root.querySelector('.toasts')
     // session: online (its Claude session is connected) / waiting (reconnecting) / ended.
     // role: { myName, myPage, thisPage: { mine, holderName } }.
@@ -624,11 +631,14 @@
 
     enterButton.addEventListener('click', async () => {
       enterButton.disabled = true
+      pageError.hidden = true
       try {
         await pages.enter()
         enterButton.title = '这一页的 AI 请求改由这个会话处理'
       } catch (error) {
         enterButton.title = error instanceof Error ? error.message : String(error)
+        pageError.textContent = `接管失败：${enterButton.title}`
+        pageError.hidden = false
       } finally {
         enterButton.disabled = false
       }
@@ -762,6 +772,7 @@
     renderPill()
 
     return {
+      setPageError(message) { pageError.textContent = `接管失败：${message}`; pageError.hidden = false },
       upsert,
       setServiceOnline(online) {
         state.serviceOnline = online

@@ -235,8 +235,11 @@ function mcpHostBridgeScript(appVersion) {
       try {
         if (!app || typeof app.callServerTool !== "function") throw new Error("Host tool bridge is unavailable.");
         await waitForReady(app);
+        // [fork-patch] postMessage preserves undefined, unlike a JSON/stdio
+        // transport. Native hosts reject those values as invalid tool params.
+        const jsonRequest = JSON.parse(JSON.stringify(request));
         return await withTimeout(
-          app.callServerTool(request, options),
+          app.callServerTool(jsonRequest, options),
           options?.timeoutMs || 30000,
           "Cowart server tool call timed out.",
         );

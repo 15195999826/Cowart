@@ -19,7 +19,7 @@ export const WIDGET_URI = 'ui://widget/cowart/canvas.html'
 export const APP_TOOL = 'cowart_canvas_app'
 const textResult = (text, structuredContent) => ({ content: [{ type: 'text', text }], structuredContent })
 const errorResult = (text) => ({ content: [{ type: 'text', text }], isError: true })
-export const INSTRUCTIONS = `Cowart 是 Codex 原生 MCP Apps 无限画布。每个任务只有一个薄 bridge，和 Claude Code 共用本机 ~/.cowart/canvas 的页面、素材和画布服务。用 render_cowart_canvas_widget 打开原生 widget，不打开 Browser 网页；已有画布时直接用读取/插入工具。page 指定页名并接管（不存在就建），shownPage 接管当前显示页；不传则只打开，不改变负责关系。每个会话最多负责一页，每页同时一位负责者；翻页只是查看。插入默认放进本会话负责页，结果必须回原请求的 pageId。第一次打开选一个简短人名 sessionName。
+export const INSTRUCTIONS = `Cowart 是 Codex 原生 MCP Apps 无限画布。每个任务只有一个薄 bridge，和 Claude Code 共用本机 ~/.cowart/canvas 的页面、素材和画布服务。用 render_cowart_canvas_widget 打开原生 widget，不打开 Browser 网页；已有画布时直接用读取/插入工具。page 指定页名并接管（不存在就建），shownPage 接管当前显示页；不传时打开原负责页或当前显示页，空闲页自动接管，已有其他负责者则只查看。每个会话最多负责一页，每页同时一位负责者；翻页只是查看。插入默认放进本会话负责页，结果必须回原请求的 pageId。第一次打开选一个简短人名 sessionName。
 画布的 AI 图片/视频面板由服务直接生成，模型与参数来自用户面板选择。Codex imagegen 和 HTML/Slides/标注等请求先排队路由给该页负责者，再由其原生 widget 发送 ui/message。处理画布请求、HTML/Slides 或素材前先读取同插件 cowart skill。收到 Cowart 请求 #N 时先带 requestKey 调用 get_cowart_request，已完成/撤销/跳过的不再执行；否则 reply_cowart_request running，再完成并回 done/failed。消息送达并不改变系统授权要求。跨会话的请求只由负责会话处理；目标 Codex widget 没打开时留队列，可用 list_cowart_requests 补读。生成方式按请求指定；内置 imagegen 用 cowart-image-gen / cowart-image-edit，猛兽用 beast-gen。保留原图与标注，只将按标注改图结果放在原图旁边。不要直接读写共享画布 JSON 或整张覆盖保存。用户说「反馈：…」「记个反馈」，或抱怨 Cowart 本身不好用（先问一句要不要记）时，用 send_cowart_feedback 记下来，交给 Cowart 仓库处理；只记录，不在当前项目里改 Cowart。`
 
 // MCP-delivered media is materialized as blob/data URLs in the widget. Codex does
@@ -34,6 +34,7 @@ export async function startCodexBridge() {
   let opened = null
   let latestRenderId = null
   let expandedRenderId = null
+  let claimShownPage = true
   let closing = false
   const shutdown = () => { if (closing) return; closing = true; service.close(); process.exit(0) }
   server.onclose = shutdown
@@ -47,7 +48,7 @@ export async function startCodexBridge() {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     await ready
     const own = OWN_TOOLS.map((tool) => {
-      if (tool.name === 'render_cowart_canvas_widget') return { ...tool, description: 'Open the native Cowart MCP Apps widget, shared with Claude. page takes responsibility for a named page (create if missing); shownPage takes the displayed page; no page arguments only opens the canvas.', _meta: RENDER_META }
+      if (tool.name === 'render_cowart_canvas_widget') return { ...tool, description: 'Open the native Cowart MCP Apps widget, shared with Claude. page takes responsibility for a named page (create if missing); shownPage takes the displayed page; without page arguments, an unowned displayed page is claimed automatically; another session’s page stays theirs until explicitly claimed.', _meta: RENDER_META }
       if (tool.name === 'get_cowart_request') return { ...tool, inputSchema: { ...tool.inputSchema, required: [...tool.inputSchema.required, 'requestKey'], properties: { ...tool.inputSchema.properties, requestKey: { type: 'string', description: 'Copy the requestKey from the widget message to reject stale messages after service restart.' } } }, description: 'Read this session’s queued canvas request, including its original pageId and current status. Supply the requestKey from the widget message. Do not execute cancelled or finished requests.' }
       if (tool.name === 'reply_cowart_request') return { ...tool, inputSchema: { ...tool.inputSchema, required: [...tool.inputSchema.required, 'requestKey'], properties: { ...tool.inputSchema.properties, requestKey: { type: 'string', description: 'Use the requestKey returned by get_cowart_request.' } } } }
       return tool
@@ -63,8 +64,9 @@ export async function startCodexBridge() {
   server.setRequestHandler(ReadResourceRequestSchema, async ({ params }) => {
     if (params.uri !== WIDGET_URI) throw new Error('Unknown Cowart resource')
     await ready
-    opened = await service.call('open-canvas')
-    const config = { ...opened, host: 'codex', hostLabel: 'Codex', protocol: PROTOCOL, version: VERSION }
+    // A native host can cache this URI across tasks and MCP process restarts.
+    // Only immutable host configuration belongs in the resource document.
+    const config = { host: 'codex', hostLabel: 'Codex', protocol: PROTOCOL, version: VERSION }
     const [raw, transport, cache, runtime, shared] = await Promise.all([
       readUpstreamWidgetHtml(), readFile(join(ADAPTERS_DIR, 'codex', 'web', 'transport.js'), 'utf8'),
       readFile(join(ADAPTERS_DIR, 'codex', 'web', 'asset-cache.js'), 'utf8'),
@@ -86,15 +88,17 @@ export async function startCodexBridge() {
       switch (params.name) {
         case 'render_cowart_canvas_widget': {
           opened = await service.call('open-canvas', args)
+          claimShownPage = !args.page && !args.shownPage
           latestRenderId = randomUUID()
           const payload = { ...opened, renderId: latestRenderId, version: 1, widget: 'cowart-canvas-widget', rendering: 'native-widget', preferredDisplayMode: 'fullscreen' }
           return { ...textResult(`已请求打开 Cowart 原生画布，界面正在连接和加载。${opened.sessionName}${opened.myPage ? `负责「${opened.myPage}」` : '尚未负责任何页'}。此返回值不代表画布已经显示完成。`, payload), _meta: { 'openai/outputTemplate': WIDGET_URI, widgetData: payload } }
         }
         case APP_TOOL: {
           if (args.op === 'bootstrap') {
+            const context = { ...await service.call('open-canvas'), claimShownPage, host: 'codex', hostLabel: 'Codex', protocol: PROTOCOL, version: VERSION }
             const autoExpand = Boolean(args.renderId && args.renderId === latestRenderId && expandedRenderId !== latestRenderId)
             if (autoExpand) expandedRenderId = latestRenderId
-            return textResult('Cowart widget lifecycle', { autoExpand })
+            return textResult('Cowart widget lifecycle', { autoExpand, context })
           }
           if (!['call', 'poll'].includes(args.op)) throw new Error('Unknown widget operation')
           return textResult('Cowart app response', await service.call(args.op === 'poll' ? 'widget-poll' : 'widget-call', args))

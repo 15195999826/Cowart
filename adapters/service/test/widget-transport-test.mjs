@@ -129,6 +129,15 @@ test('mixed-host page transport and atomic native-message delivery', async (t) =
       assert.equal((await action('native-a', 'pane-a', '/api/service/shutdown')).status, 404)
     })
     let requestId
+    await t.test('claim atomically registers a page; automatic claim preserves another owner', async () => {
+      const first = await action('native-a', 'fresh-claim-pane', '/api/pages/enter', { pageId: 'page:first', onlyIfFree: true })
+      assert.equal(first.payload.claimed, true)
+      const refused = await action('native-b', 'fresh-other-pane', '/api/pages/enter', { pageId: 'page:first', onlyIfFree: true })
+      assert.equal(refused.payload.claimed, false)
+      assert.equal(server.presence.holderOf(canvasDir, 'page:first'), 'native-a')
+      assert.equal((await action('native-b', 'fresh-other-pane', '/api/pages/enter', { pageId: 'page:deleted' })).status, 404)
+      server.presence.release('native-a')
+    })
     await t.test('native views survive new panes and remain isolated per session', async () => {
       const view = { currentPageId: 'page:first', camera: { x: 71, y: -29, z: 0.75 }, cowartPlayback: { 'shape:video': { time: 3.5, paused: true } } }
       await action('native-a', 'pane-a', '/api/tools/call', { name: 'save_cowart_view_state', arguments: { viewState: view } })

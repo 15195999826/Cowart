@@ -381,11 +381,23 @@ export class CanvasServer {
           return reply(200, { ok: true })
         }
         case '/api/pages/enter': {
-          const entry = this.presence.pane(paneId)
+          let entry = this.presence.pane(paneId)
+          // Register the clicked page in the same operation as taking it. A
+          // just-opened widget must not race its asynchronous pane heartbeat.
+          if (entry && nonEmpty(body.pageId)) {
+            const page = (await this.ops.canvasPages(this.#withDefaults(session))).find((page) => page.id === body.pageId)
+            if (!page) return reply(404, { error: '要接管的页面已不存在。' })
+            this.presence.setPanePage(paneId, { pageId: page.id, pageName: page.name })
+            entry = this.presence.pane(paneId)
+          }
           if (!entry?.pageId) return reply(409, { error: '画布页面还没连上画布服务。' })
           if (!session || session.state === 'ended') return reply(409, { error: '这个面板的会话已经结束了：在会话里重新打开画布再接管这一页。' })
+          const holder = this.presence.holderOf(entry.canvasDir, entry.pageId)
+          if (body.onlyIfFree === true && holder && holder !== session.id) {
+            return reply(200, { ok: true, claimed: false, state: this.presence.view(entry.canvasDir) })
+          }
           const { previous } = this.presence.enter(session.id, entry.canvasDir, entry.pageId)
-          return reply(200, { ok: true, pageId: entry.pageId, previous: previous && previous !== session.id ? this.#nameOf(previous) : null })
+          return reply(200, { ok: true, claimed: true, pageId: entry.pageId, previous: previous && previous !== session.id ? this.#nameOf(previous) : null, state: this.presence.view(entry.canvasDir) })
         }
         case '/api/generations': {
           const available = this.jobs ? this.jobs.availability() : { ok: false, reason: '画布服务不能直接生成。' }

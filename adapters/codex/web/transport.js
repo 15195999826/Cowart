@@ -6,6 +6,7 @@
     const ready = app.ready
     let active = false
     let bootstrapDone = false
+    let initializing = null
     let onActivity = () => {}
     const activeWaiters = new Set()
     const bootstraps = new Set()
@@ -23,7 +24,7 @@
       // The MCP Apps SDK owns the merged context. Compatibility globals may
       // still come from an older bridge that publishes partial notifications.
       const mode = app.getHostContext?.()?.displayMode ?? window.openai?.displayMode
-      const next = !stopped && !document.hidden && mode === 'fullscreen'
+      const next = bootstrapDone && !stopped && !document.hidden && mode === 'fullscreen'
       if (active === next) return
       if (!next) window.__cowartFlushView?.().catch(() => {})
       active = next
@@ -32,7 +33,19 @@
       onActivity()
     }
 
-    function waitUntilActive(signal) {
+    async function initialize() {
+      initializing ??= (async () => {
+        const { context } = await invoke({ op: 'bootstrap' }, 15000)
+        if (!context?.session || !context.canvasDir) throw new Error('Cowart 未返回当前会话的画布连接信息。')
+        Object.assign(config, context)
+        bootstrapDone = true
+        updateActivity()
+      })().catch((error) => { initializing = null; throw error })
+      return initializing
+    }
+
+    async function waitUntilActive(signal) {
+      await initialize()
       if (signal?.aborted) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
       if (active && bootstrapDone) return Promise.resolve()
       return new Promise((resolve, reject) => {
@@ -49,10 +62,7 @@
     }
 
     async function bootstrap() {
-      await ready
-      updateActivity()
-      bootstrapDone = true
-      for (const resolve of [...activeWaiters]) resolve()
+      await initialize()
       const payload = window.openai?.toolOutput
       const renderId = payload?.widget === 'cowart-canvas-widget' && payload.renderId
       if (!renderId || bootstraps.has(renderId)) return
@@ -78,10 +88,16 @@
       await ready
       const result = await nativeApi.callServerTool({ name: 'cowart_canvas_app', arguments: { ...args, pane } }, { timeoutMs })
       if (result.isError) throw new Error(result.content?.find((item) => item.type === 'text')?.text || 'Cowart 服务调用失败')
-      return result.structuredContent
+      const value = result.structuredContent
+      if (!value || (args.op === 'poll' && (!Array.isArray(value.events) || typeof value.cursor !== 'string')) ||
+          (args.op === 'call' && (!Number.isInteger(value.status) || !Object.hasOwn(value, 'payload')))) {
+        throw new Error('Cowart 调用返回了不完整的数据，连接状态尚未确认。')
+      }
+      return value
     }
 
     async function postJson(path, body, timeoutMs) {
+      await initialize()
       // Reads may wait for a visible canvas. Writes already initiated by the user
       // and the final state flush must finish even while the host tears it down.
       if (path === '/api/tools/call' && ['get_cowart_canvas_state', 'read_cowart_page_asset'].includes(body?.name)) await waitUntilActive()
@@ -133,7 +149,7 @@
         if (!stopped && active) timer = setTimeout(poll, 1200)
       }
       onActivity = () => { clearTimeout(timer); if (active) timer = setTimeout(poll, 0) }
-      poll()
+      initialize().then(poll).catch(() => onOnline(false))
     }
     return { ready, nativeApi, postJson, connectEvents, waitUntilActive, isActive: () => active }
   }
