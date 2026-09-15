@@ -32,7 +32,7 @@ Codex 使用原生 MCP Apps widget，每个会话的薄 bridge 连接全机一�
 | 请求 | 执行与插入 |
 |---|---|
 | Codex imagegen / 对话要求生图 | `cowart-image-gen`；遵从指定模型，`insert_cowart_image` 替换请求 holder 或插入空地 |
-| 按标注改图 / HTML 草稿按标注生成图片 | `cowart-image-edit`；读绑定标注与干净原图 / 草稿参考，结果放原卡片右边，保留原作与标注 |
+| 按标注改图 / HTML 草稿按标注生成图片 | `cowart-image-edit`；读绑定标注与干净原图 / 草稿参考，结果放原卡片右边，保留原作与标注；标注是对项目界面、功能的意见或问题时不生图，在对话里答复、在项目里改 |
 | 本地视频放上画布 | `insert_cowart_video { videoPath, pageId, anchorShapeId?, placement? }`；替换 AI 视频框用 `replaceHolderShapeId` |
 | AI HTML | 完整单文件 HTML，CSS / JS 内联；`insert_cowart_html_draft { draftShapeId, htmlContent 或 htmlPath, fileName, pageId }` 默认替换目标框 |
 | 按标注修改 AI HTML | 读取原 HTML 文件与标注，以原文件为基础修改；新草稿放原稿右边，不覆盖原文件 / 卡片 |

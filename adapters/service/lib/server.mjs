@@ -148,6 +148,7 @@ export function agentEventPayload(request) {
     kind: request.kind,
     title: request.title,
     summary: request.summary,
+    annotations: request.annotations,
     projectDir: request.projectDir,
     page: request.pageName ?? null
   }
@@ -425,8 +426,18 @@ export class CanvasServer {
         }
         case '/api/requests/cancel': {
           const request = this.queue.get(body.id)
-          const cancelled = request?.executor === 'service' && this.jobs ? this.jobs.cancel(body.id) : this.queue.cancel(body.id)
-          return reply(200, { ok: true, request: publicRequest(cancelled) })
+          // Numbers start over when the service is replaced: a page still showing a request
+          // from before (nothing has the number, or another request's key) learns it is gone.
+          if (!request || (body.requestKey && body.requestKey !== request.requestKey)) {
+            return reply(410, { error: '这条请求已经不在了：画布服务重启过（换了新版本），没处理完的请求没保留下来。要的话请重新点一次。', gone: true })
+          }
+          try {
+            const cancelled = request.executor === 'service' && this.jobs ? this.jobs.cancel(body.id) : this.queue.cancel(body.id)
+            return reply(200, { ok: true, request: publicRequest(cancelled) })
+          } catch (error) {
+            // Too late to withdraw (Claude started on it, or it is over): the page shows why.
+            return reply(409, { error: error instanceof Error ? error.message : String(error), request: publicRequest(request) })
+          }
         }
         case '/api/requests/claim':
         case '/api/requests/delivered':
@@ -520,7 +531,7 @@ export class CanvasServer {
 
   #pageEvents(session, canvasDir) {
     return [
-      { event: 'hello', data: { protocol: this.identity.protocol, build: this.identity.build } },
+      { event: 'hello', data: { protocol: this.identity.protocol, build: this.identity.build, startedAt: this.#startedAt } },
       { event: 'presence', data: this.#presence(session) },
       { event: 'requests', data: { requests: this.#recentRequests(canvasDir) } },
       { event: 'page-state', data: this.presence.view(canvasDir) }

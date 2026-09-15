@@ -197,6 +197,23 @@ test('mixed-host page transport and atomic native-message delivery', async (t) =
       await action('native-a', 'pane-a', '/api/requests/cancel', { id })
       assert.equal((await action('native-b', 'pane-b', '/api/requests/claim', { id })).payload.request, null)
     })
+    await t.test('a withdrawal says when the request is gone or already started', async () => {
+      const sent = await action('native-a', 'pane-a', '/api/messages', { text: 'withdraw me', pageId: 'page:second' })
+      const { id, requestKey } = sent.payload.request
+      // A page still showing a request from before a replaced service: nothing has its number,
+      // or the number now belongs to another request.
+      for (const body of [{ id: 9999 }, { id, requestKey: 'old-service-request' }]) {
+        const gone = await action('native-a', 'pane-a', '/api/requests/cancel', body)
+        assert.equal(gone.status, 410)
+        assert.equal(gone.payload.gone, true)
+      }
+      queue.update(id, { status: 'running' })
+      const late = await action('native-a', 'pane-a', '/api/requests/cancel', { id, requestKey })
+      assert.equal(late.status, 409)
+      assert.match(late.payload.error, /撤销不了/)
+      assert.equal(late.payload.request.status, 'running')
+      queue.update(id, { status: 'done' })
+    })
     await t.test('Claude SSE listeners still receive routed widget requests', async () => {
       await stream('/api/agent-events?session=browser-c')
       await call('browser-c', 'open-canvas', { page: 'First' })

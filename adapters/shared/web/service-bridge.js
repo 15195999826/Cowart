@@ -12,7 +12,9 @@
   const PANE = `pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   const hostLabel = config.host === 'codex' ? 'Codex' : 'Claude'
   const transport = window.__cowartCreateTransport?.({ config, pane: PANE }) || null
-  const FINAL_STATUSES = new Set(['done', 'failed', 'skipped', 'cancelled'])
+  // 'lost' is the page's own: a request it still shows that a replaced service did not keep.
+  const FINAL_STATUSES = new Set(['done', 'failed', 'skipped', 'cancelled', 'lost'])
+  const LOST_NOTICE = '画布服务重启过（换了新版本），这条请求没保留下来；要的话请重新点一次。'
   const FINAL_TOAST_MS = 12000
   const MAX_TOASTS = 4
   const RESTART_WAIT_MS = 20000
@@ -45,6 +47,15 @@
   }
 
   let overlay = null
+  // Set on each (re)connect: a different service instance (a newer version replaced the old
+  // one) does not have the requests the page still shows.
+  let serviceStartedAt = null
+  let serviceRestarted = false
+
+  function noteService(hello) {
+    serviceRestarted = Boolean(serviceStartedAt && hello.startedAt && hello.startedAt !== serviceStartedAt)
+    serviceStartedAt = hello.startedAt || serviceStartedAt
+  }
 
   async function postJson(path, body, timeoutMs) {
     if (transport) return transport.postJson(path, body, timeoutMs)
@@ -520,6 +531,7 @@
     .toast.done .status { color: #15803d; }
     .toast.failed .status { color: #b91c1c; }
     .toast.cancelled .status { color: #6b7280; }
+    .toast.lost .status { color: #b45309; }
     .toast .message { margin-top: 2px; color: #374151; word-break: break-all; }
     .toast .cancel {
       flex: none; height: 22px; padding: 0 8px; color: #2f6fed; font-size: 12px; background: #eef4ff; border: 0;
@@ -649,6 +661,7 @@
     }
 
     function statusLabel(request) {
+      if (request.status === 'lost') return '⚠️ 请求没了'
       if (request.executor === 'service') {
         switch (request.status) {
           case 'running':
@@ -690,7 +703,7 @@
         .sort((a, b) => b.id - a.id)
         .slice(0, MAX_TOASTS)
       // Redraw only on a change, so a click on 撤销 is not lost to the periodic refresh.
-      const signature = JSON.stringify(visible.map((request) => [request.id, request.status, request.delivered, request.message, request.finishing, sessionName(request.session)]))
+      const signature = JSON.stringify(visible.map((request) => [request.id, request.status, request.delivered, request.message, request.notice, request.finishing, sessionName(request.session)]))
       if (signature === shownToasts) return
       shownToasts = signature
       toastList.replaceChildren(
@@ -725,12 +738,14 @@
             head.append(cancel)
           }
           toast.append(head)
+          // A notice (why 撤销 did not work, or that the request is gone) comes first.
           const detail =
-            request.executor === 'service'
+            request.notice ||
+            (request.executor === 'service'
               ? FINAL_STATUSES.has(request.status)
                 ? request.message
                 : request.summary
-              : request.message || (request.status === 'pending' ? request.summary : '')
+              : request.message || (request.status === 'pending' ? request.summary : ''))
           if (detail) {
             const message = document.createElement('div')
             message.className = 'message'
@@ -748,23 +763,43 @@
       const finishedAt = FINAL_STATUSES.has(request.status) ? (previous && previous.finishedAt) || Date.now() : null
       state.requests.set(request.id, { ...request, finishedAt })
       // A generation request that will not produce anything hands its holder back.
-      if (request.holderShapeId && ['failed', 'skipped', 'cancelled'].includes(request.status) && window.__cowartKit) {
+      if (request.holderShapeId && ['failed', 'skipped', 'cancelled', 'lost'].includes(request.status) && window.__cowartKit) {
         window.__cowartKit.resetHolderName(request.holderShapeId)
       }
       renderToasts()
     }
 
+    // Each (re)connect brings the service's list. A request the page shows that the list lacks
+    // either finished long ago (drop it) or went with a replaced service, which starts over
+    // and keeps nothing: say so, instead of offering 撤销 on it.
+    function sync(requests, restarted) {
+      const listed = new Map(requests.map((request) => [request.id, request]))
+      for (const request of [...state.requests.values()]) {
+        const current = listed.get(request.id)
+        if (FINAL_STATUSES.has(request.status) || (current && current.requestKey === request.requestKey)) continue
+        if (restarted) upsert({ ...request, status: 'lost', notice: LOST_NOTICE })
+        else state.requests.delete(request.id)
+      }
+      for (const request of requests) upsert(request)
+      renderToasts()
+    }
+
     toastList.addEventListener('click', async (event) => {
       const button = event.target.closest('[data-cancel]')
-      if (!button) return
+      const request = button && state.requests.get(Number(button.dataset.cancel))
+      if (!request) return
       button.disabled = true
       try {
-        const payload = await postJson('/api/requests/cancel', { id: Number(button.dataset.cancel) }, 10000)
+        const payload = await postJson('/api/requests/cancel', { id: request.id, requestKey: request.requestKey }, 10000)
         upsert(payload.request)
       } catch (error) {
-        button.disabled = false
-        button.textContent = '撤销失败'
-        button.title = error instanceof Error ? error.message : String(error)
+        // Say why on the toast: the request went with a replaced service, it is too late
+        // (Claude started on it), or the service could not be reached.
+        const payload = (error && error.payload) || {}
+        const reason = error instanceof Error ? error.message : String(error)
+        if (payload.gone) upsert({ ...request, status: 'lost', notice: LOST_NOTICE })
+        else if (payload.request) upsert({ ...payload.request, notice: reason })
+        else upsert({ ...request, notice: `撤销失败：${reason}` })
       }
     })
 
@@ -774,6 +809,7 @@
     return {
       setPageError(message) { pageError.textContent = `接管失败：${message}`; pageError.hidden = false },
       upsert,
+      sync,
       setServiceOnline(online) {
         state.serviceOnline = online
         if (online) {
@@ -815,6 +851,7 @@
   function handleServiceEvent(event, data) {
     switch (event) {
       case 'hello':
+        noteService(data)
         overlay.setOutdated(Boolean(data.protocol && config.protocol && data.protocol !== config.protocol))
         pages.setConnected(true)
         break
@@ -823,7 +860,7 @@
       case 'page-state': pages.setState(data); break
       case 'pages-deleted': pages.removePages(data.pageIds || []); break
       case 'goto-page': pages.goTo(data.pageId, data.initial === true); break
-      case 'requests': for (const request of data.requests || []) overlay.upsert(request); break
+      case 'requests': overlay.sync(data.requests || [], serviceRestarted); break
       case 'request': overlay.upsert(data); break
     }
   }
@@ -844,8 +881,9 @@
       pages.setConnected(false)
     }
     source.addEventListener('hello', (event) => {
-      const { protocol } = JSON.parse(event.data)
-      overlay.setOutdated(Boolean(protocol && config.protocol && protocol !== config.protocol))
+      const hello = JSON.parse(event.data)
+      noteService(hello)
+      overlay.setOutdated(Boolean(hello.protocol && config.protocol && hello.protocol !== config.protocol))
       pages.setConnected(true)
     })
     source.addEventListener('stopping', () => overlay.setRestarting())
@@ -853,9 +891,7 @@
     source.addEventListener('page-state', (event) => pages.setState(JSON.parse(event.data)))
     source.addEventListener('pages-deleted', (event) => pages.removePages(JSON.parse(event.data).pageIds || []))
     source.addEventListener('goto-page', (event) => pages.goTo(JSON.parse(event.data).pageId))
-    source.addEventListener('requests', (event) => {
-      for (const request of JSON.parse(event.data).requests || []) overlay.upsert(request)
-    })
+    source.addEventListener('requests', (event) => overlay.sync(JSON.parse(event.data).requests || [], serviceRestarted))
     source.addEventListener('request', (event) => overlay.upsert(JSON.parse(event.data)))
   }
 

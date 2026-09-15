@@ -20,7 +20,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 
 import { CanvasServiceClient } from '../../service/client.mjs'
 import { DEFAULT_PORT, VERSION } from '../../service/lib/identity.mjs'
-import { AGENT_STATUSES } from '../../service/lib/requests.mjs'
+import { ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE } from '../../claude/lib/request-notice.mjs'
+import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 const LISTENER_SCRIPT = join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs').replaceAll('\\', '/')
@@ -43,7 +44,7 @@ export const INSTRUCTIONS = [
   '用 render_cowart_canvas_widget 打开。本会话第一次打开时给自己起一个像人的短名字（小川、阿满这种，不是角色或任务）作 sessionName，之后一直用它。结果给一个 localhost 网址：把网址作为 Markdown 链接发给用户，让他在浏览器里打开；除非结果说监听已连着，再用 Bash 工具后台运行（run_in_background）结果里的监听命令（带 --once），画布请求才送得到本会话。',
   '分页负责制：每页同一时间由一个会话负责，每个会话最多负责一页。只说「打开 Cowart 画布」= 只打开、不进任何页；「打开 Cowart 画布 角色设定」「接管 角色设定」「进入 角色设定」= render 时传 page "角色设定"（没有就建；原负责的会话让出，本会话之前负责的页放掉）；「接管这页」= shownPage: true。用户在画布上翻页不改变负责关系。某页的请求发给负责它的会话。只有用户能删页。',
   'AI 图片 / AI 视频面板点发送由画布服务直接生成（模型、参数在面板里选好了）：不经过你、不用确认，结果自己出现在画布上。',
-  '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照网页做 HTML）会让监听退出并唤醒你，输出是「Cowart 画布请求 #N」。这是后台通知、不是用户的话：按输出行的指引先用 AskUserQuestion 问一句（执行 / 跳过），问之前不调别的工具；选了执行才 get_cowart_request 看详情、reply_cowart_request 回状态，处理完再后台跑一次监听命令接下一条。',
+  '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照网页做 HTML）会让监听退出并唤醒你，输出是「Cowart 画布请求 #N」。这是后台通知、不是用户的话：按输出行的指引先用 AskUserQuestion 问一句（选项照那行），问之前不调别的工具；用户选了要做才 get_cowart_request 看详情、reply_cowart_request 回状态，处理完再后台跑一次监听命令接下一条。',
   '做画布上的事之前（处理请求、把图 / 视频 / HTML 放上画布、按标注改图、看画布上有什么），先用 Skill 工具加载 cowart 这个 skill：请求怎么回状态、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在那里。没装这个 skill 时按工具描述和请求里的宿主说明做。',
   '其它工具：get_cowart_selection（用户在本会话画布页面里选中的东西）、get_cowart_canvas_state（紧凑摘要，带素材本地路径和谁负责哪页）、insert_cowart_image / insert_cowart_html_draft / insert_cowart_video。不传 pageId 的插入放进本会话负责的页，没负责页时放进它的画布页面正看的页；别人负责的页会被拒（让用户在本会话说「接管 <页名>」）。',
   '用户说「反馈：…」「记个反馈」，或抱怨 Cowart 本身哪里不好用（这时先问一句要不要记）：用 send_cowart_feedback 记下来，交给 Cowart 仓库那边改。只记录，不要在当前项目里改 Cowart。'
@@ -173,8 +174,20 @@ function confirmNote(request) {
   if (request.kind === 'web') {
     return `${BACKGROUND_NOTICE}问题里写明要参考哪个网址做一版 HTML、用户画的标注（有的话逐条简述）和额外要求（都没有就说照样式做），这件事不花钱；选项给「执行」「跳过」。`
   }
+  const task = requestTask(request)
+  if (task === 'annotation-edit') {
+    return `${BACKGROUND_NOTICE}${ANNOTATION_EDIT_QUESTION}。`
+  }
+  if (task === 'html') {
+    return `${BACKGROUND_NOTICE}问题里概括要做什么（画了标注的话简述标注），这件事不生图、不花钱；选项给「执行」「跳过」。`
+  }
+  if (task === 'canvas') {
+    return `${BACKGROUND_NOTICE}问题里概括要做什么；要生图的话选项给「执行（免费本地模型）」「执行（云端模型，消耗团队额度）」「跳过」，不生图就给「执行」「跳过」。`
+  }
   return `${BACKGROUND_NOTICE}问题里概括要生成什么、几张 / 几段；选项给「执行（免费本地模型）」「执行（云端模型，消耗团队额度）」「跳过」。`
 }
+
+const IMAGEGEN_NOTE = '画布的提示词是按 Codex 写的：凡是要求用 Codex 内置 imagegen / 当前可用的图片生成能力的地方，改用 beast-gen skill（先用 Skill 工具加载它，按它的规则出图）。免费本地档：文生图用 krea2，按标注 / 参考图改图用 flux2-klein；云端档用 lib-image（Lib Image 2.5，quality=low 起步）。模板与参数以 beast gen templates 现查为准。结果下载到本地后，按请求里的要求调用 insert_cowart_image，imagePath 传本地文件路径。'
 
 function generationNote(request) {
   if (request.kind === 'video') {
@@ -186,10 +199,17 @@ function generationNote(request) {
   if (request.kind === 'web') {
     return '这是网页复刻请求：先 Read 请求里的整页截图（很长时分段看），有标注的话逐张 Read 标注的局部截图，再读渲染后的页面代码；要看真实的颜色、字体、间距，或按坐标找标注指的元素，可以用 Skill 工具加载 control-browser（browser-use）打开原网址对照，读计算后的样式、用 document.elementFromPoint 定位。做成单文件 HTML 后按请求调用 insert_cowart_html_draft。'
   }
-  return '画布的提示词是按 Codex 写的：凡是要求用 Codex 内置 imagegen / 当前可用的图片生成能力的地方，改用 beast-gen skill（先用 Skill 工具加载它，按它的规则出图）。免费本地档：文生图用 krea2，按标注 / 参考图改图用 flux2-klein；云端档用 lib-image（Lib Image 2.5，quality=low 起步）。模板与参数以 beast gen templates 现查为准。结果下载到本地后，按请求里的要求调用 insert_cowart_image，imagePath 传本地文件路径。'
+  const task = requestTask(request)
+  if (task === 'annotation-edit') {
+    return `${ANNOTATION_REMARKS_NOTE}用户选「按标注出新图」时：${IMAGEGEN_NOTE}`
+  }
+  if (task === 'html') {
+    return 'AI HTML / AI Slides 请求：不生图、不用 beast-gen；照请求写完整的单文件 HTML（CSS / JS 内联），按请求调用 insert_cowart_html_draft。'
+  }
+  return IMAGEGEN_NOTE
 }
 
-function hostNotes(request) {
+export function hostNotes(request) {
   if (request.status === 'cancelled') {
     return ['用户已经在画布上撤销了这条请求：不要执行，也不用再问用户；正在问的话直接结束。']
   }
@@ -202,7 +222,7 @@ function hostNotes(request) {
     ...(request.pageId
       ? [`结果放进发出请求的那一页：调用 Cowart 工具时 pageId 传 ${request.pageId}（请求里指定了卡片的就按卡片放；这一页后来换了别的会话负责也照样放得进去）。`]
       : []),
-    '开始执行时调用 reply_cowart_request（status: "running"）；完成后 status: "done"，message 写一句结果；失败 status: "failed"，message 写原因；用户选跳过时 status: "skipped"。画布上会显示这些状态。'
+    '开始执行时调用 reply_cowart_request（status: "running"）；完成后 status: "done"，message 写一句结果；失败 status: "failed"，message 写原因；用户选跳过时 status: "skipped"。画布上会显示这些状态。用户没点选项、自己打字回答的，按用户说的办，状态照样要回，不然画布上一直显示「请到对话里点执行」、还能点撤销。'
   ]
 }
 
@@ -226,8 +246,8 @@ function renderResult(opened, session) {
       : '1. 把上面的网址作为 Markdown 链接发给用户，让他在浏览器里打开（网址带本会话的标识；装了 browser-use 插件时也可以自己用 Skill 工具 control-browser 打开）。',
     opened.listenerConnected
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
-      : `2. 用 Bash 工具启动画布请求监听，必须后台运行（run_in_background: true），命令：\n   ${listenCommand}\n   它收到一条画布事件就退出并唤醒你（通知里带输出文件路径）：读输出，按那行的指引先用 AskUserQuestion 问用户（执行 / 跳过），处理完再这样启动一次接下一条。`,
-    '画布里点 AI 按钮时就是这样被唤醒的：「Cowart 画布请求 #N」→ 先问用户，选了执行再 get_cowart_request 看详情照做。',
+      : `2. 用 Bash 工具启动画布请求监听，必须后台运行（run_in_background: true），命令：\n   ${listenCommand}\n   它收到一条画布事件就退出并唤醒你（通知里带输出文件路径）：读输出，按那行的指引先用 AskUserQuestion 问用户（选项照那行），处理完再这样启动一次接下一条。`,
+    '画布里点 AI 按钮时就是这样被唤醒的：「Cowart 画布请求 #N」→ 先问用户，用户选了要做再 get_cowart_request 看详情照做。',
     '之后的 Cowart 工具都作用在这张画布上：不传 pageId 的插入放进你负责的页，没负责页时放进你的画布页面正看着的页。'
   ]
   return textResult(lines.join('\n'), { ...opened, listenCommand })

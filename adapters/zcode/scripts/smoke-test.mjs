@@ -191,7 +191,27 @@ try {
     assert.match(text(details), /—— ZCode 宿主说明 ——/)
     assert.ok(details.structuredContent.hostNotes.some((note) => note.includes('AskUserQuestion')))
     assert.ok(details.structuredContent.hostNotes.some((note) => note.includes('beast-gen')))
+    assert.ok(details.structuredContent.hostNotes.some((note) => note.includes('用户选「照标注处理」时')))
     await call('reply_cowart_request', { id: created.request.id, status: 'skipped', message: '测试跳过' })
+  })
+
+  await step('按标注修改 wakes the listener with its 标注 words; AI HTML is not asked about image models', async () => {
+    const edit = await sendMessage([
+      '[@Cowart](plugin://cowart@cowart-github) 按标注修改',
+      '',
+      'Included annotation shapes: 2',
+      'Change requests (标注 arrows bound to this shape; each spot is where the tip points, in % of the shape width and height from its top-left):',
+      '1. 「lobby服务器跟你左下角的功能是不是重复了？」 → (12%, 80%)',
+      '2. 「去掉 headscale，要么内网要么本机」 → (60%, 40%)'
+    ].join('\n'))
+    const draft = await sendMessage('[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\nPrompt:\n一个登录页')
+    const { code, stdout } = await runOnceListener().done
+    assert.equal(code, 0, `listener exit ${code}: ${stdout}`)
+    const lineOf = ({ request }) => stdout.split('\n').find((line) => line.startsWith(`Cowart 画布请求 #${request.id}「`)) ?? ''
+    assert.match(lineOf(edit), /：2 条标注：①「lobby服务器跟你左下角的功能是不是重复了？」②「去掉 headscale，要么内网要么本机」 → /)
+    assert.match(lineOf(edit), /照标注处理（答疑、改当前项目，不生图）\/ 按标注出新图（免费本地模型）/)
+    assert.match(lineOf(draft), /AskUserQuestion 问用户一句（执行 \/ 跳过）/)
+    for (const { request } of [edit, draft]) await call('reply_cowart_request', { id: request.id, status: 'skipped', message: '测试跳过' })
   })
 
   await step('canvas inserts work through the zcode bridge like on claude', async () => {

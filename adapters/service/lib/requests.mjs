@@ -26,6 +26,45 @@ export function requestSummary(text) {
   return annotations ? `${annotations} 条标注` : ''
 }
 
+// A request's 标注 / 注释 as the canvas lists them (src/App.jsx annotationNoteLines): the
+// notification quotes their words, so the question put to the user fits what they say.
+const ANNOTATION_SECTIONS = [
+  ['Change requests (', false],
+  ['Standing notes (', true]
+]
+const ANNOTATION_LINE = /^(?:\d+\.|-) (?:「(.*)」|\(no words on this arrow; see the screenshot\)) → \(\d+%, \d+%\)$/
+
+export function requestAnnotations(text) {
+  const annotations = []
+  let note = null
+  for (const line of String(text).split(/\r?\n/)) {
+    const section = ANNOTATION_SECTIONS.find(([heading]) => line.startsWith(heading))
+    if (section) {
+      note = section[1]
+      continue
+    }
+    const match = note === null ? null : ANNOTATION_LINE.exec(line)
+    if (!match) {
+      note = null
+      continue
+    }
+    annotations.push({ text: match[1] ?? '', note })
+  }
+  return annotations
+}
+
+// What a request asks for. The panels tag theirs (image / video / web); the other buttons are
+// upstream's, told apart by the first line they write (src/App.jsx), so the confirmation can
+// offer what fits: 按标注修改's 标注 may be remarks on what the picture shows (a screenshot
+// of the user's project) rather than an image edit, and AI HTML / Slides use no image model.
+export function requestTask({ kind, title }) {
+  if (kind !== 'canvas') return kind
+  if (title === '按标注修改') return 'annotation-edit'
+  if (/ AI (HTML|Slides)$/.test(title)) return 'html'
+  if (title === '按标注生图' || title === '生成图片') return 'generate-image'
+  return 'canvas'
+}
+
 export function publicRequest(request) {
   const { text: _text, ...rest } = request
   return rest
@@ -60,6 +99,7 @@ export class CanvasRequestQueue extends EventEmitter {
       kind,
       title: title ?? requestTitle(body),
       summary: summary ?? requestSummary(body),
+      annotations: requestAnnotations(body),
       text: body,
       projectDir,
       canvasDir,

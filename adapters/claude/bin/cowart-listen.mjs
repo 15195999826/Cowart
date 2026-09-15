@@ -6,6 +6,7 @@
 // the service replays undelivered requests when the next listener connects.
 import { readEventStream } from '../../service/client.mjs'
 import { readToken } from '../../service/lib/token.mjs'
+import { requestNotice } from '../lib/request-notice.mjs'
 
 const GIVE_UP_MS = 120_000
 const RETRY_MS = 2_000
@@ -29,17 +30,6 @@ function emit(line) {
 function armOnceDrain() {
   if (!ONCE || onceDrainTimer) return
   onceDrainTimer = setTimeout(() => process.exit(0), ONCE_DRAIN_MS)
-}
-
-// The line carries what the confirmation needs, so Claude asks before any other call.
-function options(request) {
-  return request.kind === 'canvas' ? '执行（免费本地模型）/ 执行（云端，消耗团队额度）/ 跳过' : '执行 / 跳过'
-}
-
-function formatRequest(request) {
-  const page = request.page ? `（页「${request.page}」）` : ''
-  const summary = request.summary ? `：${request.summary}` : ''
-  return `Cowart 画布请求 #${request.id}「${request.title}」${page}${summary} → 马上用 AskUserQuestion 问用户一句（${options(request)}），选了执行再调 get_cowart_request {"id": ${request.id}} 看详情照做`
 }
 
 const port = Number(option('port'))
@@ -74,7 +64,7 @@ async function listenOnce(token) {
         process.exit(0)
       }
       if (event === 'request') {
-        emit(formatRequest(data))
+        emit(requestNotice(data))
         armOnceDrain()
       }
       if (event === 'cancelled') {

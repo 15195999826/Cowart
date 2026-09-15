@@ -12,6 +12,7 @@ description: Generate revised AI images from Cowart card-bound annotations, queu
 - 收到 `Cowart 画布请求 #N`：先按同插件 `cowart` skill 用 `get_cowart_request { id, requestKey }` 读取原请求、当前状态、目标卡片和 `pageId`；key 原样取自通知或请求列表。已完成、失败、跳过或撤销时不重做。开工回 `running`，结果插入后回 `done`，失败回 `failed`，每次 `reply_cowart_request` 都带读取结果的同一个 `requestKey`。
 - 用户直接说「按画布上的标注改」：`get_cowart_canvas_state` 摘要给出标注文字、绑定目标 id 和素材本地路径；按绑定读取，**不用让用户再提供截图，不按距离或颜色猜关联**。多张卡片按各自标注分别处理；目标不明确时结合本会话 `get_cowart_selection`。
 - 用户给了标注截图：该截图是这次修改依据。结合已知卡片或画布摘要找干净原图；不要额外把其它卡片上的要求混进来。已有内联图片直接看；只有本地路径且未看过时才用图片查看工具。
+- 标注不一定是改图要求：图是用户项目的截图、设计稿，标注写的是对界面、功能的意见或问题（「这个是干嘛的」「去掉这个选项」）时，按意见处理——在对话里逐条回答、在当前项目里改，不生图、不往画布放图，请求回 `done` 并写一句；要改这张图本身（换背景、改颜色）才生成新图。拿不准先问用户。
 
 标注是一次修改要求；注释是常驻背景约束。画布摘要示例：
 
