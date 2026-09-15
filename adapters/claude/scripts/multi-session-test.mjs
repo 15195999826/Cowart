@@ -420,6 +420,9 @@ try {
   await step('changed code in this checkout replaces the service; responsibilities survive, bridges follow without replacing it back', async () => {
     const before = await serviceStatus(PORT)
     assert.equal(before.sessions.find((session) => session.id === 'multi-b').page.pageId, ROLE)
+    // A request waiting in the queue outlives the service, number and all.
+    const kept = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换了版本也还在')
+    assert.equal(kept.status, 200, JSON.stringify(kept.body))
     const c = await bridgeFor('multi-c', { COWART_SERVICE_BUILD_SALT: 'changed-code' })
     await c.client.listTools()
     const after = await waitFor(async () => {
@@ -431,6 +434,16 @@ try {
     assert.equal((await sessionStatus('multi-b')).page.pageId, ROLE, 'the restarted service forgot who is responsible')
     const listed = await b.call('list_cowart_requests', {})
     assert.ok(!listed.isError, text(listed))
+    const again = await b.call('get_cowart_request', { id: kept.body.request.id })
+    assert.ok(!again.isError, text(again))
+    assert.equal(again.structuredContent.requestKey, kept.body.request.requestKey)
+    assert.equal(again.structuredContent.status, 'pending')
+    const next = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换版本后的第一条')
+    assert.ok(next.body.request.id > kept.body.request.id, 'the replacement service numbered requests from 1 again')
+    for (const id of [kept.body.request.id, next.body.request.id]) {
+      const skipped = await b.call('reply_cowart_request', { id, status: 'skipped' })
+      assert.ok(!skipped.isError, text(skipped))
+    }
     await delay(1500)
     assert.equal((await serviceStatus(PORT)).pid, after.pid, 'an older bridge replaced the service back')
   })

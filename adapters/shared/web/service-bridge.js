@@ -600,7 +600,7 @@
       if (state.session === 'ended') return ['offline', `${name} 的会话已结束：回到 ${HOST_LABEL} 重新打开画布才能接上`, name]
       if (state.session === 'waiting') return ['waiting', `${name} · 等 ${AGENT_LABEL} 会话重新连上…`, name]
       const duty = state.role && state.role.myPage ? `负责「${state.role.myPage}」` : '没负责任何页'
-      if (!state.agentOnline) return ['waiting', `${name} · ${duty} · ${AGENT_LABEL} 未在监听 · 请求会排队`, name]
+      if (!state.agentOnline) return ['waiting', `${name} · ${duty} · 监听暂时断开 · 请求先排队，${AGENT_LABEL} 空下来就会接上`, name]
       return ['agent', `${name} · ${duty} · ${AGENT_LABEL} 已连接`, name]
     }
 

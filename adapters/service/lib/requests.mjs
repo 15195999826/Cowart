@@ -5,9 +5,15 @@
 // are unique across sessions.
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 const MENTION = /^\s*\[@Cowart\]\([^)]*\)\s*/
 const MAX_REQUESTS = 200
+// The queue is kept next to the canvas it belongs to, so a replaced or restarted service
+// carries on with it, and a test service on a canvas of its own never touches the real one.
+export const REQUESTS_FILE_NAME = '.cowart-requests.json'
+const INTERRUPTED = '画布服务重启了，这次生成没做完；要的话请重新点一次。'
 // "cancelled" is set from the canvas only (the user withdrew a request nobody had started, or
 // a service job before its result went in); Claude reports running / done / failed / skipped.
 export const REQUEST_STATUSES = ['pending', 'running', 'done', 'failed', 'skipped', 'cancelled']
@@ -73,6 +79,59 @@ export function publicRequest(request) {
 export class CanvasRequestQueue extends EventEmitter {
   #requests = new Map()
   #nextId = 1
+  #file = null
+  #saving = false
+
+  // file: where the queue lives on disk. Requests, their numbers and statuses survive a
+  // restart; a generation the old service was running cannot, so it is reported as failed.
+  constructor({ file = null } = {}) {
+    super()
+    this.#file = file
+    if (!file) return
+    this.#load()
+    this.on('changed', () => this.#scheduleSave())
+  }
+
+  #load() {
+    let saved
+    try {
+      saved = JSON.parse(readFileSync(this.#file, 'utf8'))
+    } catch {
+      return // Nothing saved yet, or not readable: start empty.
+    }
+    const now = new Date().toISOString()
+    for (const request of Array.isArray(saved?.requests) ? saved.requests : []) {
+      if (!Number.isInteger(request?.id) || !REQUEST_STATUSES.includes(request.status)) continue
+      if (request.executor === 'service' && !FINAL_STATUSES.has(request.status)) {
+        Object.assign(request, { status: 'failed', message: INTERRUPTED, finishing: false, updatedAt: now })
+      }
+      this.#requests.set(request.id, request)
+    }
+    this.#nextId = Math.max(Number(saved?.nextId) || 1, Math.max(0, ...this.#requests.keys()) + 1)
+  }
+
+  // One write per turn of the event loop, made synchronously so the file is current even when
+  // the process is ended right after.
+  #scheduleSave() {
+    if (this.#saving) return
+    this.#saving = true
+    queueMicrotask(() => {
+      this.#saving = false
+      this.#save()
+    })
+  }
+
+  #save() {
+    const payload = `${JSON.stringify({ version: 1, nextId: this.#nextId, requests: [...this.#requests.values()] })}\n`
+    const temporary = `${this.#file}.tmp`
+    try {
+      mkdirSync(dirname(this.#file), { recursive: true })
+      writeFileSync(temporary, payload)
+      renameSync(temporary, this.#file)
+    } catch {
+      // The last good copy stays; the queue keeps working in memory.
+    }
+  }
 
   create({
     text,

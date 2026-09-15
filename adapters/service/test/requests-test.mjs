@@ -1,8 +1,11 @@
 // What Claude Code / ZCode hear about a canvas request before asking the user, and the host
 // notes they read after: 按标注修改 comes with its 标注 word for word and may be handled as
-// remarks instead of a new picture; AI HTML / Slides are not asked about image models.
+// remarks instead of a new picture; AI HTML / Slides are not asked about image models. The
+// queue keeps its requests across a service restart.
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
 import { hostNotes as claudeHostNotes } from '../../claude/lib/bridge.mjs'
@@ -10,7 +13,7 @@ import { requestNotice } from '../../claude/lib/request-notice.mjs'
 import { requestText as codexRequestText } from '../../codex/lib/bridge.mjs'
 import { UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
 import { hostNotes as zcodeHostNotes } from '../../zcode/lib/bridge.mjs'
-import { CanvasRequestQueue, requestAnnotations, requestTask } from '../lib/requests.mjs'
+import { CanvasRequestQueue, REQUESTS_FILE_NAME, requestAnnotations, requestTask } from '../lib/requests.mjs'
 import { agentEventPayload } from '../lib/server.mjs'
 
 const MENTION = '[@Cowart](plugin://cowart@cowart-github)'
@@ -130,4 +133,39 @@ test('host notes say what to do with either choice, on all three hosts', () => {
   assert.match(codexRequestText(edit), /先读标注：是对图里界面、功能、设计的意见或问题.*不生图、不往画布放图/)
   assert.match(codexRequestText(edit), /结果放回 pageId=page:kards。/)
   assert.doesNotMatch(codexRequestText(html), /先读标注/)
+})
+
+test('the queue keeps its requests, numbers and statuses across a restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'cowart-requests-'))
+  const saved = () => new Promise((resolve) => setImmediate(resolve))
+  try {
+    const file = join(directory, REQUESTS_FILE_NAME)
+    const before = new CanvasRequestQueue({ file })
+    const asked = before.create({ text: annotationEditText(REMARKS), session: 'kards', pageId: 'page:kards', pageName: 'kards-tavern' })
+    before.markDelivered(asked.id)
+    const started = before.create({ text: `${MENTION} 生成 AI HTML\n\nPrompt:\n登录页`, session: 'kards' })
+    before.update(started.id, { status: 'running' })
+    const job = before.create({ text: 'AI 图片', kind: 'image', executor: 'service', title: 'AI 图片' })
+    before.setProgress(job.id, '排队中…')
+    await saved()
+
+    const after = new CanvasRequestQueue({ file })
+    assert.deepEqual(after.get(asked.id), JSON.parse(JSON.stringify(before.get(asked.id))))
+    assert.equal(after.get(started.id).status, 'running')
+    // The old service's generation went with it.
+    assert.equal(after.get(job.id).status, 'failed')
+    assert.match(after.get(job.id).message, /画布服务重启了/)
+    assert.equal(after.create({ text: '下一条', session: 'kards' }).id, job.id + 1)
+    after.update(started.id, { status: 'done', message: '好了' })
+    await saved()
+    assert.equal(new CanvasRequestQueue({ file }).get(started.id).status, 'done')
+
+    // A file that cannot be read starts an empty queue.
+    await writeFile(file, '{oops')
+    const fresh = new CanvasRequestQueue({ file })
+    assert.deepEqual(fresh.list(), [])
+    assert.equal(fresh.create({ text: '从头来', session: 'kards' }).id, 1)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

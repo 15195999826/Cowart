@@ -42,7 +42,7 @@ Codex 收到通知后：
 3. 开工前 `reply_cowart_request { id, requestKey, status: "running" }`，按原请求完成生成或编辑，结果插回原 `pageId`。
 4. 成功回 `done`，失败回 `failed`，`message` 简述结果或原因；用户跳过回 `skipped`。每次回复均携带读取结果返回的同一个 `requestKey`，拒绝服务重启后旧编号误指向新请求。
 
-目标 Codex widget 没开着时，请求留在服务队列，可用 `list_cowart_requests` 补读或重新打开画布接收。队列目前在服务内存中，服务版本替换或退出会丢失待处理请求；page 和素材保存在磁盘。`ui/message` 只是投递通道，仍须遵守当前会话的授权边界。
+目标 Codex widget 没开着时，请求留在服务队列，可用 `list_cowart_requests` 补读或重新打开画布接收。队列存在画布目录的 `.cowart-requests.json`，服务换版本或重启后请求、状态和编号都接得上（服务直接跑的猛兽生成会中断并标成失败）；page 和素材也在磁盘上。`ui/message` 只是投递通道，仍须遵守当前会话的授权边界。
 
 使用说明随插件加载自 `adapters/codex/skills/`：通用 `cowart` 负责请求、共享页、HTML / Slides 和媒体插入；`cowart-open-canvas`、`cowart-image-gen`、`cowart-image-edit` 分别处理打开、生成和按标注改图。根目录 `skills/` 保留上游版本，不作为本 fork 的 Codex skill 入口，也不需要安装到用户全局 skills。
 

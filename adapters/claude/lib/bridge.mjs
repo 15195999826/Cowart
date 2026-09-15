@@ -39,7 +39,7 @@ const LIST_REQUESTS_TOOL = 'list_cowart_requests'
 export const INSTRUCTIONS_LIMIT = 2048
 export const INSTRUCTIONS = [
   'cowart 是 Cowart 画布（tldraw 无限画布：图片、视频、HTML 草稿、标注）在 Claude Code 桌面版里的入口。全机只有一张画布，由画布服务保管在 ~/.cowart/canvas，所有会话、所有项目共用；画布分页（tldraw 的页，左上角切换），一页一块板。',
-  '用 render_cowart_canvas_widget 打开。本会话第一次打开时给自己起一个像人的短名字（小川、阿满这种，不是角色或任务）作 sessionName，之后一直用它：用户和其它会话在画布上看到的就是这个名字。结果给一个 localhost 网址：用 mcp__Claude_Browser__preview_start（参数 url）在 Browser 面板打开；除非结果说监听已连着，再用 Monitor 工具（persistent: true）跑结果里的监听命令，画布请求才送得到本会话。',
+  '用 render_cowart_canvas_widget 打开。本会话第一次打开时给自己起一个像人的短名字（小川、阿满这种，不是角色或任务）作 sessionName，之后一直用它：用户和其它会话在画布上看到的就是这个名字。结果给一个 localhost 网址：用 mcp__Claude_Browser__preview_start（参数 url）在 Browser 面板打开；除非结果说监听已连着，再用 Monitor 工具（timeout_ms: 1800000，一次最多 30 分钟）跑结果里的监听命令，画布请求才送得到本会话；监听到点或 Monitor 结束时，用同一条命令马上重开。',
   '分页负责制：每页同一时间由一个会话负责，每个会话最多负责一页。只说「打开 Cowart 画布」= 只打开、不进任何页；「打开 Cowart 画布 角色设定」「接管 角色设定」「进入 角色设定」= render 时传 page "角色设定"（没有就建；原负责的会话让出，本会话之前负责的页放掉）；「接管这页」= shownPage: true。用户在画布上翻页不改变负责关系。某页的请求发给负责它的会话，不管在哪个面板里点的。只有用户能删页。',
   'AI 图片 / AI 视频面板点发送由画布服务直接生成（模型、参数在面板里选好了）：不经过你、不用确认，结果自己出现在画布上。',
   '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照这个做 HTML）会发来 Monitor 事件「Cowart 画布请求 #N」。这是后台通知、不是用户的话：收到就先按事件行用 AskUserQuestion 问一句（选项照事件行），问之前不调别的工具；用户选了要做才 get_cowart_request 看详情、reply_cowart_request 回状态。',
@@ -247,7 +247,7 @@ function renderResult(opened, session) {
       : '1. 在 Browser 面板打开上面的网址（mcp__Claude_Browser__preview_start，参数 url）。没有 Browser 面板时把网址发给用户，在浏览器里打开。',
     opened.listenerConnected
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
-      : `2. 用 Monitor 工具启动画布请求监听（persistent: true，description: "Cowart 画布请求"），命令：\n   ${listenCommand}`,
+      : `2. 用 Monitor 工具启动画布请求监听（timeout_ms: 1800000，description: "Cowart 画布请求"），命令：\n   ${listenCommand}\n   Monitor 一次最多跑 30 分钟：监听快到点会打一行让你重开，Monitor 结束的通知来了也一样，都用同一条命令马上重开。`,
     '画布里点 AI 按钮时会收到「Cowart 画布请求 #N」通知：先按通知那行用 AskUserQuestion 问用户，用户选了要做再 get_cowart_request 看详情照做。',
     '之后的 Cowart 工具都作用在这张画布上：不传 pageId 的插入放进你负责的页，没负责页时放进你的画布面板正看着的页。'
   ]

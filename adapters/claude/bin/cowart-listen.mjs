@@ -16,6 +16,10 @@ const ONCE = process.argv.includes('--once')
 // would drop the rest of that burst (they are marked delivered, so nobody re-sends them).
 const ONCE_DRAIN_MS = 750
 let onceDrainTimer = null
+// Claude Code's Monitor ends a watch after at most 30 minutes. Leaving a little earlier with a
+// line that says so wakes the session with what to do, instead of the canvas quietly going
+// without a listener until someone notices.
+const LIFETIME_MS = Number(process.env.COWART_LISTEN_LIFETIME_MS) || 29 * 60_000
 
 function option(name) {
   const index = process.argv.indexOf(`--${name}`)
@@ -43,6 +47,13 @@ if (!session) {
   process.exit(1)
 }
 const url = `http://${option('host') || '127.0.0.1'}:${port}/api/agent-events?session=${encodeURIComponent(session)}`
+
+if (!ONCE) {
+  setTimeout(() => {
+    emit('Cowart 画布监听：这一轮快到 Monitor 的 30 分钟上限了，先退出。马上用同一条命令重新启动监听（Monitor，timeout_ms: 1800000），不然画布请求只会排队。')
+    process.exit(0)
+  }, LIFETIME_MS)
+}
 
 async function listenOnce(token) {
   const response = await fetch(url, { headers: { accept: 'text/event-stream', 'x-cowart-token': token } })

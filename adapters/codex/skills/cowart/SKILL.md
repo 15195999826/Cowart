@@ -25,7 +25,7 @@ Codex 使用原生 MCP Apps widget，每个会话的薄 bridge 连接全机一�
 4. 按原文的模型、参数、素材、锚点和页完成任务，插入结果时显式带原 `pageId`。
 5. 插入成功后回 `status: "done"` 和一句结果；失败回 `failed` 和原因；用户选择跳过回 `skipped`。每次回复都传原 `id` 和 `requestKey`。撤销后不继续执行，也不把它改回运行状态。
 
-负责的 Codex widget 关闭时请求仍在服务队列；用 `list_cowart_requests` 补读，必要时用户可重开画布。默认列表只包含未结束请求，`includeFinished: true` 查看历史。队列在服务内存中；服务重启会重复使用数字编号，`requestKey` 用于区分不同请求。如果 key 不匹配，不去掉 key 重试、不改用新请求的 key 接着提交旧结果。
+负责的 Codex widget 关闭时请求仍在服务队列；用 `list_cowart_requests` 补读，必要时用户可重开画布。默认列表只包含未结束请求，`includeFinished: true` 查看历史。队列存在画布目录的 `.cowart-requests.json`，服务换版本或重启后请求、状态和编号都接得上；`requestKey` 仍用来确认是同一条请求。如果 key 不匹配，不去掉 key 重试、不改用新请求的 key 接着提交旧结果。
 
 ## 各类产物
 

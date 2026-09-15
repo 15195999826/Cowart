@@ -3,6 +3,7 @@
 // stdio against a throwaway project (the bridge starts its own canvas service on a test
 // port) and exercises tools, the page API, video support and canvas requests.
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -84,7 +85,11 @@ try {
   await step('bridge instructions fit what Claude Code keeps of them, and the skill they point to exists', async () => {
     assert.ok(INSTRUCTIONS.length <= INSTRUCTIONS_LIMIT, `bridge instructions are ${INSTRUCTIONS.length} characters, Claude Code keeps ${INSTRUCTIONS_LIMIT}`)
     assert.match(INSTRUCTIONS, /Skill 工具加载 cowart/)
+    // Claude Code's Monitor has no persistent watches: a watch ends after 30 minutes at most.
+    assert.match(INSTRUCTIONS, /timeout_ms: 1800000/)
+    assert.doesNotMatch(INSTRUCTIONS, /persistent/)
     const skill = await readFile(join(ADAPTERS_DIR, 'claude', 'skills', 'cowart', 'SKILL.md'), 'utf8')
+    assert.doesNotMatch(skill, /persistent/)
     assert.match(skill, /^name: cowart$/m)
     assert.match(skill, /^description: .+/m)
   })
@@ -127,11 +132,34 @@ try {
     assert.match(url, new RegExp(`^http://127\\.0\\.0\\.1:${PORT}/\\?session=${SESSION}&projectDir=`))
     assert.match(listenCommand, new RegExp(`cowart-listen\\.mjs" --port ${PORT} --session ${SESSION}$`))
     assert.equal(listenerConnected, false)
+    assert.match(text(result), /timeout_ms: 1800000/)
+    assert.match(text(result), /Monitor 一次最多跑 30 分钟/)
     // A session that picks no name for itself gets a spare one.
     assert.ok(sessionName, 'no session name')
     assert.equal(page, null)
     origin = `http://127.0.0.1:${port}`
     pageUrl = url
+  })
+
+  await step('the listener leaves before the Monitor would end it, saying to start it again', async () => {
+    const child = spawn(process.execPath, [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs'), '--port', String(PORT), '--session', SESSION], {
+      env: { ...process.env, COWART_LISTEN_LIFETIME_MS: '1000' },
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    const code = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill()
+        reject(new Error('the listener did not leave on its own'))
+      }, 15_000)
+      child.on('close', (exitCode) => {
+        clearTimeout(timer)
+        resolve(exitCode)
+      })
+    })
+    assert.equal(code, 0, stdout)
+    assert.match(stdout, /马上用同一条命令重新启动监听（Monitor，timeout_ms: 1800000）/)
   })
 
   await step('canvas page is served with the Claude bridge, its session and a CSP', async () => {

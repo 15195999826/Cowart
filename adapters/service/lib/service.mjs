@@ -15,7 +15,7 @@ import { CanvasGuard } from './canvas-guard.mjs'
 import { CanvasOps } from './canvas-ops.mjs'
 import { GenerationJobs } from './generation-jobs.mjs'
 import { localIdentity } from './identity.mjs'
-import { CanvasRequestQueue } from './requests.mjs'
+import { CanvasRequestQueue, REQUESTS_FILE_NAME } from './requests.mjs'
 import { CanvasServer } from './server.mjs'
 import { loadOrCreateToken } from './token.mjs'
 
@@ -33,7 +33,7 @@ export async function startCanvasService({ port }) {
   const token = await loadOrCreateToken()
   // Upstream's own default canvas (for a call that names none) is the same one.
   process.env.COWART_CANVAS_DIR = SHARED_CANVAS_DIR
-  const queue = new CanvasRequestQueue()
+  const queue = new CanvasRequestQueue({ file: join(SHARED_CANVAS_DIR, REQUESTS_FILE_NAME) })
   const upstream = new UpstreamCowart({
     clientName: 'cowart-canvas-service',
     clientVersion: identity.version,
