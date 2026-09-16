@@ -262,15 +262,7 @@
     return holderTypes.find((type) => type.isHolder(shape)) || null
   }
 
-  // tldraw only saves changes it sees on an animation frame, and hidden pages get none, so
-  // a rename made while the pane is hidden would be overwritten by the next remote sync.
-  const pendingRenames = new Map()
-
   function renameHolder(shapeId, name) {
-    if (document.hidden) {
-      pendingRenames.set(shapeId, name)
-      return
-    }
     const editor = window.__cowartEditor
     const shape = editor && editor.getShape(shapeId)
     if (holderTypeOf(shape) && shape.props.name !== name) {
@@ -284,13 +276,6 @@
     const type = holderTypeOf(editor && editor.getShape(shapeId))
     if (type) renameHolder(shapeId, type.label)
   }
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return
-    const renames = [...pendingRenames]
-    pendingRenames.clear()
-    for (const [shapeId, name] of renames) renameHolder(shapeId, name)
-  })
 
   function focusHolder(editor, holderId) {
     const type = holderTypeOf(editor.getShape(holderId))
@@ -507,17 +492,10 @@
 
   // Saves the canvas right away. Upstream's autosave runs off store listeners that tldraw
   // flushes on animation frames, and a hidden page gets none: a shape added after a slow
-  // step (a web capture) while the user looks elsewhere would stay unsaved, and the next
-  // remote sync would remove it. Image records the page has not seen yet stay protected.
+  // step (a web capture) while the user looks elsewhere would stay unsaved. The shared page
+  // runtime saves hidden pages the same way (service-bridge.js).
   async function saveCanvasNow() {
-    const editor = window.__cowartEditor
-    if (!editor) return
-    await callTool('save_cowart_canvas_state', {
-      ...projectArgs(),
-      snapshot: editor.store.getStoreSnapshot(),
-      protectImageRecords: true,
-      acknowledgedImageShapeDeletes: []
-    })
+    await window.__cowartSaveCanvasNow()
   }
 
   // A host that generates by itself (the Claude canvas service) takes the panel's choices

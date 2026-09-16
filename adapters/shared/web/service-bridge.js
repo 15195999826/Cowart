@@ -366,7 +366,9 @@
   window.cowartMcp = {
     ...(transport?.nativeApi || {}),
     getStorageTarget: () => ({ projectDir: config.projectDir, canvasDir: config.canvasDir }),
-    ...(transport ? { waitUntilActive: transport.waitUntilActive, isActive: transport.isActive } : {}),
+    // A hidden page stays out of the remote sync (upstream skips its polls while this is false):
+    // a poll would lay the stored canvas over what the page has not saved yet.
+    ...(transport ? { waitUntilActive: transport.waitUntilActive, isActive: transport.isActive } : { isActive: () => !document.hidden }),
     // A page the service serves plays its videos straight from it (range requests); the
     // native widget cannot reach the service and reads them through MCP.
     ...(transport ? {} : { directAssetUrl: (asset) => (asset && asset.type === 'video' ? asset.props.src : null) }),
@@ -381,6 +383,10 @@
       if (name === 'save_cowart_canvas_state') {
         delta = sync.delta(args.snapshot)
         if (delta) args = { ...args, cowartDelta: { put: delta.put, remove: delta.remove } }
+        // The page's own saves (saveCanvasNow below) have no acknowledged image deletes of
+        // upstream's. A delta only takes back what this page had from disk and no longer has,
+        // so every id it removes is a delete made here.
+        if (delta && options && options.acknowledgeDeltaRemovals) args = { ...args, acknowledgedImageShapeDeletes: delta.remove }
       }
       const read = (input) => postJson('/api/tools/call', { name, arguments: input }, (options && options.timeoutMs) || 120000)
       const result = transport && name === 'read_cowart_page_asset' && /\.(mp4|m4v|mov|webm)(?:[?#]|$)/i.test(args.assetUrl || '')
@@ -476,6 +482,65 @@
     }
     setInterval(() => window.__cowartFlushView().catch(() => {}), 1000)
   }
+
+  // ---- Saving without animation frames --------------------------------------------------
+  // tldraw hands the changes it collects to its store listeners on animation frames, and a
+  // hidden page (a background browser tab, a Browser pane out of sight) gets none: upstream's
+  // autosave does not hear of an edit made while the page is hidden, or of one still unflushed
+  // when it went out of sight, until it is back on screen, while its remote sync runs off a
+  // timer all along and laid the stored canvas back over that edit within a poll. So a hidden
+  // page stays out of the remote sync (isActive above), stands in for the missing frames, and
+  // saves the moment it goes out of sight: upstream saves 500ms after it hears of a change,
+  // longer than a closing tab lasts.
+
+  const FLUSH_MS = 400
+  let flushTimer = null
+
+  // store.listen() first hands what tldraw has collected to the listeners already there
+  // (upstream's autosave among them); the listener it adds goes away right after.
+  function flushCanvasChanges() {
+    try {
+      window.__cowartEditor?.store.listen(() => {}, { source: 'user', scope: 'document' })()
+    } catch (error) {
+      console.warn('Cowart could not flush canvas changes.', error)
+    }
+  }
+
+  // Saves the page's changes right away (kit.saveCanvasNow is this); nothing is sent while the
+  // page agrees with what the stored canvas last had.
+  async function saveCanvasNow() {
+    const editor = window.__cowartEditor
+    if (!editor) return
+    flushCanvasChanges()
+    const snapshot = editor.store.getStoreSnapshot()
+    const pending = sync.delta(snapshot)
+    if (pending && pending.put.length === 0 && pending.remove.length === 0) return
+    const result = await window.cowartMcp.callServerTool(
+      { name: 'save_cowart_canvas_state', arguments: { projectDir: config.projectDir, canvasDir: config.canvasDir, snapshot, protectImageRecords: true } },
+      { timeoutMs: 120000, acknowledgeDeltaRemovals: true }
+    )
+    const structured = (result && result.structuredContent) || {}
+    if ((result && result.isError) || structured.ok === false) {
+      const text = ((result && result.content) || []).find((item) => item && item.type === 'text')
+      throw new Error(structured.message || (text && text.text) || '画布没保存上。')
+    }
+  }
+  window.__cowartSaveCanvasNow = saveCanvasNow
+
+  function saveOnLeaving() {
+    saveCanvasNow().catch((error) => console.warn('Cowart could not save the canvas on leaving.', error))
+  }
+
+  function visibilityChanged() {
+    clearInterval(flushTimer)
+    flushTimer = document.hidden ? setInterval(flushCanvasChanges, FLUSH_MS) : null
+    // The native widget's transport reports its own activity.
+    if (!transport) window.dispatchEvent(new CustomEvent('cowart:activity', { detail: { active: !document.hidden } }))
+    if (document.hidden) saveOnLeaving()
+  }
+  document.addEventListener('visibilitychange', visibilityChanged)
+  window.addEventListener('pagehide', saveOnLeaving)
+  if (document.hidden) flushTimer = setInterval(flushCanvasChanges, FLUSH_MS)
 
   function publishGlobals() {
     window.dispatchEvent(new CustomEvent('openai:set_globals', { detail: { globals: window.openai } }))
