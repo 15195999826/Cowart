@@ -560,7 +560,14 @@ function recordsAreEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-const REMOTE_REMOVABLE_RECORD_TYPES = new Set(['asset', 'binding', 'shape'])
+// [fork-patch] A remote sync never removes an asset record. Upstream storage keeps only the
+// assets a shape references, so deleting an image takes its asset off disk, and the next sync
+// would take it out of the store as a remote change — one an undo cannot reverse. Ctrl+Z would
+// then bring back an image shape whose asset is gone (a broken card), and the save after it
+// would prune that shape too, while the annotations and boxes around it come back fine. An
+// asset a page holds on to is small (a local URL, not the bitmap) and reaches disk only with a
+// shape that uses it, so a reload forgets the ones nothing points at.
+const REMOTE_REMOVABLE_RECORD_TYPES = new Set(['binding', 'shape'])
 
 function isRemoteRemovableRecord(record) {
   return REMOTE_REMOVABLE_RECORD_TYPES.has(record?.typeName)

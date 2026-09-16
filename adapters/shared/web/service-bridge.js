@@ -135,8 +135,11 @@
         const remote = stable(record)
         if (stable(local) === remote) base.set(id, remote)
       }
+      // A record the stored canvas no longer has is no longer common ground, even when this
+      // page still holds it (an asset kept so an undo of a deleted image can use it): the next
+      // save has to send it again, or the image shape it comes back with would be pruned.
       for (const id of [...base.keys()]) {
-        if (!snapshot.store[id] && !editor.store.get(id)) base.delete(id)
+        if (!snapshot.store[id]) base.delete(id)
       }
     }
 
