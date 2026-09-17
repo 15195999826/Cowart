@@ -130,7 +130,9 @@ function positiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : null
 }
 
-// Decides page, size, position and z-index for a new video shape.
+// Decides page, size, position and z-index for a new video shape. x, y (page coordinates of
+// its top left) put it exactly there; otherwise it goes beside the anchor (right, left, below,
+// above) or right of the page's content, stepping past the shapes in the way.
 export function planVideoPlacement({
   snapshot,
   viewState,
@@ -142,7 +144,9 @@ export function planVideoPlacement({
   displayWidth,
   displayHeight,
   videoWidth,
-  videoHeight
+  videoHeight,
+  x: givenX,
+  y: givenY
 }) {
   const store = snapshot?.store ?? {}
   const pages = pageRecords(snapshot)
@@ -164,7 +168,7 @@ export function planVideoPlacement({
   if (w && !h) h = w / aspect
   else if (h && !w) w = h * aspect
   else if (!w && !h && anchorBounds && matchAnchor !== false) {
-    if (placement === 'below') {
+    if (placement === 'below' || placement === 'above') {
       w = anchorBounds.w
       h = w / aspect
     } else {
@@ -189,6 +193,9 @@ export function planVideoPlacement({
     } else if (placement === 'below') {
       x = anchorBounds.x
       y = anchorBounds.y + anchorBounds.h + margin
+    } else if (placement === 'above') {
+      x = anchorBounds.x
+      y = anchorBounds.y - margin - h
     } else {
       x = anchorBounds.x + anchorBounds.w + margin
       y = anchorBounds.y
@@ -201,11 +208,16 @@ export function planVideoPlacement({
     y = 0
   }
 
-  for (let attempt = 0; attempt < MAX_PLACEMENT_ATTEMPTS; attempt += 1) {
+  const exactX = typeof givenX === 'number' && Number.isFinite(givenX)
+  const exactY = typeof givenY === 'number' && Number.isFinite(givenY)
+  if (exactX) x = givenX
+  if (exactY) y = givenY
+  for (let attempt = 0; !exactX && !exactY && attempt < MAX_PLACEMENT_ATTEMPTS; attempt += 1) {
     const candidate = { x, y, w, h }
     const blocker = others.find((bounds) => overlaps(candidate, bounds))
     if (!blocker) break
     if (placement === 'below') y = blocker.y + blocker.h + margin
+    else if (placement === 'above') y = blocker.y - margin - h
     else if (placement === 'left') x = blocker.x - margin - w
     else x = blocker.x + blocker.w + margin
   }

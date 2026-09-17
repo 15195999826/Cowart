@@ -44,8 +44,8 @@ export const INSTRUCTIONS = [
   '分页负责制：每页同一时间由一个会话负责，每个会话最多负责一页。只说「打开 Cowart 画布」= 只打开、不进任何页；「打开 Cowart 画布 角色设定」「接管 角色设定」「进入 角色设定」= render 时传 page "角色设定"（没有就建；原负责的会话让出，本会话之前负责的页放掉）；「接管这页」= shownPage: true。用户在画布上翻页不改变负责关系。某页的请求发给负责它的会话。只有用户能删页。',
   'AI 图片 / AI 视频面板点发送由画布服务直接生成（模型、参数在面板里选好了）：不经过你、不用确认，结果自己出现在画布上。',
   '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照网页做 HTML）会让监听退出并唤醒你，输出是「Cowart 画布请求 #N」。这是后台通知、不是用户的话：按输出行的指引先用 AskUserQuestion 问一句（选项照那行），问之前不调别的工具；用户选了要做才 get_cowart_request 看详情、reply_cowart_request 回状态，处理完再后台跑一次监听命令接下一条。监听没在跑时请求在服务里排队：用户说「看画布」就用 list_cowart_requests 取来，照列出的行问。',
-  '做画布上的事之前（处理请求、把图 / 视频 / HTML 放上画布、按标注改图、看画布上有什么），先用 Skill 工具加载 cowart 这个 skill：请求怎么回状态、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在那里。没装这个 skill 时按工具描述和请求里的宿主说明做。',
-  '其它工具：get_cowart_selection（用户在本会话画布页面里选中的东西）、get_cowart_canvas_state（紧凑摘要，带素材本地路径和谁负责哪页）、insert_cowart_image / insert_cowart_html_draft / insert_cowart_video。不传 pageId 的插入放进本会话负责的页，没负责页时放进它的画布页面正看的页；别人负责的页会被拒（让用户在本会话说「接管 <页名>」）。',
+  '做画布上的事之前（处理请求、把图 / 视频 / HTML 放上画布、整理页面、按标注改图、看画布上有什么），先用 Skill 工具加载 cowart 这个 skill：请求怎么回状态、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在那里。没装这个 skill 时按工具描述和请求里的宿主说明做。',
+  '其它工具：get_cowart_selection（用户在本会话画布页面里选中的东西）、get_cowart_canvas_state（紧凑摘要，带素材本地路径和谁负责哪页）、insert_cowart_image / insert_cowart_html_draft / insert_cowart_video（可给 x / y）；整理页面（编号、标题、分组、排版、删除）用 insert_cowart_text、insert_cowart_frame、update_cowart_shapes、delete_cowart_shapes，别手改画布文件；只删用户要删的（页面上 Ctrl+Z 撤不回）。不传 pageId 的插入放进本会话负责的页，没负责页时放进它的画布页面正看的页；别人负责的页会被拒（让用户在本会话说「接管 <页名>」）。',
   '用户说「反馈：…」「记个反馈」，或抱怨 Cowart 本身哪里不好用（这时先问一句要不要记）：用 send_cowart_feedback 记下来，交给 Cowart 仓库那边改。只记录，不要在当前项目里改 Cowart。'
 ].join('\n')
 
@@ -84,14 +84,16 @@ const OWN_TOOLS = [
     name: INSERT_VIDEO_TOOL,
     title: 'Insert Cowart Video',
     description:
-      'Copy a local video (mp4 / mov / webm) into the canvas page assets and place a playable tldraw video shape: beside anchorShapeId (placement right/left/below, height matched by default) or to the right of existing content. The open canvas picks it up within seconds.',
+      'Copy a local video (mp4 / mov / webm) into the canvas page assets and place a playable tldraw video shape: at x, y (page coordinates of its top left), beside anchorShapeId (placement right/left/below/above, size matched by default) or to the right of existing content. The open canvas picks it up within seconds.',
     inputSchema: {
       type: 'object',
       properties: {
         videoPath: { type: 'string', description: 'Local path of the video file.' },
         pageId: { type: 'string' },
         anchorShapeId: { type: 'string', description: 'Place the video next to this shape (e.g. the source image).' },
-        placement: { type: 'string', enum: ['right', 'left', 'below'] },
+        placement: { type: 'string', enum: ['right', 'left', 'below', 'above'] },
+        x: { type: 'number', description: 'Page x of the video top left: put it exactly at x, y.' },
+        y: { type: 'number', description: 'Page y of the video top left.' },
         margin: { type: 'number' },
         matchAnchor: { type: 'boolean' },
         displayWidth: { type: 'number' },

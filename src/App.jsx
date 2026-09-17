@@ -1348,7 +1348,8 @@ function moveAnnotationsWithCard(editor, previous, next) {
   // Undo and redo put the arrows back themselves; tldraw pauses history recording meanwhile.
   if (editor.history?.state === 'paused') return
   if (previous.parentId !== next.parentId || (previous.x === next.x && previous.y === next.y)) return
-  if (!isAnnotationTargetShape(next)) return
+  // [fork-patch] A group frame carries the cards inside it, and their annotations with them.
+  if (!isAnnotationTargetShape(next) && editor.getSortedChildIdsForParent(next.id).length === 0) return
   const parentTransform = editor.getShapeParentTransform(next)
   const from = parentTransform.applyToPoint({ x: previous.x, y: previous.y })
   const to = parentTransform.applyToPoint({ x: next.x, y: next.y })

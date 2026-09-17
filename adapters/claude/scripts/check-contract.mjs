@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Verifies the upstream surface the Claude adapter depends on. Run after every upstream
 // sync (FORK.md): a failure means the adapter must be updated before merging to main.
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { REPO_ROOT, UPSTREAM_RELEASE_MANIFEST, UPSTREAM_SERVER_BUNDLE, UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
@@ -113,6 +114,21 @@ try {
   }
   for (const name of tools.keys()) {
     if (!(name in EXPECTED_TOOLS)) notes.push(`new upstream tool ${name}: decide whether the model should see it (PAGE_ONLY_TOOLS in adapters/service/lib/canvas-ops.mjs)`)
+  }
+
+  // The service checks what it writes (the layout tools, the canvas summary) by saving into a
+  // scratch canvas and reading which records upstream's tldraw validation skipped.
+  const scratch = await mkdtemp(join(tmpdir(), 'cowart-contract-'))
+  try {
+    const empty = JSON.parse(await readFile(join(REPO_ROOT, 'adapters', 'shared', 'empty-canvas.json'), 'utf8'))
+    const broken = { id: 'shape:contract', typeName: 'shape', type: 'text', x: 0, y: 0, rotation: 0, index: 'b1', parentId: 'page:page', isLocked: false, opacity: 1, props: { text: 'old props' }, meta: {} }
+    const saved = await upstream.callTool('save_cowart_canvas_state', { projectDir: scratch, canvasDir: scratch, snapshot: { ...empty, store: { ...empty.store, [broken.id]: broken } } })
+    const skipped = saved?.structuredContent?.skippedRecords
+    if (!Array.isArray(skipped) || !skipped.some((record) => record.id === broken.id)) {
+      problems.push('upstream save_cowart_canvas_state no longer reports the records tldraw validation skipped (skippedRecords)')
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
   }
 } finally {
   await upstream.close()

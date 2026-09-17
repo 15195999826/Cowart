@@ -25,6 +25,7 @@ Codex 保留原生 **MCP Apps widget**，每个会话只运行一个薄 bridge�
 - **画布素材**：拖到卡片上、描述框输入 `/` 选择、用 `@` 引用。
 - **网页参考**：整页截图、页面代码、原网页链接和「照这个做 HTML」。截图需要本机 Chrome / Edge。
 - **AI HTML / AI Slides / 标注**：经同一请求队列交给负责会话；标注绑定到卡片，注释提供常驻背景，修改结果保留原作与标注。
+- **整理页面**：模型可以放文字 / 编号、建带标题的分组框、批量移动和改尺寸、删除（`insert_cowart_text` / `insert_cowart_frame` / `update_cowart_shapes` / `delete_cowart_shapes`），插图 / 视频 / HTML 可给坐标；只改本会话负责的页，页面上的撤销撤不回这些改动。
 - **共用交互**：卡片操作、菜单精简、样式面板按需显示、视频控制条、请求进度和撤销。
 
 共用功能代码在 `adapters/shared/`。Codex 素材经 MCP 工具读取到 widget，本地视频通过该通道加载；Claude 的网页画布仍走本地 HTTP 分段加载。真实 Codex 宿主中的视频解码、外链打开和完整交互需要宿主验收，不能以协议冒烟测试替代。

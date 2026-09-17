@@ -6,10 +6,11 @@
   "description": "Host adapters for the Cowart fork (Claude Code, ZCode, Codex). See ../FORK.md.",
   "scripts": {
     "check:contract": "node ./claude/scripts/check-contract.mjs",
-    "test:claude": "node ./claude/scripts/smoke-test.mjs && node ./claude/scripts/multi-session-test.mjs && node ./claude/scripts/generation-test.mjs && node ./service/test/feedback-test.mjs && node --test ./service/test/requests-test.mjs && node ./service/test/stop-test.mjs",
+    "test:claude": "node ./claude/scripts/smoke-test.mjs && node ./claude/scripts/multi-session-test.mjs && node ./claude/scripts/generation-test.mjs && node ./service/test/feedback-test.mjs && node ./service/test/canvas-edit-test.mjs && node --test ./service/test/requests-test.mjs && node ./service/test/stop-test.mjs",
     "test:multi": "node ./claude/scripts/multi-session-test.mjs",
     "test:generation": "node ./claude/scripts/generation-test.mjs",
     "test:feedback": "node ./service/test/feedback-test.mjs",
+    "test:edit": "node ./service/test/canvas-edit-test.mjs",
     "test:requests": "node --test ./service/test/requests-test.mjs",
     "test:stop": "node ./service/test/stop-test.mjs",
     "test:zcode": "node ./zcode/scripts/smoke-test.mjs",

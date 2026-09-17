@@ -14,6 +14,7 @@ import { extname, isAbsolute, relative, resolve } from 'node:path'
 import { resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
 import { formatCanvasSummary, localPathForAssetSrc } from '../../shared/canvas-model.mjs'
 import { readFileHead, sniffMediaType } from '../../shared/video.mjs'
+import { EDIT_TOOL_DEFINITIONS, EDIT_TOOLS } from './canvas-edit.mjs'
 import { INSERT_VIDEO_TOOL, PAGE_WRITE_TOOLS, textResult } from './canvas-ops.mjs'
 import { FEEDBACK_TOOL, FEEDBACK_TOOL_DEFINITION, FeedbackStore } from './feedback.mjs'
 import { Presence } from './presence.mjs'
@@ -765,13 +766,13 @@ export class CanvasServer {
         })
       }
       case 'model-tools': {
-        // Upstream's tools and the service's own feedback tool, which stays listed when
-        // upstream is down: that is worth feedback too.
+        // Upstream's tools, the service's layout tools (canvas-edit.mjs) and its feedback tool,
+        // which stays listed when upstream is down: that is worth feedback too.
         const upstreamTools = await this.ops.modelTools().catch((error) => {
           this.log(`upstream tools unavailable: ${error.message}`)
           return []
         })
-        return { tools: [...upstreamTools, FEEDBACK_TOOL_DEFINITION] }
+        return { tools: [...upstreamTools, ...(upstreamTools.length > 0 ? EDIT_TOOL_DEFINITIONS : []), FEEDBACK_TOOL_DEFINITION] }
       }
       case 'open-canvas':
         return this.#openCanvas(session, args)
@@ -784,6 +785,7 @@ export class CanvasServer {
         if (name === FEEDBACK_TOOL) return this.#recordFeedback(session, args.arguments ?? {})
         let toolArgs = this.#withDefaults(session, args.arguments ?? {})
         if (PAGE_WRITE_TOOLS.has(name)) toolArgs = await this.#pageWrite(session, name, toolArgs)
+        if (EDIT_TOOLS.has(name)) return this.ops.editCanvas(name, toolArgs)
         await this.ops.replaySelection(name, toolArgs, session.id)
         return this.ops.callForModel(name, toolArgs)
       }
@@ -882,7 +884,7 @@ export class CanvasServer {
   // requests this session is handling on it.
   async #pageWrite(session, name, args) {
     const { canvasDir } = resolveCowartPaths(args)
-    let pageId = await this.ops.targetPage(args)
+    let pageId = await this.ops.targetPage(args, name)
     if (!pageId) {
       const held = this.presence.pageOf(session.id)
       pageId = held?.canvasDir === canvasDir ? held.pageId : (this.presence.panesOf(session.id, canvasDir)[0]?.pageId ?? null)

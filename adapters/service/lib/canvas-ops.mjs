@@ -4,19 +4,21 @@
 // several pages show at once, pages created for sessions, and each session's own selection.
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { copyFile, mkdir, readFile, stat } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
 import { generateKeyBetween } from 'fractional-indexing'
 
 import { pageAssetUrl, pageDirName, resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
-import { fitImageToAsset, formatCanvasSummary, pageIdOfShape, pageRecords, summarizeCanvas } from '../../shared/canvas-model.mjs'
+import { fitImageToAsset, formatCanvasSummary, localPathForAssetSrc, pageBounds, pageIdOfShape, pageRecords, summarizeCanvas } from '../../shared/canvas-model.mjs'
 import { sanitizeFileName, uniqueFilePath } from '../../shared/files.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { PREPARE_REQUEST_TOOL, prepareGenerationRequest } from '../../shared/generation-requests.mjs'
 import { structuredOrThrow } from '../../shared/upstream.mjs'
 import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
 import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
+import { EDIT_TOOLS, planCanvasEdit, referencedShapeIds } from './canvas-edit.mjs'
 import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
 import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
 import { readVideoAsset } from './video-assets.mjs'
@@ -43,9 +45,15 @@ const DROPPED_TOOLS = new Set(['track_cowart_analytics_event'])
 // Bridges offer their own version of these.
 const OVERRIDDEN_TOOLS = new Set([RENDER_TOOL, CANVAS_STATE_TOOL])
 // Model tools that write into a page: only the session editing that page may use them.
-export const PAGE_WRITE_TOOLS = new Set(['insert_cowart_image', 'insert_cowart_html_draft', 'save_cowart_reference_image', INSERT_VIDEO_TOOL])
+export const PAGE_WRITE_TOOLS = new Set(['insert_cowart_image', 'insert_cowart_html_draft', 'save_cowart_reference_image', INSERT_VIDEO_TOOL, ...EDIT_TOOLS])
 // Upstream tools that add shapes for the model; their additions are protected like videos.
 const MODEL_INSERT_TOOLS = new Set(['insert_cowart_image', 'insert_cowart_html_draft'])
+// Placement the service adds to those: x, y (exactly there) and above an anchor.
+const PLACEMENT_INPUTS = {
+  x: { type: 'number', description: 'Page x of the top left: put it exactly at x, y (not used when it replaces or fills a holder).' },
+  y: { type: 'number', description: 'Page y of the top left.' }
+}
+const PLACEMENT_NOTE = ' x, y put it exactly there; placement "above" puts it above the anchor.'
 // Model tools that read the canvas selection (to report it, or as the anchor of an insert).
 const SELECTION_READERS = new Set(['get_cowart_selection', 'insert_cowart_image', 'insert_cowart_html_draft', 'save_cowart_reference_image'])
 // Shape arguments that say where a write lands, in the order upstream reads them.
@@ -85,6 +93,23 @@ function withoutCanvasInputs(tool) {
   const properties = Object.fromEntries(Object.entries(schema.properties).filter(([key]) => !CANVAS_INPUTS.has(key)))
   const required = Array.isArray(schema.required) ? schema.required.filter((key) => !CANVAS_INPUTS.has(key)) : undefined
   return { ...tool, inputSchema: { ...schema, properties, ...(required ? { required } : {}) } }
+}
+
+// Upstream's inserts with the service's placement inputs (callForModel places the result).
+function withPlacementInputs(tool) {
+  const properties = { ...tool.inputSchema.properties, ...PLACEMENT_INPUTS }
+  const placement = properties.placement
+  if (Array.isArray(placement?.enum) && !placement.enum.includes('above')) properties.placement = { ...placement, enum: [...placement.enum, 'above'] }
+  return { ...tool, description: `${tool.description ?? ''}${PLACEMENT_NOTE}`, inputSchema: { ...tool.inputSchema, properties } }
+}
+
+function finiteOrNull(value) {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
+  return Number.isFinite(number) ? number : null
+}
+
+function rectsOverlap(a, b, padding) {
+  return !(a.x + a.w + padding <= b.x || b.x + b.w + padding <= a.x || a.y + a.h + padding <= b.y || b.y + b.h + padding <= a.y)
 }
 
 export function textResult(text, structuredContent) {
@@ -141,6 +166,7 @@ export class CanvasOps extends EventEmitter {
     return (await this.#upstream.listTools())
       .filter((tool) => !PAGE_ONLY_TOOLS.has(tool.name) && !DROPPED_TOOLS.has(tool.name) && !OVERRIDDEN_TOOLS.has(tool.name))
       .map(({ _meta: _ignored, ...tool }) => withoutCanvasInputs(tool))
+      .map((tool) => (MODEL_INSERT_TOOLS.has(tool.name) && tool.inputSchema?.properties ? withPlacementInputs(tool) : tool))
   }
 
   async #callWithRetry(name, args) {
@@ -213,13 +239,27 @@ export class CanvasOps extends EventEmitter {
   }
 
   // The page a model write lands on when the call names it or a shape on it; null otherwise.
-  async targetPage(args) {
+  async targetPage(args, name) {
+    if (EDIT_TOOLS.has(name)) return this.#editTargetPage(args, name)
     if (nonEmpty(args.pageId)) return args.pageId.trim()
     const shapeId = ANCHOR_ARGS.map((key) => nonEmpty(args[key])).find(Boolean)
     if (!shapeId) return null
     const snapshot = await this.#storedSnapshot(args)
     const shape = snapshot?.store?.[shapeId]
     return shape ? pageIdOfShape(snapshot.store, shape) : null
+  }
+
+  // A layout call works on one page: the one it names, or the one its shapes are on.
+  async #editTargetPage(args, name) {
+    const named = nonEmpty(args.pageId)
+    const ids = referencedShapeIds(name, args)
+    if (ids.length === 0) return named
+    const store = (await this.#storedSnapshot(args))?.store ?? {}
+    const pages = new Set(ids.map((id) => (store[id]?.typeName === 'shape' ? pageIdOfShape(store, store[id]) : null)).filter(Boolean))
+    if (pages.size > 1) throw new Error(`${name}：这些图形分在 ${pages.size} 页上（${[...pages].join('、')}），一次调用只改一页。`)
+    const [shapesPage = null] = pages
+    if (named && shapesPage && named !== shapesPage) throw new Error(`${name}：pageId 是 ${named}，图形却在 ${shapesPage} 上。`)
+    return named ?? shapesPage
   }
 
   // Every page of every session saves into one selection file per canvas; before a model tool
@@ -319,13 +359,19 @@ export class CanvasOps extends EventEmitter {
     if (DROPPED_TOOLS.has(name)) return textResult('画布服务不上报统计。')
     if (!(await this.#upstreamToolNames()).has(name)) return errorResult(`未知工具：${name}`)
     if (!MODEL_INSERT_TOOLS.has(name)) return this.#callLocked(name, args)
+    // Upstream places beside an anchor (right, left, below) or in free space; x, y and above
+    // are the service's, applied once upstream inserted (sized for below, as above is).
+    const { x, y, placement, ...rest } = args
+    const place = { x: finiteOrNull(x), y: finiteOrNull(y), above: placement === 'above' }
+    const upstreamArgs = placement === undefined ? rest : { ...rest, placement: place.above ? 'below' : placement }
     // What the insert added (and the holder it replaced) survives a stale page save.
     const { canvasDir } = resolveCowartPaths(args)
     return this.#guard.withLock(writeLockKey(name, canvasDir), async () => {
       const before = (await this.#storedSnapshot(args))?.store ?? {}
-      let result = await this.#callWithRetry(name, args)
+      let result = await this.#callWithRetry(name, upstreamArgs)
       if (result?.isError) return result
-      if (name === 'insert_cowart_image') result = await this.#fitInsertedImage(args, result)
+      if (name === 'insert_cowart_image') result = await this.#fitInsertedImage(upstreamArgs, result)
+      if (place.x !== null || place.y !== null || place.above) result = await this.#placeInserted(upstreamArgs, result, place)
       const after = (await this.#storedSnapshot(args))?.store ?? {}
       this.#guard.trackInsertedRecords(canvasDir, Object.values(after).filter((record) => !before[record.id]))
       for (const [id, record] of Object.entries(before)) {
@@ -371,10 +417,138 @@ export class CanvasOps extends EventEmitter {
     }
   }
 
+  // Puts what upstream just inserted at x, y, or above its anchor (stepping up past the shapes
+  // there, the way upstream steps down for below). A result that replaced, filled or updated
+  // something stays where that was.
+  async #placeInserted(args, result, place) {
+    const inserted = result?.structuredContent
+    if (!inserted?.shapeId || inserted.dryRun) return result
+    const note = (line) => ({ ...result, content: [{ type: 'text', text: `${result.content?.[0]?.text ?? ''}\n${line}` }] })
+    const { projectDir, canvasDir } = resolveCowartPaths(args)
+    const snapshot = await this.#storedSnapshot({ projectDir, canvasDir })
+    const store = snapshot?.store ?? {}
+    const shape = store[inserted.shapeId]
+    const meta = shape?.meta ?? {}
+    const tookPlace =
+      inserted.replacedAiImageHolder || inserted.replacedAiDraftHolder || inserted.updatedExistingHtmlDraft ||
+      meta.cowartGeneratedForAiImageHolder || meta.cowartGeneratedForAiDraftHolder || meta.cowartAiSlidesParentShapeId
+    if (!shape || tookPlace || store[shape.parentId]?.typeName !== 'page') return note('x / y、above 没用上：这次替换或填进了一个框，位置跟着那个框。')
+    const bounds = pageBounds(store, shape)
+    let target
+    if (place.x !== null || place.y !== null) {
+      target = { x: place.x ?? bounds.x, y: place.y ?? bounds.y }
+    } else {
+      const anchor = store[inserted.anchorShapeId ?? inserted.draftShapeId]
+      if (anchor?.typeName !== 'shape') return note('above 没用上：没有 anchorShapeId。')
+      const around = pageBounds(store, anchor)
+      const margin = Math.max(0, finiteOrNull(args.margin) ?? 40)
+      const obstacles = Object.values(store)
+        .filter((record) => record?.typeName === 'shape' && record.parentId === shape.parentId && record.id !== shape.id && record.id !== anchor.id)
+        .map((record) => pageBounds(store, record))
+      const candidate = { x: around.x, y: around.y - margin - bounds.h, w: bounds.w, h: bounds.h }
+      for (let attempt = 0; attempt < 60 && obstacles.some((other) => rectsOverlap(candidate, other, margin / 2)); attempt += 1) {
+        candidate.y -= bounds.h + margin
+      }
+      target = candidate
+    }
+    const moved = { ...shape, x: Math.round((shape.x + target.x - bounds.x) * 100) / 100, y: Math.round((shape.y + target.y - bounds.y) * 100) / 100 }
+    const saved = structuredOrThrow(
+      await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store: { ...store, [moved.id]: moved } } }),
+      'save_cowart_canvas_state'
+    )
+    if (!saved.ok || (saved.skippedRecords ?? []).some((record) => record.id === moved.id)) return note('没能挪到指定位置，留在了上面说的位置。')
+    const placed = { x: target.x, y: target.y, w: bounds.w, h: bounds.h }
+    // Upstream's line names where it first put the shape: it names the final place instead.
+    const [first = '', ...rest] = (result.content?.[0]?.text ?? '').split('\n')
+    const line = first.replace(/ at \([^)]*\)/, ` at (${Math.round(placed.x)}, ${Math.round(placed.y)})`)
+    return { ...result, content: [{ type: 'text', text: [line, ...rest].join('\n') }], structuredContent: { ...inserted, bounds: placed } }
+  }
+
+  // ---- Layout tools (canvas-edit.mjs) ----------------------------------------------------
+
+  // insert_cowart_text / insert_cowart_frame / update_cowart_shapes / delete_cowart_shapes on the
+  // page args.pageId: planned on the stored canvas, checked against tldraw before anything is
+  // written (a record the page could not show fails the call), then saved at once.
+  async editCanvas(name, args) {
+    const { projectDir, canvasDir } = resolveCowartPaths(args)
+    return this.#guard.withLock(writeLockKey('save_cowart_canvas_state', canvasDir), async () => {
+      const snapshot = await this.#storedSnapshot({ projectDir, canvasDir })
+      if (!snapshot?.store) throw new Error('画布还没有数据：先打开画布，在画布页面里加载一次。')
+      // The page the call's shapes are on, when the session's page did not have to stand in.
+      const pageId = nonEmpty(args.pageId) ?? (await this.#editTargetPage(args, name))
+      const plan = planCanvasEdit(name, snapshot.store, { ...args, pageId })
+      const next = { ...snapshot, store: plan.store }
+      const written = new Set([...plan.created, ...plan.changed])
+      const rejected = (await this.#invalidRecords(next, { pageIds: [pageId] })).filter((record) => written.has(record.id))
+      if (rejected.length > 0) {
+        throw new Error(`${name}：没有写入，${rejected.map((record) => `${record.id}（${record.reason}）`).join('；')} 没通过 tldraw 的校验，页面显示不了。`)
+      }
+      const saved = await this.#callWithRetry('save_cowart_canvas_state', {
+        projectDir,
+        canvasDir,
+        snapshot: next,
+        protectImageRecords: true,
+        acknowledgedImageShapeDeletes: plan.imageDeletes
+      })
+      const content = saved?.structuredContent ?? {}
+      if (saved?.isError || content.ok === false) {
+        const text = saved?.content?.find((item) => item.type === 'text')?.text
+        throw new Error(`${name}：保存画布失败：${content.message || text || '原因不明'}`)
+      }
+      const skipped = (content.skippedRecords ?? []).filter((record) => written.has(record.id))
+      if (skipped.length > 0) this.#log(`${name}: saved without ${skipped.map((record) => record.id).join(', ')}`)
+      this.#guard.trackInsertedRecords(canvasDir, plan.created.map((id) => plan.store[id]))
+      for (const id of plan.removed) if (snapshot.store[id]?.typeName === 'shape') this.#guard.trackRemovedShape(canvasDir, id)
+
+      let text = plan.text
+      const files = (plan.result.deleted ?? []).map((entry) => (entry.assetSrc ? localPathForAssetSrc(canvasDir, entry.assetSrc) : null)).filter(Boolean)
+      if (files.length > 0) text += `\n素材文件还在（要放回就用 insert_cowart_image / insert_cowart_video）：\n${files.map((file) => `- ${file}`).join('\n')}`
+      if (skipped.length > 0) text += `\n⚠ 保存时 ${skipped.map((record) => record.id).join('、')} 被丢掉了（${skipped[0].reason}）。`
+      return textResult(text, plan.result)
+    })
+  }
+
+  // The records tldraw's validation skips (a canvas page could not show them): upstream saves
+  // the snapshot, or its pages pageIds, into a scratch canvas (every upstream save validates
+  // first) and reports them. Assets go without their src, so no media file is copied.
+  async #invalidRecords(snapshot, { pageIds = null } = {}) {
+    const store = snapshot?.store ?? {}
+    const wanted = pageIds ? new Set(pageIds) : null
+    const subset = {}
+    for (const [id, record] of Object.entries(store)) {
+      if (record?.typeName === 'asset') {
+        subset[id] = { ...record, props: { ...record.props, src: null } }
+      } else if (wanted && record?.typeName === 'page') {
+        if (wanted.has(id)) subset[id] = record
+      } else if (wanted && record?.typeName === 'shape') {
+        if (wanted.has(pageIdOfShape(store, record))) subset[id] = record
+      } else {
+        subset[id] = record
+      }
+    }
+    const scratch = await mkdtemp(join(tmpdir(), 'cowart-check-'))
+    try {
+      const result = await this.#upstream.callTool('save_cowart_canvas_state', { projectDir: scratch, canvasDir: scratch, snapshot: { ...snapshot, store: subset } })
+      const content = result?.structuredContent
+      if (!content) throw new Error(result?.content?.find((item) => item.type === 'text')?.text || '上游没回校验结果。')
+      return (content.skippedRecords ?? []).filter((record) => !(wanted && record.typeName === 'binding' && /^Missing dependent record/.test(record.reason ?? '')))
+    } finally {
+      await rm(scratch, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
   async canvasState(args) {
     const result = await this.#upstream.callTool(CANVAS_STATE_TOOL, { ...args, hydrateAssets: false })
     if (args.includeSnapshot === true) return result
-    const summary = summarizeCanvas(structuredOrThrow(result, CANVAS_STATE_TOOL))
+    const state = structuredOrThrow(result, CANVAS_STATE_TOOL)
+    // Records a page cannot show are marked, so the model does not count on them.
+    const invalid = state.snapshot?.store
+      ? await this.#invalidRecords(state.snapshot).catch((error) => {
+          this.#log(`canvas summary without validation: ${error instanceof Error ? error.message : error}`)
+          return []
+        })
+      : []
+    const summary = summarizeCanvas({ ...state, invalid })
     return textResult(formatCanvasSummary(summary), summary)
   }
 
@@ -412,7 +586,9 @@ export class CanvasOps extends EventEmitter {
             displayWidth: args.displayWidth,
             displayHeight: args.displayHeight,
             videoWidth,
-            videoHeight
+            videoHeight,
+            x: finiteOrNull(args.x),
+            y: finiteOrNull(args.y)
           })
 
       const assetsDir = join(canvasDir, 'pages', pageDirName(plan.pageId), 'assets')

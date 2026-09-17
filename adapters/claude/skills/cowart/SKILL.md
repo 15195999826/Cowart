@@ -1,6 +1,6 @@
 ---
 name: cowart
-description: Claude Code 桌面版里的 Cowart 画布（tldraw 无限画布，全机一张、按页分工）怎么配合用户干活：打开画布、进入 / 接管页，处理画布发来的「Cowart 画布请求 #N」（按标注修改、按标注生图、AI HTML、AI Slides、照网页做 HTML，本机没 beast 命令行时的 AI 图片 / AI 视频），把生成的图片 / 视频 / HTML 放上画布并放对页，读画布摘要里的标注和素材。用户说「打开 Cowart 画布」「接管 X」「进入 X」「接管这页」「看画布」，后台监听叫醒你说「Cowart 画布请求」，或者要把任何图 / 视频 / HTML「放到画布上」、按画布上的标注改图、问画布上有什么——哪怕没提 Cowart 三个字——都先读本 skill 再调 cowart 工具。cowart 的 MCP 说明只有开头进了上下文，请求怎么回状态、结果放哪页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都只在这里，凭工具描述直接调容易放错页、漏回状态、白问用户要截图。
+description: Claude Code 桌面版里的 Cowart 画布（tldraw 无限画布，全机一张、按页分工）怎么配合用户干活：打开画布、进入 / 接管页，处理画布发来的「Cowart 画布请求 #N」（按标注修改、按标注生图、AI HTML、AI Slides、照网页做 HTML，本机没 beast 命令行时的 AI 图片 / AI 视频），把生成的图片 / 视频 / HTML 放上画布并放对页，整理页面（给图编号、加标题、分组、排版、删除），读画布摘要里的标注和素材。用户说「打开 Cowart 画布」「接管 X」「进入 X」「接管这页」「看画布」，后台监听叫醒你说「Cowart 画布请求」，或者要把任何图 / 视频 / HTML「放到画布上」、按画布上的标注改图、给画布上的图编号 / 分组 / 排整齐 / 删掉、问画布上有什么——哪怕没提 Cowart 三个字——都先读本 skill 再调 cowart 工具。cowart 的 MCP 说明只有开头进了上下文，请求怎么回状态、结果放哪页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都只在这里，凭工具描述直接调容易放错页、漏回状态、白问用户要截图。
 ---
 
 # Cowart 画布 · Claude Code 桌面版用法
@@ -82,7 +82,28 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 - **HTML**：`insert_cowart_html_draft { htmlContent 或 htmlPath, fileName, anchorShapeId? }`。
 - **放哪一页**：不传 `pageId` 的插入放进你负责的页；没负责页时放进你的画布面板正看着的页。别人负责的页会被拒绝，这时告诉用户在这个会话里说「接管 <页名>」，不要自己绕。处理画布请求时把结果放回请求那一页（宿主说明会给 `pageId`），哪怕这页后来换人了也放得进。
 - **文件**：给插入工具的是本地路径，它自己拷进页素材目录，原文件不动。产物用时间戳或唯一文件名，不覆盖已有素材。
-- **看画布**：`get_cowart_canvas_state` 是紧凑摘要：每页的图形（id、类型、位置、尺寸、文字）、素材本地路径、标注指向哪张卡片、谁负责哪页。`includeSnapshot: true` 只在真要原始 tldraw 记录时用，很大。`get_cowart_selection` 是用户在本会话画布面板里选中的东西。
+- **看画布**：`get_cowart_canvas_state` 是紧凑摘要：每页的图形（id、类型、页面上的左上角位置和尺寸、文字、所在的分组框）、素材本地路径、标注指向哪张卡片、谁负责哪页。`includeSnapshot: true` 只在真要原始 tldraw 记录时用，很大。`get_cowart_selection` 是用户在本会话画布面板里选中的东西。
+
+### 4.1 整理页面：编号、标题、分组、排版、删除
+
+用户说「给图编号」「分组」「排整齐」「加个标题 / 说明」「把 X 删掉」时用下面这几个工具。**不要手改画布文件**（`~/.cowart/canvas` 下的 JSON）：记录字段跟 tldraw 5.1 对不上，页面就显示不了，下次保存还会被悄悄丢掉，摘要里却照样列着，看着像成功了。也不要把字画成图片再插。
+
+先 `get_cowart_canvas_state` 看这一页：每个图形一行，位置是它在页面上的左上角 (x, y) 和宽×高，「父级」是它所在的分组框，分组框带「标题「…」」和「内含 N 个图形」。下面所有工具的 x / y 都是这个坐标。
+
+| 要做的事 | 工具 | 要点 |
+|---|---|---|
+| 排版、挪位置、改大小 | `update_cowart_shapes { updates: [{ shapeId, x, y }] }` | 一整批放一次调用，一起保存；`dx / dy` 是相对移动；图片 / 视频只给 `w` 或 `h` 时保持比例；卡片上的标注 / 注释箭头自动跟着走；已经在目标位置的那条不算错 |
+| 编号、标题、说明文字 | `insert_cowart_text { items: [...] }` | 编号挂卡片下面：`{ text: "A1", anchorShapeId, textAlign: "middle" }`（文字框和卡片一样宽，所以居中）；标题给 `x / y` 和 `size: "xl"`。给的位置就是最终位置，**不会自动避让**：先用 update 留出空隙，一行字高约 s 24、m 32、l 49、xl 59 |
+| 分组 | `insert_cowart_frame { name, shapeIds }` | 框按这些图形的范围定大小（`padding` 默认 40），它们原地进框；框在页面最底层，框标题显示在框的左上角外面（组与组之间留出约 60）；之后谁拖框，里面的东西和标注一起走 |
+| 调整分组 | `update_cowart_shapes` | `frameId` 放进某个框、`"page"` 拿出来（位置都不变）；`fit: true` 让框刚好包住里面的东西；`name` 改框标题；`text` 改文字 |
+| 删除 | `delete_cowart_shapes { shapeIds }` | 只删用户明确要删的；卡片的标注 / 注释跟着删；删分组框默认留下里面的东西（`deleteChildren: true` 才连内容一起删）；图 / 视频文件留在页素材目录，结果里给路径，要放回就用插入工具 |
+
+- 放图 / 视频 / HTML 也能给 `x / y`（精确放到那里），或 `placement: "above"` 放到锚点上方。
+- 典型的「给这页的图编号、分组」：摘要看尺寸 → 一次 `update_cowart_shapes` 排成网格（每行下面留出编号的高度，组之间留出框标题的位置）→ 一次 `insert_cowart_text` 给每张图加编号 → 每组一次 `insert_cowart_frame`（`shapeIds` 带上图和它的编号）→ 需要的话加大标题 → 再看一次摘要核对。
+- 只能整理本会话负责的页（没负责页时是面板正看着、没人负责的那页）；一次调用只改一页。
+- 这些改动在画布服务上完成，页面几秒内同步过来，但**用户在页面上按 Ctrl+Z 撤不回**。排版、编号放手做；删除前说清楚删哪些（拿不准就问），删完告诉用户删了什么、文件在哪。
+- 结果里出现「⚠ … 超出了分组框」时照提示处理（给框 `fit: true`，或给它 `frameId: "page"`），不然页面上超出的部分被框裁掉。
+- 摘要里标「⚠ … 是无效记录」的东西页面上看不到、下次保存会被丢掉，别当它在画布上；需要的话用工具重新放一份。
 
 ## 5. 标注和注释
 
@@ -106,13 +127,17 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 | `render_cowart_canvas_widget` | 打开画布、进入 / 接管页 | `sessionName`、`page`、`shownPage`；结果带网址、监听命令、谁负责哪页 |
 | `get_cowart_canvas_state` | 画布摘要 | 默认不带快照 |
 | `get_cowart_selection` | 本会话面板里选中的图形 | 判断 AI 图片框 / 锚点 |
-| `insert_cowart_image` | 放图片 | `imagePath`；`anchorShapeId` + `placement`，或传 AI 图片框 id 替换它；`pageId` |
-| `insert_cowart_video` | 放视频 | `videoPath`；`replaceHolderShapeId` 替换 AI 视频框 |
+| `insert_cowart_image` | 放图片 | `imagePath`；`anchorShapeId` + `placement`（right / left / below / above），或 `x / y`，或传 AI 图片框 id 替换它；`pageId` |
+| `insert_cowart_video` | 放视频 | `videoPath`；`x / y` 或锚点 + `placement`；`replaceHolderShapeId` 替换 AI 视频框 |
 | `insert_cowart_html_draft` | 放 / 替换 HTML 草稿、给 Slides 加页 | `htmlContent` 或 `htmlPath`、`draftShapeId`、`fileName` |
+| `insert_cowart_text` | 放文字：编号、标题、说明 | `items`：`text` + `x / y` 或 `anchorShapeId` + `placement`；`size / color / font / textAlign` |
+| `insert_cowart_frame` | 建分组框 | `name`、`shapeIds`（或空框的 `x / y / w / h`） |
+| `update_cowart_shapes` | 批量移动、改尺寸、改文字 / 框标题、进出分组框 | `updates`：`shapeId` + `x / y`、`dx / dy`、`w / h`、`text`、`name`、`frameId`、`fit` |
+| `delete_cowart_shapes` | 删除 | `shapeIds`；`deleteChildren` 连框里的东西一起删；页面 Ctrl+Z 撤不回 |
 | `get_cowart_request` / `reply_cowart_request` / `list_cowart_requests` | 画布请求的详情、状态、列表 | 状态 running / done / failed / skipped；「看画布」用 list 取排队的 |
 | `send_cowart_feedback` | 记下用户对 Cowart 本身的意见 | 见第 7 节 |
 
-没有整张保存的工具，也不要手写 tldraw 记录：插入工具会算位置、拷素材、存盘。
+没有整张保存的工具，也不要手写 tldraw 记录或手改画布文件：插入和整理工具会算位置、拷素材、按 tldraw 校验、存盘。
 
 ## 7. 反馈
 
@@ -127,6 +152,7 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 ## 8. 别做的事
 
 - 不删页、不清页、不往别人负责的页写。
+- 不手改 `~/.cowart/canvas` 下的文件，不把文字画成图片再插：文字、分组、排版、删除都有工具（4.1）。
 - 不为面板里点发送的 AI 图片 / AI 视频插手：那是画布服务在做。
 - 不重复 render；画布自己同步。
 - 云端模型（lib-image、seedance、meshy）先说明消耗团队额度再用；免费本地模型随便迭代。

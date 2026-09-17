@@ -20,9 +20,11 @@ adapters/
                 视频插入、插入的图片保持原比例、差异保存、给会话建页）、差异合并（delta-merge.mjs）、谁负责哪一页（presence.mjs）、
                 请求队列、写入保护、令牌、身份与代码指纹（identity.mjs）、一张画布一个服务的锁（canvas-lock.mjs）、
                 画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）、
-                用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）、右键「在资源管理器中显示」（reveal-file.mjs）
+                用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）、右键「在资源管理器中显示」（reveal-file.mjs）、
+                画布整理工具（canvas-edit.mjs：放文字、分组框、移动 / 改尺寸 / 删除，写前按 tldraw 校验）
     test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）、
-                手动查看 / 停止（stop-test.mjs：两个联调服务各占一个测试端口、各用一张画布，给了端口的 --stop 只停那一个）
+                手动查看 / 停止（stop-test.mjs：两个联调服务各占一个测试端口、各用一张画布，给了端口的 --stop 只停那一个）、
+                画布整理（canvas-edit-test.mjs：三个宿主都列出整理工具，放文字 / 建框 / 移动 / 删除、别人负责的页被拒、无效记录）
     client.mjs  给各宿主的桥用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接 / 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
                 图片 / 视频模型清单（image-models.mjs / video-models.mjs）、
@@ -141,6 +143,20 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - **在本仓库处理**：用户说「看看反馈」时，`npm --prefix adapters run feedback` 列出没处理的，`-- show <编号>` 看全文、当时的情况和文件路径；按开发准则先跟用户讨论再改，改完 `-- done <编号> --commit <提交> --note "<改了什么>"`，不改的 `-- wontfix <编号> --note "<为什么>"`，`-- reopen <编号>` 重开（编号直接写数字：PowerShell 里 `#` 后面算注释）。
 - 别的机器上记的反馈留在那台机器的 `~/.cowart/feedback`，拉到这台来处理的命令还没做。
 
+## 画布整理（2026-09-17）
+
+lomo 上一个 ZCode 会话要「给每张图编号、分组」，模型这边只有插入工具：放不了文字、建不了分组框、不能按坐标放，也挪不动、删不掉已有的卡片。它手写进页面 JSON 的文字记录是旧字段（`align` / `text`，缺 `textAlign` / `richText`），页面显示不了，下次存盘被上游的校验丢掉，而 `get_cowart_canvas_state` 读盘不校验、照样列着；改把编号画成 PNG 用 `below` 挂到图下，上游默认按锚点尺寸插图再往下避让，标签全被挪到整列底部。用户选了「基础 + 分组框」，AI 能动本会话负责的页里的一切。
+
+- **工具在画布服务上**（`service/lib/canvas-edit.mjs`，跟 `send_cowart_feedback` 一样经 `model-tools` 列给三个宿主的桥，转发代码不用改）：`insert_cowart_text`（编号、标题、说明：给 x / y，或挂在卡片上下左右；放下就是那里、不避让；卡片上下方的文字框跟卡片同宽，`textAlign: middle` 就居中）、`insert_cowart_frame`（tldraw 的 frame：按 `shapeIds` 的范围建框，成员原地进框）、`update_cowart_shapes`（批量移动、改尺寸、改文字 / 框标题、进出分组框、`fit` 让框贴合内容）、`delete_cowart_shapes`（删框默认留下里面的东西）。上游的 `insert_cowart_image` / `insert_cowart_html_draft` 插完由服务挪到 `x / y` 或锚点上方（`above`，照上游 `below` 的避让往上找空位；服务给它们的 schema 加了这两项），`insert_cowart_video` 在 `planVideoPlacement` 里直接支持；替换或填进框的插入不挪。
+- **坐标**：工具读写的 x / y 都是图形在页面上的包围盒左上角（算上父级分组框的位置和旋转），跟画布摘要一致（`shared/canvas-model.mjs` 的 `pageBounds`：箭头、线按端点，手绘按 tldraw 的 base64 增量点解码，文字按字号估算——CJK 一个字号宽、其它 0.6 个，行高 1.35；无头 Chrome 里页面实测的高度差不到 1px，自动宽度偏大一些）。
+- **写入规则**跟插图一样：按页负责制（`PAGE_WRITE_TOOLS` 和 `#pageWrite`；一次调用只改一页，引用的图形分在几页上直接拒），在画布写锁里读盘、规划、保存。
+- **写前校验**：服务进程里没有 tldraw，上游子进程有（它每次存盘先跑 `sanitizeCanvasSnapshotForTldraw`）。所以服务把规划好的画布（只含涉及的页，素材的 `src` 置空、不拷文件）存进一个临时画布目录，读上游回报的 `skippedRecords`：这次要写的记录有被跳过的，整批不写、报出原因。通过了才真正保存，带上 `protectImageRecords` 和删掉的图片 id 作确认，别的图片若在这次保存里消失会被上游拦下。接口检查（`check:contract`）盯着上游存盘还回报 `skippedRecords`。
+- **摘要标出无效记录**：`get_cowart_canvas_state` 用同一个办法校验整张画布，页面显示不了的记录不再算作图形，单列成「⚠ … 是无效记录」；摘要还多了分组框标题、「内含 N 个图形」，位置改成页面上的包围盒。
+- **跟页面的规矩一致**：页面里的标注跟随和级联删除（`registerAnnotationBindings`）只处理用户自己的改动，服务的改动经远端同步进页面不会触发，所以服务自己做：卡片（或装着它的框）在页面上移动了，绑在它上面的页面级标注 / 注释箭头整条平移；删卡片时它的标注和绑定一起删。新建的框放在页面（或成员共同所在的框）最底层，页面级的标注箭头照样盖在上面；删框时里面的东西按原来的层次留在原位；挂在框里卡片旁的文字超出框时框自动变大；移动或放进框后超出框的内容，结果里提示 `fit`。新记录和删掉的图形交给写入保护（`trackInsertedRecords` / `trackRemovedShape`），旧页面的整张保存冲不掉、带不回。
+- **撤不回**：服务的改动经远端同步进页面，不进 tldraw 的撤销栈，页面上 Ctrl+Z 撤不回。删掉的图片 / 视频文件还在页素材目录，结果列出路径，要放回用插入工具。三份 skill 和桥的说明都写了只删用户要删的、删之前说清楚。
+- **拖分组框时标注跟着走**（页面，补丁点）：页面原来只在卡片本身移动时让标注跟随，拖框时框里卡片的标注箭头留在原地被拉长；现在装着东西的框（编组也一样）移动时，里面卡片的标注一起平移。删框时 tldraw 的 `deleted-shapes` 本来就带着子图形，级联删除不用改。
+- 检查：`service/test/canvas-edit-test.mjs`（并进 `test:claude`，单跑 `test:edit`，端口 43385）：三个宿主的桥都列出工具；Claude 会话实际放图、放文字、建框、移动、改尺寸、进出框、删除；ZCode 会话动别人负责的页被拒；Codex 会话建框；手写的旧字段文字记录在摘要里标出，移动它被拒、盘上不变。
+
 ## 注意
 
 - 本仓库公开：内网地址、凭据不要提交；生图规范里只写 skill 名。
@@ -165,7 +181,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 | `src/App.jsx` | `cowartPanelTakenOver()`、`CowartCanvasOverlay` 里的 AI 图片面板、`CowartAiImageStyleControls` 的提前返回（均标 `[fork-patch]`） | 上游 AI 图片面板只有「参考图 + 描述 + 发送」，没法选模型和参数，尺寸比例又放在右上角；开一个面板接管开关，适配层画一个管全部控制项的面板。未接管时行为与上游一致 | 未提 |
 | `src/App.jsx` | `cowartImageToolbarItems()`、`CowartImageToolbarContent` 里的 `imageShape` 和扩展按钮、`CowartExtensionImageToolbarButton`（均标 `[fork-patch]`） | 图片工具栏也是写死的 React 组件；网页参考卡片的按钮要并进这一排（用户不要两排），从外面往 React 管的节点里塞按钮会被重渲染冲掉、也不参与工具栏的定位。开一个通用的图片工具栏扩展接口。未注册扩展时行为与上游一致 | 未提（接口是通用的，可以提） |
 | `src/App.jsx` | `cowartContextMenuItems()`、`CowartContextMenu` / `CowartContextMenuContent`、`cowartComponents.ContextMenu` 和对应的 tldraw 导入（均标 `[fork-patch]`） | 右键菜单同样是写死的 React 组件，tldraw 的 `DefaultContextMenuContent` 各组之间没有插槽；开一个通用的右键菜单扩展接口，适配层用它在「复制为 / 导出为 / 下载原图」下面加「在资源管理器中显示」。内容照抄 tldraw 5.1 的 `DefaultContextMenuContent` 再加一组，升级 tldraw 时要对一下。未注册扩展时与上游一致 | 未提（接口是通用的，可以提） |
-| `src/App.jsx` | 标注绑定：`cowartAnnotationNotices` 到 `registerAnnotationBindings()` 一组函数和新的 `collectAnnotationTargetShapeIds`（替换了原来按距离、颜色收集标注的辅助函数和常量）、`CowartAnnotationPointing` 的 `updateArrowEnd` / `complete` / `cancel`、`CowartAnnotationToolbarItem` 的提示、5 个按标注请求构建函数的 `annotationLines`、`handleMount` 里的注册和去掉的 `unsubscribeAnnotationEditingToolLock` 监听（均标 `[fork-patch]`） | 上游按「卡片周围一圈里的红 / 橙 / 黄箭头和文字」猜标注归谁：挨得近的卡片互相串、离得远的漏掉。改成画的时候必须指到卡片（图片 / 视频 / 网页卡片 / AI HTML / AI Slides，松手不在卡片上就撤掉并提示），箭头尖用 tldraw 箭头绑定钉在松手点、随画布保存；卡片移动时标注整条跟着走、删卡片一起删；拖箭头尖换卡片按松手点改绑，拖到空白处退回原位；写要求时回车完成（Shift+回车换行），完成后回到选择工具（去掉了上游写完字又切回标注工具的监听），没写字就结束的标注直接撤掉；新增「注释」工具（`CowartNoteTool`，蓝色虚线，`meta.cowartAnnotationNote`，常驻说明，请求里单列为背景）和各卡片工具栏的「清理标注」（`CowartClearAnnotationsButton`，只删标注、留注释；视频工具栏为此换成 `CowartVideoToolbar`）；只认「标注」「注释」工具的箭头，旧的未绑定标注在打开画布时按箭头尖位置补绑；请求里除截图外再逐条列出每个标注的字和指向的位置（占卡片宽高的百分比） | 未提（改的是上游行为，可以作为提案提） |
+| `src/App.jsx` | 标注绑定：`cowartAnnotationNotices` 到 `registerAnnotationBindings()` 一组函数和新的 `collectAnnotationTargetShapeIds`（替换了原来按距离、颜色收集标注的辅助函数和常量）、`CowartAnnotationPointing` 的 `updateArrowEnd` / `complete` / `cancel`、`CowartAnnotationToolbarItem` 的提示、5 个按标注请求构建函数的 `annotationLines`、`handleMount` 里的注册和去掉的 `unsubscribeAnnotationEditingToolLock` 监听、`moveAnnotationsWithCard` 对装着东西的框的放行（均标 `[fork-patch]`） | 上游按「卡片周围一圈里的红 / 橙 / 黄箭头和文字」猜标注归谁：挨得近的卡片互相串、离得远的漏掉。改成画的时候必须指到卡片（图片 / 视频 / 网页卡片 / AI HTML / AI Slides，松手不在卡片上就撤掉并提示），箭头尖用 tldraw 箭头绑定钉在松手点、随画布保存；卡片移动时标注整条跟着走（拖装着卡片的分组框 / 编组时也是）、删卡片一起删；拖箭头尖换卡片按松手点改绑，拖到空白处退回原位；写要求时回车完成（Shift+回车换行），完成后回到选择工具（去掉了上游写完字又切回标注工具的监听），没写字就结束的标注直接撤掉；新增「注释」工具（`CowartNoteTool`，蓝色虚线，`meta.cowartAnnotationNote`，常驻说明，请求里单列为背景）和各卡片工具栏的「清理标注」（`CowartClearAnnotationsButton`，只删标注、留注释；视频工具栏为此换成 `CowartVideoToolbar`）；只认「标注」「注释」工具的箭头，旧的未绑定标注在打开画布时按箭头尖位置补绑；请求里除截图外再逐条列出每个标注的字和指向的位置（占卡片宽高的百分比） | 未提（改的是上游行为，可以作为提案提） |
 | `src/App.jsx` | `followUpSender(sourceShapeId)` 及各图片 / 标注 / HTML / Slides 请求入口、Slides 截图后的页面检查（均标 `[fork-patch]`） | 开始准备截图或上传时固定来源页，通过 `message.cowart.pageId/pageName` 发给共享桥；等待期间翻页也不会把请求发给另一页负责者。Slides 需要先建新框，截图期间翻页则明确终止，避免在新页误建框 | 未提（通用消息来源元数据） |
 | `src/App.jsx` | `buildCowartAssetUrls()` 的中文语言资源补全（标 `[fork-patch]`） | 在 tldraw 校验语言包之前补齐尚缺的 `page-menu.max-pages-reached`、`page-menu.resize`，消除中文菜单缺词警告 | 未提 |
 | `src/App.jsx` | `readCowartHtmlDataUrl()`、`CowartHtmlDraftEmbed` 的来源选择、`resolveCowartTldrawAssetUrl()`、本地重试 signal 和 `CowartVideoShapeUtil` / `CowartVideoRetryBoundary`（均标 `[fork-patch]`） | HTML data URL 直接解码；相同素材的并发读取共用一个 Blob URL，换源时过滤旧请求结果。MCP 读取失败返回空并通过带素材版本的 `cowart:asset-load` 事件报告，适配层呈现视频错误；`cowart:retry-asset` 使素材缓存失效，由 React 边界订阅 signal 并只重建失败播放器，缩放后也能重试，不往共享画布写重试状态；宿主给出 `window.cowartMcp.directAssetUrl` 时（Claude / ZCode 这类由画布服务直接提供的页面）视频直接用素材地址，由服务按 Range 流式提供，不整段读成 Blob | 未提（通用资源加载与恢复能力） |
