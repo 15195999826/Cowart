@@ -20,6 +20,7 @@ import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } f
 import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
 import { EDIT_TOOLS, planCanvasEdit, referencedShapeIds } from './canvas-edit.mjs'
 import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
+import { COPY_REFERENCE_TOOL, copyCanvasReference } from './copy-reference.mjs'
 import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
 import { readVideoAsset } from './video-assets.mjs'
 
@@ -296,6 +297,15 @@ export class CanvasOps extends EventEmitter {
       try {
         const captured = await captureWebReference({ args })
         return textResult(`已截下 ${captured.url}（${captured.width}×${captured.height}）。`, captured)
+      } catch (error) {
+        return errorResult(error instanceof Error ? error.message : String(error))
+      }
+    }
+    if (name === COPY_REFERENCE_TOOL) {
+      try {
+        const { projectDir, canvasDir } = resolveCowartPaths(args)
+        const copied = await copyCanvasReference({ snapshot: await this.#storedSnapshot({ projectDir, canvasDir }), canvasDir, shapeIds: args.shapeIds })
+        return textResult('已拷贝画布索引。', copied)
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error))
       }

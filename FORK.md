@@ -21,17 +21,19 @@ adapters/
                 请求队列、写入保护、令牌、身份与代码指纹（identity.mjs）、一张画布一个服务的锁（canvas-lock.mjs）、
                 画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）、
                 用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）、右键「在资源管理器中显示」（reveal-file.mjs）、
+                右键「拷贝索引」（copy-reference.mjs：引用文本和系统剪贴板）、
                 画布整理工具（canvas-edit.mjs：放文字、分组框、移动 / 改尺寸 / 删除，写前按 tldraw 校验）
     test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）、
                 手动查看 / 停止（stop-test.mjs：两个联调服务各占一个测试端口、各用一张画布，给了端口的 --stop 只停那一个）、
-                画布整理（canvas-edit-test.mjs：三个宿主都列出整理工具，放文字 / 建框 / 移动 / 删除、别人负责的页被拒、无效记录）
+                画布整理（canvas-edit-test.mjs：三个宿主都列出整理工具，放文字 / 建框 / 移动 / 删除、别人负责的页被拒、无效记录）、
+                右键菜单（context-menu-test.mjs：三个宿主都拷得到索引，截帧存进页素材、写的卡片过 tldraw 校验）
     client.mjs  给各宿主的桥用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接 / 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
                 图片 / 视频模型清单（image-models.mjs / video-models.mjs）、
                 把面板选项变成请求文本的 prepare_cowart_generation_request（generation-requests.mjs）
                 网页截图 web-capture.mjs（puppeteer-core 驱动本机 Chrome / Edge）
     web/        各端共用的画布页面脚本：service-bridge.js（差异保存、页同步、负责状态、生成与队列）、
-                kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、右键「在资源管理器中显示」、样式面板按需显示）、
+                kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、右键「截取当前帧」「拷贝索引」「在资源管理器中显示」、样式面板按需显示）、
                 AI 视频、接管后的 AI 图片、网页参考、视频播放
   claude/       Claude Code 适配（说明见 adapters/claude/README.md）
     bin/        MCP 入口 cowart-claude-mcp.mjs（每个会话一个薄桥）、画布请求监听 cowart-listen.mjs（Claude Code、ZCode 都用 Bash 后台跑 --once，见「宿主差异」）
@@ -156,6 +158,15 @@ lomo 上一个 ZCode 会话要「给每张图编号、分组」，模型这边�
 - **撤不回**：服务的改动经远端同步进页面，不进 tldraw 的撤销栈，页面上 Ctrl+Z 撤不回。删掉的图片 / 视频文件还在页素材目录，结果列出路径，要放回用插入工具。三份 skill 和桥的说明都写了只删用户要删的、删之前说清楚。
 - **拖分组框时标注跟着走**（页面，补丁点）：页面原来只在卡片本身移动时让标注跟随，拖框时框里卡片的标注箭头留在原地被拉长；现在装着东西的框（编组也一样）移动时，里面卡片的标注一起平移。删框时 tldraw 的 `deleted-shapes` 本来就带着子图形，级联删除不用改。
 - 检查：`service/test/canvas-edit-test.mjs`（并进 `test:claude`，单跑 `test:edit`，端口 43385）：三个宿主的桥都列出工具；Claude 会话实际放图、放文字、建框、移动、改尺寸、进出框、删除；ZCode 会话动别人负责的页被拒；Codex 会话建框；手写的旧字段文字记录在摘要里标出，移动它被拒、盘上不变。
+
+## 右键菜单：截帧与索引（2026-09-18）
+
+视频在画布上循环播着，看到哪一帧想留下来只能重新生成；要跟 AI 说「这张图」又只能靠描述。两项都加在右键菜单里（`__cowartExtensions.contextMenu`，和「在资源管理器中显示」同一组，页面脚本三个宿主共用）。
+
+- **截取当前帧**（`shared/web/canvas-chrome.js`）：只在恰好选中一个视频时出现。**菜单一打开就抓帧**（画布上的视频一直循环播，等用户读完菜单再抓就不是他看到的那一帧了：实测右键时 2.1s、点下去时 4.6s，留下的是 2.1s），把 `<video>` 当前画面按视频原分辨率画进离屏 canvas；点下去才落盘，PNG 经上游的 `save_cowart_reference_image` 存进这一页的素材目录，再由**页面**自己建 asset 和 image 卡片，放到视频右边的空位（`kit.freePosition` 往右滑过挡路的卡片），和视频卡片同宽、按帧的比例定高。页面建卡片而不是交给服务插入，所以 Ctrl+Z 撤得回。素材名是「<视频名> 1.9s.png」，meta 记 `cowartVideoFrame`、来自哪个视频、第几秒。浏览器把视频当成跨源时画布被污染、`toDataURL` 抛错，这时提示截不下来，不存黑图。
+- **拷贝索引**（`service/lib/copy-reference.mjs`）：选中任何图形都能用。画布上每个图形本来就有 tldraw 的 id（`shape:…`），画布摘要给模型看的就是它，所以不另起编号。页面只报 shape id（报之前先存一笔，刚画的东西才在盘上），服务按摘要的口径拼出引用——页名、shape id、这是什么（网页卡片、视频截帧、标注、注释、各种占位框按 meta 认，其余按 tldraw 类型给中文名）、素材名和**素材在本机的路径**——再写进系统剪贴板（Windows 用 PowerShell 5.1 的 `Set-Clipboard`，文本经环境变量传；Mac `pbcopy`；Linux 先 `wl-copy` 后 `xclip`）。剪贴板由服务写而不是页面写：Codex 的 widget 在 iframe 里不一定拿得到剪贴板权限。粘给 AI 之后，路径可以直接 Read 看图，shape id 可以直接调整理工具。单选一行，多选时首行写页名和个数、之后一行一个。三份 skill 都写了用户粘来这段时怎么用。`COWART_CLIPBOARD_DRY_RUN=1` 只拼文本、不动剪贴板（检查用）。
+- **顺带修掉的 tldraw bug**：菜单开着的时候直接拖卡片，之后右键再也打不开菜单（要刷新页面）。tldraw 5.1 把右键菜单渲染成 `{isOpen && <Portal>}`，isOpen 读它自己的 `editor.menus`：菜单从那里被拿掉，radix 的内容就地卸载，radix 并不知道自己关了。它的 Root 是非受控的、只在值变化时通知，于是它一直以为 open，之后每次右键都把 open 设成 true（值没变），tldraw 再也收不到 `onOpenChange(true)`。左键按下正是这条路：`MenuClickCapture` 在 `flushSync` 里调 `clearOpenMenus()`，抢在这一下传到 document、radix 的 `DismissableLayer` 看见外部点击之前。tldraw 自己的右键路径特意绕开了它（源码注释：不调 clearOpenMenus，让 radix 的外部点击检测去关，两边状态才对得上），所以页面脚本让 `clearOpenMenus` 也把右键菜单留给 radix：同一下按键里 radix 自己关掉它，跟 tldraw 同步，拖动照旧。接口检查盯着 `clearOpenMenus` / `deleteOpenMenu` / `context menu` 这几个名字还在上游产物里。
+- 检查：`service/test/context-menu-test.mjs`（并进 `test:claude`，单跑 `test:menu`，端口 43386）：Claude / ZCode 页面（HTTP）和 Codex widget（桥的私有通道）拷到同一段引用；截帧存进页素材，页面写的那条 image 记录过得了 tldraw 校验（`skippedRecords` 为空）；多选按行列出；画布上没有的图形被拒。浏览器里抓帧、放卡片、Ctrl+Z 撤回在 Browser 面板手验（2026-09-18，dev-host + 临时画布）。
 
 ## 注意
 

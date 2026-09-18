@@ -46,7 +46,12 @@ const WIDGET_MARKERS = [
   'cowartAnnotationArrow',
   'tlui-style-panel__wrapper',
   'insert-embed',
-  'insert-media'
+  'insert-media',
+  // The page leaves the context menu for Radix to close (canvas-chrome.js): tldraw's menu
+  // registry, and the fact that its context menu is registered under this name.
+  'clearOpenMenus',
+  'deleteOpenMenu',
+  'context menu'
 ]
 
 // Records upstream's server writes that the canvas service reads: an image upstream put into
@@ -63,7 +68,7 @@ const EXPECTED_TOOLS = {
   save_cowart_view_state: ['viewState'],
   get_cowart_selection: ['projectDir'],
   read_cowart_page_asset: ['assetUrl'],
-  save_cowart_reference_image: ['dataUrl'],
+  save_cowart_reference_image: ['dataUrl', 'pageId', 'fileName'],
   download_cowart_file: ['fileName'],
   copy_cowart_image_to_clipboard: ['dataUrl'],
   insert_cowart_image: ['imagePath', 'anchorShapeId', 'replaceAiImageHolder'],
