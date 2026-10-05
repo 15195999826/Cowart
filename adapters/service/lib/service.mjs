@@ -16,7 +16,7 @@ import { CanvasGuard } from './canvas-guard.mjs'
 import { acquireCanvasLock } from './canvas-lock.mjs'
 import { CanvasOps } from './canvas-ops.mjs'
 import { GenerationJobs } from './generation-jobs.mjs'
-import { EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, localIdentity } from './identity.mjs'
+import { EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, domainPort, localIdentity } from './identity.mjs'
 import { CanvasRequestQueue, REQUESTS_FILE_NAME } from './requests.mjs'
 import { CanvasServer } from './server.mjs'
 import { loadOrCreateToken } from './token.mjs'
@@ -136,7 +136,7 @@ export async function startCanvasService({ port }) {
   }
 
   try {
-    await server.start({ port })
+    await server.start({ port, domainPort: domainPort() })
   } catch (error) {
     // Taken after all (a service of another canvas, or a bridge testing the port this
     // moment): the bridge that started this one looks at the port again.
@@ -147,7 +147,8 @@ export async function startCanvasService({ port }) {
     }
     throw error
   }
-  log(`listening on ${server.origin} (pid ${process.pid}, version ${identity.version}, build ${identity.build}, root ${identity.root}, canvas ${SHARED_CANVAS_DIR})`)
+  const pages = server.pageOrigin === server.origin ? '' : `, pages at ${server.pageOrigin}`
+  log(`listening on ${server.origin}${pages} (pid ${process.pid}, version ${identity.version}, build ${identity.build}, root ${identity.root}, canvas ${SHARED_CANVAS_DIR})`)
   updateIdle()
   upstream.listTools().catch((error) => log(`upstream Cowart server failed to start: ${error.message}`))
   process.on('SIGINT', () => shutdown('signal'))

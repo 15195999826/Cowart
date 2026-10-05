@@ -4,11 +4,14 @@ import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 
-import { ADAPTERS_DIR, REPO_ROOT, UPSTREAM_RELEASE_MANIFEST } from '../../shared/paths.mjs'
+import { ADAPTERS_DIR, DEFAULT_CANVAS_DIR, REPO_ROOT, SHARED_CANVAS_DIR, UPSTREAM_RELEASE_MANIFEST } from '../../shared/paths.mjs'
 
 export const SERVICE_NAME = 'cowart-canvas'
 // Where bridges look first (COWART_CLAUDE_PORT overrides it); taken ports are skipped.
 export const DEFAULT_PORT = 43240
+// The canvas pages' address: browsers send every *.localhost name to this machine by
+// themselves (no hosts file) and treat it as a secure context, as they do localhost.
+export const PAGE_HOSTNAME = 'cowart.localhost'
 // How a service that does not start tells the bridge that started it why (its exit code):
 // another service bound the port first, or another service has the canvas (canvas-lock.mjs).
 export const EXIT_PORT_TAKEN = 3
@@ -92,6 +95,14 @@ export function samePath(a, b) {
   if (!a || !b) return false
   const normalize = (value) => (process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value))
   return normalize(a) === normalize(b)
+}
+
+// The service on the machine's canvas also listens on port 80, so its pages are at
+// http://cowart.localhost with no port. A service on another canvas (checks, a dev host) does
+// not, unless COWART_DOMAIN_PORT names a port; COWART_DOMAIN_PORT=0 turns it off.
+export function domainPort(env = process.env, canvasDir = SHARED_CANVAS_DIR) {
+  if (env.COWART_DOMAIN_PORT) return Number(env.COWART_DOMAIN_PORT) || 0
+  return samePath(canvasDir, DEFAULT_CANVAS_DIR) ? 80 : 0
 }
 
 // reuse: keep the running service. replace: stop it and start this code. incompatible: the

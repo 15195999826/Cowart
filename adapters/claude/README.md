@@ -79,6 +79,7 @@ npm --prefix adapters run install:skill
 
 - `COWART_CLAUDE_PORT`：画布服务的端口，默认 43240；被别的程序占着就往后找（回了话确认是别的程序才换；占着不回话的先等，免得给同一张画布再起一个服务）。
 - `COWART_CANVAS_DIR`：全机那张画布放在哪，默认 `~/.cowart/canvas`；只管会话拉起的那个服务，平时不用设。
+- `COWART_DOMAIN_PORT`：画布网页的第二个端口，默认 80（只给用这台机器画布的服务），网址因此是 `http://cowart.localhost`；80 被别的程序占着时退回 `cowart.localhost:<服务端口>`；`0` 关掉，网址回到 `127.0.0.1:<服务端口>`。
 - `COWART_ALLOW_CLI=1`：命令行版等非桌面入口也提供工具（没有 Browser 面板，网址在浏览器里打开）。
 - `COWART_SERVICE_IDLE_MS`：画布服务空闲多久退出，默认 10 分钟。
 - `COWART_BEAST_CLI`：猛兽命令行的位置，默认 `~/.beast/bin/beast.mjs`；找不到时 AI 图片 / AI 视频退回发给会话。

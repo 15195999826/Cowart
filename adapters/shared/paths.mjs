@@ -9,7 +9,8 @@ export const REPO_ROOT = resolve(ADAPTERS_DIR, '..')
 
 // The machine's one canvas: the canvas service keeps it for every session, project and host
 // (FORK.md 画布服务). COWART_CANVAS_DIR puts it elsewhere (tests, an isolated service).
-export const SHARED_CANVAS_DIR = resolve(process.env.COWART_CANVAS_DIR || join(homedir(), '.cowart', 'canvas'))
+export const DEFAULT_CANVAS_DIR = join(homedir(), '.cowart', 'canvas')
+export const SHARED_CANVAS_DIR = resolve(process.env.COWART_CANVAS_DIR || DEFAULT_CANVAS_DIR)
 
 // Upstream artifacts the adapters treat as a black box.
 export const UPSTREAM_START_SCRIPT = join(REPO_ROOT, 'scripts', 'start-mcp.mjs')

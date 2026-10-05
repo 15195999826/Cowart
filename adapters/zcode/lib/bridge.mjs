@@ -244,7 +244,7 @@ function renderResult(opened, session) {
     '接下来：',
     opened.paneOpen
       ? '1. 这个会话的画布页面已经开着，它会自动跳到这一页，不用重新打开。'
-      : '1. 把上面的网址作为 Markdown 链接发给用户，让他在浏览器里打开（网址带本会话的标识；装了 browser-use 插件时也可以自己用 Skill 工具 control-browser 打开）。',
+      : `1. 把上面的网址作为 Markdown 链接发给用户，让他在浏览器里打开（网址带本会话的标识；装了 browser-use 插件时也可以自己用 Skill 工具 control-browser 打开）。${opened.localUrl && opened.localUrl !== opened.url ? `浏览器打不开 cowart.localhost 时（Safari 之类）改用 ${opened.localUrl}。` : ''}`,
     opened.listenerConnected
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
       : `2. 用 Bash 工具启动画布请求监听，必须后台运行（run_in_background: true），命令：\n   ${command}\n   它一直等着、不耗 token，收到画布事件才退出并唤醒你（通知里带输出文件路径）：读输出，按那行的指引先用 AskUserQuestion 问用户（选项照那行），处理完再这样启动一次接下一条。`,
