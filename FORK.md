@@ -50,7 +50,9 @@ adapters/
     lib/        薄桥 bridge.mjs：模型工具转发、原生 MCP Apps widget、仅 widget 可用的服务通道
     web/        MCP Apps 传输（transport.js），负责会话的 widget 轮询领取队列请求，再通过 ui/message 通知会话
     skills/     Codex 版共享画布、打开、生图、按标注改图 skills；插件使用这里，根 skills/ 保留上游版本
-  scripts/      build-artifacts.mjs（构建 / 检查适配层发布产物）、probe-cold-install.mjs（无依赖安装冷启动验证）
+  scripts/      build-artifacts.mjs（构建 / 检查适配层发布产物）、probe-cold-install.mjs（无依赖安装冷启动验证）、
+                fix-page-order.mjs（0.2.9 之前服务给第 36 页起建的页都排在同一个 index `aa`，页菜单顺序乱；
+                它经画布服务按建页时间重排这些页，不带 --apply 只列方案）
   generated/    已打包的宿主桥、画布服务、监听入口和发布清单；安装后不用 npm install
 FORK.md         本文件
 ```
