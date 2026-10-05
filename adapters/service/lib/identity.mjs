@@ -97,9 +97,10 @@ export function samePath(a, b) {
   return normalize(a) === normalize(b)
 }
 
-// The service on the machine's canvas also listens on port 80, so its pages are at
-// http://cowart.localhost with no port. A service on another canvas (checks, a dev host) does
-// not, unless COWART_DOMAIN_PORT names a port; COWART_DOMAIN_PORT=0 turns it off.
+// Where browsers find cowart.localhost with no port named: port 80, held by the machine's front
+// door (Caddy), which forwards each *.localhost name to its program's port (FORK.md 画布服务).
+// Only the service on the machine's canvas is reached that way; one on another canvas (checks,
+// a dev host) is not, unless COWART_DOMAIN_PORT names a port; COWART_DOMAIN_PORT=0 turns it off.
 export function domainPort(env = process.env, canvasDir = SHARED_CANVAS_DIR) {
   if (env.COWART_DOMAIN_PORT) return Number(env.COWART_DOMAIN_PORT) || 0
   return samePath(canvasDir, DEFAULT_CANVAS_DIR) ? 80 : 0

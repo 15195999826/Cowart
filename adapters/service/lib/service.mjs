@@ -147,7 +147,8 @@ export async function startCanvasService({ port }) {
     }
     throw error
   }
-  const pages = server.pageOrigin === server.origin ? '' : `, pages at ${server.pageOrigin}`
+  const pageOrigin = await server.refreshPageOrigin()
+  const pages = pageOrigin === server.origin ? '' : `, pages at ${pageOrigin}`
   log(`listening on ${server.origin}${pages} (pid ${process.pid}, version ${identity.version}, build ${identity.build}, root ${identity.root}, canvas ${SHARED_CANVAS_DIR})`)
   updateIdle()
   upstream.listTools().catch((error) => log(`upstream Cowart server failed to start: ${error.message}`))

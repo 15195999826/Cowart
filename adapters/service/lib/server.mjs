@@ -1,5 +1,5 @@
 // HTTP side of the canvas service (127.0.0.1, one per machine). It serves the machine's one
-// canvas to the Browser pane (at http://cowart.localhost: port 80 as well), relays page tool calls, serves page assets (videos need real URLs
+// canvas to the Browser pane (at http://cowart.localhost, through the machine's front door), relays page tool calls, serves page assets (videos need real URLs
 // with range support), tracks the sessions whose bridges are connected, routes each canvas
 // request to the session responsible for its page and streams it to that session's
 // listener, starts the AI 图片 / AI 视频 generation it runs itself (generation-jobs.mjs),
@@ -124,16 +124,6 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload))
 }
 
-function listenOnLoopback(server, port) {
-  return new Promise((resolveListen, rejectListen) => {
-    server.once('error', rejectListen)
-    server.listen(port, '127.0.0.1', () => {
-      server.off('error', rejectListen)
-      resolveListen()
-    })
-  })
-}
-
 function openEventStream(req, res) {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
@@ -174,11 +164,10 @@ export function agentEventPayload(request) {
 export class CanvasServer {
   #server = null
   #port = null
-  // The second port pages are served on (80 for the machine's canvas: http://cowart.localhost);
-  // #domainPort stays 0 when another program has it.
-  #domainServer = null
-  #domainWanted = false
+  // Where browsers reach cowart.localhost without naming this port (80 for the machine's
+  // canvas): a front door there (Caddy) forwards the name here. #frontDoor: it did last time.
   #domainPort = 0
+  #frontDoor = false
   #startedAt = new Date().toISOString()
   #closing = false
   // Session id → { id, host, cwd, bridge, listener, pages, state, endedAt, lastCanvas, timer }.
@@ -237,12 +226,39 @@ export class CanvasServer {
     return `http://127.0.0.1:${this.#port}`
   }
 
-  // Where the canvas pages open: http://cowart.localhost for the machine's canvas (on the
-  // service's own port when port 80 is another program's); 127.0.0.1 for any other canvas.
+  // Where the canvas pages open: http://cowart.localhost for the machine's canvas when the front
+  // door forwards it here, cowart.localhost on this port when not; 127.0.0.1 for any other canvas.
   get pageOrigin() {
-    if (!this.#domainWanted) return this.origin
-    const port = this.#domainPort || this.#port
+    if (!this.#domainPort) return this.origin
+    const port = this.#frontDoor ? this.#domainPort : this.#port
     return `http://${PAGE_HOSTNAME}${port === 80 ? '' : `:${port}`}`
+  }
+
+  // Asks the front door for cowart.localhost and sees whether this service answers: not when
+  // nothing listens there, when it forwards the name to another port, or to another program.
+  async refreshPageOrigin() {
+    if (!this.#domainPort) return this.origin
+    const host = `${PAGE_HOSTNAME}${this.#domainPort === 80 ? '' : `:${this.#domainPort}`}`
+    this.#frontDoor = await new Promise((resolveProbe) => {
+      const req = http.get(
+        { host: '127.0.0.1', port: this.#domainPort, path: '/api/service', headers: { host, 'x-cowart-token': this.token }, timeout: 1000 },
+        (res) => {
+          let body = ''
+          res.setEncoding('utf8')
+          res.on('data', (chunk) => (body += chunk))
+          res.on('end', () => {
+            try {
+              resolveProbe(res.statusCode === 200 && JSON.parse(body).pid === process.pid)
+            } catch {
+              resolveProbe(false)
+            }
+          })
+        }
+      )
+      req.on('timeout', () => req.destroy())
+      req.on('error', () => resolveProbe(false))
+    })
+    return this.pageOrigin
   }
 
   get bridgeCount() {
@@ -254,30 +270,25 @@ export class CanvasServer {
   }
 
   // Binds exactly this port: the port is the machine-wide lock, and the bridges choose it.
-  // domainPort is only for pages: when another program has it, they stay on the port.
+  // domainPort (80) is the front door's, never bound here: it serves every *.localhost name.
   async start({ port, domainPort = 0 }) {
-    const handle = (req, res) => {
+    const server = http.createServer((req, res) => {
       this.#handle(req, res).catch((error) => {
         this.log(`request failed: ${error.stack || error}`)
         if (!res.headersSent) sendJson(res, 500, { error: error.message })
         else res.end()
       })
-    }
-    const server = http.createServer(handle)
-    await listenOnLoopback(server, port)
+    })
+    await new Promise((resolveListen, rejectListen) => {
+      server.once('error', rejectListen)
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', rejectListen)
+        resolveListen()
+      })
+    })
     this.#server = server
     this.#port = server.address().port
-    this.#domainWanted = domainPort > 0
-    if (this.#domainWanted) {
-      const domainServer = http.createServer(handle)
-      try {
-        await listenOnLoopback(domainServer, domainPort)
-        this.#domainServer = domainServer
-        this.#domainPort = domainServer.address().port
-      } catch (error) {
-        this.log(`port ${domainPort} is not free (${error.code || error.message}), pages open on port ${this.#port}`)
-      }
-    }
+    this.#domainPort = domainPort
     return this
   }
 
@@ -293,12 +304,11 @@ export class CanvasServer {
     for (const id of this.#deliveryClaims.keys()) this.#clearDeliveryClaim(id)
     this.#widgets.close()
     for (const res of streams) endStream(res, 'stopping', { reason })
-    const servers = [this.#server, this.#domainServer].filter(Boolean)
-    const closed = Promise.all(servers.map((server) => new Promise((resolveClose) => server.close(() => resolveClose()))))
-    for (const server of servers) server.closeAllConnections?.()
+    if (!this.#server) return
+    const closed = new Promise((resolveClose) => this.#server.close(() => resolveClose()))
+    this.#server.closeAllConnections?.()
     await closed
     this.#server = null
-    this.#domainServer = null
   }
 
   status() {
@@ -330,6 +340,7 @@ export class CanvasServer {
   #isAllowedHost(host) {
     const match = /^(\[::1\]|[^:[\]]+)(?::(\d+))?$/.exec(host || '')
     if (!match || !LOOPBACK_HOSTS.has(match[1].toLowerCase())) return false
+    // The front door passes the browser's Host on: cowart.localhost, with its port (80: none).
     const port = match[2] ? Number(match[2]) : 80
     return port === this.#port || (this.#domainPort > 0 && port === this.#domainPort)
   }
@@ -924,7 +935,7 @@ export class CanvasServer {
     if (entered) query.set('pageId', entered.id)
     this.#lastOpenedUrl = `/?${query}`
     return {
-      url: `${this.pageOrigin}/?${query}`,
+      url: `${await this.refreshPageOrigin()}/?${query}`,
       // For a browser that does not send *.localhost to this machine.
       localUrl: `${this.origin}/?${query}`,
       port: this.#port,
