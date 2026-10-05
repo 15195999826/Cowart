@@ -1,6 +1,6 @@
 {
   "name": "cowart-adapters",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
   "type": "module",
   "description": "Host adapters for the Cowart fork (Claude Code, ZCode, Codex). See ../FORK.md.",
