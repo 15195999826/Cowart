@@ -34,6 +34,8 @@ const RECONNECT_MS = 1_500
 const BRIDGE_GRACE_MS = Number(process.env.COWART_SESSION_GRACE_MS) || 5_000
 // A page or listener whose session has no bridge yet (say after a service restart) waits this long.
 const SESSION_WAIT_MS = Number(process.env.COWART_SESSION_WAIT_MS) || 15_000
+// An ended session is forgotten this long after it ended, once nothing waits for it (#forgetEnded).
+const ENDED_KEPT_MS = Number(process.env.COWART_ENDED_SESSION_KEPT_MS) || 60 * 60_000
 // A page that reconnects within this time keeps its place.
 const PANE_GRACE_MS = 5_000
 const MESSAGE_KINDS = new Set(['canvas', 'image', 'video', 'web'])
@@ -160,8 +162,8 @@ export class CanvasServer {
   #port = null
   #startedAt = new Date().toISOString()
   #closing = false
-  // Session id → { id, host, cwd, bridge, listener, pages, state, lastCanvas, timer }.
-  // state: waiting (no bridge yet) → online (bridge connected) → ended (bridge gone).
+  // Session id → { id, host, cwd, bridge, listener, pages, state, endedAt, lastCanvas, timer }.
+  // state: waiting (no bridge yet) → online (bridge connected) → ended (bridge gone) → forgotten.
   #sessions = new Map()
   // Page event streams: res → { session, pane, canvasDir }.
   #pageStreams = new Map()
@@ -265,6 +267,7 @@ export class CanvasServer {
   }
 
   status() {
+    this.#forgetEnded()
     return {
       ...this.identity,
       pid: process.pid,
@@ -278,6 +281,7 @@ export class CanvasServer {
         name: this.presence.nameOf(session.id),
         host: session.host,
         state: session.state,
+        endedAt: session.state === 'ended' ? new Date(session.endedAt).toISOString() : null,
         bridge: Boolean(session.bridge),
         listener: Boolean(session.listener),
         pages: session.pages.size + this.#widgets.forSession(session.id).length,
@@ -546,7 +550,8 @@ export class CanvasServer {
     const pageId = nonEmpty(body.pageId)
     const canvasDir = this.canvasDir
     const holder = pageId ? this.presence.holderOf(canvasDir, pageId) : null
-    const target = holder && this.#sessions.get(holder)?.state !== 'ended' ? holder : own.id
+    const holding = holder ? this.#sessions.get(holder) : null
+    const target = holding && holding.state !== 'ended' ? holder : own.id
     const requiredHost = nonEmpty(body.requiredHost)
     if (requiredHost && this.#sessions.get(target)?.host !== requiredHost) {
       throw new Error(`这项生成需要 ${requiredHost === 'codex' ? 'Codex' : requiredHost}，但当前页面由「${this.#nameOf(target)}」负责。请在 Codex 会话接管这一页，或选择两个宿主都支持的模型。`)
@@ -573,7 +578,7 @@ export class CanvasServer {
   #session(id) {
     let session = this.#sessions.get(id)
     if (!session) {
-      session = { id, host: null, cwd: null, bridge: null, listener: null, pages: new Set(), state: 'waiting', lastCanvas: null, timer: null }
+      session = { id, host: null, cwd: null, bridge: null, listener: null, pages: new Set(), state: 'waiting', endedAt: null, lastCanvas: null, timer: null }
       this.#sessions.set(id, session)
       this.#armEnd(session, SESSION_WAIT_MS)
     }
@@ -591,6 +596,7 @@ export class CanvasServer {
     session.timer = null
     if (session.bridge || session.state === 'ended' || this.#closing) return
     session.state = 'ended'
+    session.endedAt = Date.now()
     this.queue.resetDelivery(session.id)
     this.presence.release(session.id)
     if (session.listener) {
@@ -599,6 +605,24 @@ export class CanvasServer {
     }
     this.#broadcastPresence(session)
     this.log(`session ${session.id} ended`)
+    this.#forgetEnded()
+  }
+
+  // Sessions that ended ENDED_KEPT_MS ago are dropped, unless something still waits for them:
+  // an unfinished request routed to them, a page they hold, a canvas page or listener of
+  // theirs still connected. Codex starts a session for every task, and the service used to
+  // list each of them for as long as it ran. One that comes back afterwards starts over as a
+  // new session and still hears its requests: the queue keeps them by session id.
+  #forgetEnded() {
+    const now = Date.now()
+    for (const session of this.#sessions.values()) {
+      if (session.state !== 'ended' || now - session.endedAt < ENDED_KEPT_MS) continue
+      if (session.listener || session.pages.size > 0 || this.#widgets.forSession(session.id).length > 0) continue
+      if (this.presence.pageOf(session.id) || this.queue.list(session.id).some((request) => !FINAL_STATUSES.has(request.status))) continue
+      this.#sessions.delete(session.id)
+      this.ops.forgetSession(session.id)
+      this.log(`session ${session.id} forgotten`)
+    }
   }
 
   // One bridge per session: a newer one (a restarted MCP server) replaces the previous one.

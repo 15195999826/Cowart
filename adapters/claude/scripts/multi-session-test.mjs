@@ -3,7 +3,8 @@
 // session responsible for each page (the one that entered it last, from the session or
 // from the canvas), requests routed to that session, delta saves from panes that edit the
 // same canvas at once, model writes kept out of other sessions' pages, each session's own
-// selection, a session ending and coming back, a changed checkout replacing the service
+// selection, a session ending and coming back, ended sessions forgotten once nothing waits
+// for them (and still hearing their requests when they come back), a changed checkout replacing the service
 // (with more bridges starting meanwhile, all ending up on one service), one service per
 // canvas, ports that do not answer yet waited for rather than skipped, idle exit, and the
 // desktop-only switch. Bridges run over stdio like Claude Code runs them; canvas pages are
@@ -35,7 +36,13 @@ const HAND_PORTS = [PORT + 1, PORT + 70, PORT + 71]
 const SALT_FILE = join(tmpdir(), `cowart-check-build-salt-${process.pid}.txt`)
 // Short timers so the session and idle checks take seconds; bridges pass COWART_* on to
 // the service they start.
-const FAST = { COWART_SESSION_GRACE_MS: '300', COWART_SESSION_WAIT_MS: '1500', COWART_SERVICE_IDLE_MS: '1500', COWART_SERVICE_BUILD_SALT_FILE: SALT_FILE }
+const FAST = {
+  COWART_SESSION_GRACE_MS: '300',
+  COWART_SESSION_WAIT_MS: '1500',
+  COWART_ENDED_SESSION_KEPT_MS: '5000',
+  COWART_SERVICE_IDLE_MS: '1500',
+  COWART_SERVICE_BUILD_SALT_FILE: SALT_FILE
+}
 
 const token = await loadOrCreateToken()
 const projectDir = await mkdtemp(join(tmpdir(), 'cowart-claude-multi-'))
@@ -481,6 +488,65 @@ try {
     assert.ok(pending.structuredContent.requests.some((entry) => entry.id === pendingForA), text(pending))
     assert.ok(!pending.structuredContent.requests.some((entry) => entry.session === 'multi-b'))
     assert.equal((await sessionStatus('multi-a')).page, null, 'an ended session does not get its page back by itself')
+  })
+
+  await step('ended sessions nothing waits for are forgotten after a while; one with a request waiting stays, and hears it when it comes back', async () => {
+    // Like Codex, where every task is a session of its own: many come and go.
+    const gone = Array.from({ length: 12 }, (_, index) => `multi-gone-${index}`)
+    const comers = await Promise.all(gone.map((session) => bridgeFor(session)))
+    await Promise.all(comers.map((bridge) => bridge.client.listTools()))
+    // One of them picked something on its canvas page.
+    const picker = pane('multi-gone-0', 'pane-gone-0')
+    await picker.ready
+    await pageTool('pane-gone-0', 'save_cowart_selection_state', { selection: { selectedShapes: [{ id: 'shape:gone-pick', type: 'frame' }] } })
+    assert.match(JSON.stringify(await comers[0].call('get_cowart_selection', {})), /shape:gone-pick/)
+    await pageTool('pane-b', 'save_cowart_selection_state', { selection: { selectedShapes: [{ id: 'shape:p1', type: 'frame' }] } })
+    picker.close()
+    // Another one has a request from its page waiting when it ends.
+    const waiter = await bridgeFor('multi-waiter')
+    await waiter.client.listTools()
+    const waiterPane = pane('multi-waiter', 'pane-waiter')
+    await waiterPane.ready
+    await showPage('pane-waiter', firstPageId, 'Page 1')
+    const waiting = await message('multi-waiter', 'pane-waiter', firstPageId, 'Page 1', '按标注修改\n\nPrompt:\n等它回来')
+    assert.equal(waiting.body.request?.session, 'multi-waiter', JSON.stringify(waiting.body))
+    waiterPane.close()
+
+    await Promise.all([...comers, waiter].map((bridge) => bridge.close()))
+    const ended = await waitFor(async () => {
+      const sessions = (await serviceStatus(PORT)).sessions.filter((session) => [...gone, 'multi-waiter'].includes(session.id))
+      return sessions.length === gone.length + 1 && sessions.every((session) => session.state === 'ended') && sessions
+    }, { what: 'the sessions to end (and still be listed)' })
+    assert.ok(ended.every((session) => session.endedAt && session.page === null), JSON.stringify(ended))
+
+    // COWART_ENDED_SESSION_KEPT_MS later the ones nothing waits for are gone; the one with a request stays.
+    await waitFor(async () => !(await serviceStatus(PORT)).sessions.some((session) => gone.includes(session.id)), { timeoutMs: 15_000, what: 'the ended sessions to be forgotten' })
+    assert.equal((await sessionStatus('multi-waiter'))?.state, 'ended', 'a session with a request waiting for it was forgotten')
+
+    // A forgotten session that comes back is a new one: online again, without its old selection.
+    const returner = await bridgeFor('multi-gone-0')
+    try {
+      await returner.client.listTools()
+      assert.equal((await sessionStatus('multi-gone-0')).state, 'online')
+      assert.doesNotMatch(JSON.stringify(await returner.call('get_cowart_selection', {})), /shape:gone-pick/, 'a forgotten session kept its selection')
+    } finally {
+      await returner.close()
+    }
+
+    // The one kept for its request comes back and hears it; answered, it is forgotten in turn.
+    const back = await bridgeFor('multi-waiter')
+    try {
+      await back.client.listTools()
+      const heard = listener('multi-waiter')
+      await heard.ready
+      await heard.next((item) => item.event === 'request' && item.data.id === waiting.body.request.id)
+      const skipped = await back.call('reply_cowart_request', { id: waiting.body.request.id, status: 'skipped' })
+      assert.ok(!skipped.isError, text(skipped))
+      heard.close()
+    } finally {
+      await back.close()
+    }
+    await waitFor(async () => !(await sessionStatus('multi-waiter')), { timeoutMs: 15_000, what: 'the answered session to be forgotten' })
   })
 
   await step('changed code in this checkout replaces the service; responsibilities survive, bridges follow without replacing it back', async () => {

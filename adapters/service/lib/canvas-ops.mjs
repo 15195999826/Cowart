@@ -273,6 +273,11 @@ export class CanvasOps extends EventEmitter {
     await this.#callLocked('save_cowart_selection_state', { projectDir, canvasDir, selection })
   }
 
+  // A session the canvas service forgot (server.mjs #forgetEnded): its selection goes with it.
+  forgetSession(session) {
+    for (const key of this.#selections.keys()) if (key.endsWith(`\n${session}`)) this.#selections.delete(key)
+  }
+
   // Tool calls from a canvas page (the upstream widget and the shared panels). pane is the
   // page's { session } when it identified itself.
   async callFromPage(name, args, { host, pane } = {}) {
