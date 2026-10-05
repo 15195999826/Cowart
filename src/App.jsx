@@ -1054,6 +1054,10 @@ function movePastedItemsIntoAiSlides(editor) {
 }
 
 const cowartTldrawOptions = {
+  // [fork-patch] tldraw caps pages at 40 by default, but the shared canvas grows past that:
+  // sessions add pages through the canvas service, which has no cap. The cap then only
+  // stops the user from adding a page by hand.
+  maxPages: Infinity,
   onBeforeCopyToClipboard({ editor, content }) {
     cowartCopiedContent.set(editor, structuredClone(content))
   },

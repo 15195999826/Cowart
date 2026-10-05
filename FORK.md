@@ -172,7 +172,7 @@ lomo 上一个 ZCode 会话要「给每张图编号、分组」，模型这边�
 
 - 本仓库公开：内网地址、凭据不要提交；生图规范里只写 skill 名。
 - 上游带 GA4 统计（前端 gtag + `track_cowart_analytics_event`）。画布服务不转发统计工具，并用页面安全策略挡掉统计域名。
-- 上游在 Windows 上有并发写同一文件时改名失败（EPERM）的问题，Codex 在 Windows 上同样会遇到；画布服务用排队 + 重试兜住了，没改上游。
+- 上游在 Windows 上有并发写同一文件时改名失败（EPERM）的问题，Codex 在 Windows 上同样会遇到：目标文件正被读着（页面每 1.6 秒把每页文件读一遍）时，改名覆盖它就报 EPERM。画布服务用排队 + 重试兜住了写入；上游写文件原先改名失败就把临时文件留在原地，服务每重试一次多留一个（2026-10-05 本机画布目录积了 586 个 `cowart-view-state.json.*.tmp`、lomo 有 15 个），所以打了补丁点（见清单）：原地重试改名，最后还失败就删掉临时文件。
 - 上游 `insert_cowart_image` 把图片拉成它定下的框的尺寸（替换的 AI 图片框、按标注修改时匹配的原图、`displayWidth` × `displayHeight`），不看原图比例；生成的图很少正好是框的比例（krea2 的 3:4 出 896×1152，框是 512×683），会被压扁或拉长。画布服务在插入后把图等比缩回那个框里：AI 图片框里居中，其它左上对齐（`canvas-model.mjs` 的 `fitImageToAsset`），没改上游。接口检查盯着上游给放进框里的图写的 `cowartGeneratedForAiImageHolder`。
 - 画布页面把 tldraw 编辑器挂在 `window.__cowartEditor`（上游 `handleMount` 里），适配层的画布内功能（AI 视频、AI 图片面板、网页参考、视频控制条）靠它，接口检查会盯着。
 - 页面脚本还按类名 / data-testid 藏上游的界面：网页参考卡片的图片工具栏里藏掉「替换」「裁剪」「按标注生成 Html」（`tool.image-replace` / `tool.image-crop` / `tool.cowart-annotation-html`，由「照这个做 HTML」顶替）、样式面板按需显示（`.tlui-style-panel__wrapper`）。这些名字也在接口检查里。
@@ -197,3 +197,5 @@ lomo 上一个 ZCode 会话要「给每张图编号、分组」，模型这边�
 | `src/App.jsx` | `buildCowartAssetUrls()` 的中文语言资源补全（标 `[fork-patch]`） | 在 tldraw 校验语言包之前补齐尚缺的 `page-menu.max-pages-reached`、`page-menu.resize`，消除中文菜单缺词警告 | 未提 |
 | `src/App.jsx` | `readCowartHtmlDataUrl()`、`CowartHtmlDraftEmbed` 的来源选择、`resolveCowartTldrawAssetUrl()`、本地重试 signal 和 `CowartVideoShapeUtil` / `CowartVideoRetryBoundary`（均标 `[fork-patch]`） | HTML data URL 直接解码；相同素材的并发读取共用一个 Blob URL，换源时过滤旧请求结果。MCP 读取失败返回空并通过带素材版本的 `cowart:asset-load` 事件报告，适配层呈现视频错误；`cowart:retry-asset` 使素材缓存失效，由 React 边界订阅 signal 并只重建失败播放器，缩放后也能重试，不往共享画布写重试状态；宿主给出 `window.cowartMcp.directAssetUrl` 时（Claude / ZCode 这类由画布服务直接提供的页面）视频直接用素材地址，由服务按 Range 流式提供，不整段读成 Blob | 未提（通用资源加载与恢复能力） |
 | `src/App.jsx` | `REMOTE_REMOVABLE_RECORD_TYPES`（标 `[fork-patch]`） | 上游存盘只留被 shape 引用的 asset 记录：删掉一张图，它的 asset 就从磁盘上没了，下一次远端同步把页面里的那条也删掉——这是 remote 改动，撤销不回来。Ctrl+Z 于是只恢复得了图片的 shape，asset 缺着（卡片是破的），紧接着的保存又按「依赖缺失」（`src/canvasSnapshot.js` 的 `pruneRecordsWithMissingDependencies`）把这个 shape 也剪掉，图片彻底没了；标注、方框这些不带 asset 的照常恢复，所以看着像「标注回来了、图片没回来」。改成远端同步不删 asset 记录：asset 只是一个本地地址（不是图本身），没有 shape 用它就进不了磁盘，刷新页面即散 | 未提（改的是上游行为，可以作为提案提） |
+| `src/App.jsx` | `cowartTldrawOptions` 的 `maxPages: Infinity`（标 `[fork-patch]`） | tldraw 默认最多 40 页（`maxPages`），到了页菜单只显示「已达到页面数量上限」、不让新建。全机一张画布由所有会话共用，会话经画布服务建页不受这个限制（2026-10-05 lomo 的画布已有 89 页），上限只拦得住用户自己在页菜单里建页 | 未提（fork 专用：上游一个项目一张画布） |
+| `mcp/lib/canvas-storage.mjs` | `writeJsonAtomic` / `renameWithRetry`（标 `[fork-patch]`） | Windows 上目标文件正被读着时改名覆盖报 EPERM，上游失败后把临时文件留在原地，服务的重试每次再留一个。改成用同一个临时文件原地重试改名（20 / 40 / 80 / 160ms），还失败就删掉临时文件再报错。实测按 1.6 秒轮询读，6528 次写入只有 2 次要重试、最长等 19ms | 未提（通用，可以提） |

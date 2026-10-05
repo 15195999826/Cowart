@@ -477,11 +477,33 @@ async function loadStoredCanvasSnapshot(args = {}) {
   }
 }
 
+// [fork-patch] On Windows, renaming over a file fails (EPERM) while another handle has it
+// open, e.g. a page polling the canvas is reading it. Retry with the same temp file, and
+// remove the temp file when the write still fails, so failed saves leave no *.tmp behind.
+const TRANSIENT_RENAME_ERRORS = new Set(["EPERM", "EBUSY", "EACCES"]);
+const RENAME_RETRY_DELAYS_MS = [20, 40, 80, 160];
+
+async function renameWithRetry(fromPath, toPath) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await rename(fromPath, toPath);
+    } catch (error) {
+      if (!TRANSIENT_RENAME_ERRORS.has(error.code) || attempt >= RENAME_RETRY_DELAYS_MS.length) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
 async function writeJsonAtomic(filePath, payload) {
   await mkdir(dirname(filePath), { recursive: true });
   const tempFile = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tempFile, `${JSON.stringify(payload, null, 2)}\n`);
-  await rename(tempFile, filePath);
+  try {
+    await writeFile(tempFile, `${JSON.stringify(payload, null, 2)}\n`);
+    await renameWithRetry(tempFile, filePath);
+  } catch (error) {
+    await rm(tempFile, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 async function saveStoredCanvasSnapshot(args, snapshot) {

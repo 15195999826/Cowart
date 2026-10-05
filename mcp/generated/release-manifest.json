@@ -3,7 +3,7 @@
   "generatedBy": "scripts/build-release-artifacts.mjs",
   "artifacts": {
     "mcp-apps-global-script.mjs": "d315cfc6b5fcb9384eb3f0ef89192d87bbf6cb56db199f6340b41ed41f034e23",
-    "cowart-mcp.mjs": "4aa16b7646b28a520dddde1011a8dfdac4838546d93c782150d89d48e55346ba",
-    "cowart-widget.html": "f430b5b23320d6a0dfde7297bf65a92de51186f608bda66754dcbe5990fe6be5"
+    "cowart-mcp.mjs": "c9c3b52995e6b371049a224046765927b85f649595369a9b527d7e1d9b3c5ed5",
+    "cowart-widget.html": "46d278e0b95a5b10acc7b545f0555224b4bccf68d7e77e706ecc03db09f9c549"
   }
 }
