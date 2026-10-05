@@ -9,10 +9,12 @@ export function storeRecords(snapshot) {
   return Object.values(snapshot?.store ?? {})
 }
 
+// By character, as tldraw sorts pages: 'aZ' < 'aa'. localeCompare ignores case, so a page
+// added after 'aZ' and 'aa' got 'aa' again, and again.
 export function pageRecords(snapshot) {
   return storeRecords(snapshot)
     .filter((record) => record?.typeName === 'page')
-    .sort((a, b) => String(a.index ?? '').localeCompare(String(b.index ?? '')))
+    .sort((a, b) => compareIndex(a.index, b.index))
 }
 
 export function pageIdOfShape(store, shape) {

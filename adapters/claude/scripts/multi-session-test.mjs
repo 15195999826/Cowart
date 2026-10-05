@@ -20,6 +20,7 @@ import { PORT_ATTEMPTS, SERVICE_ENTRY, probeService } from '../../service/client
 import { canvasLockFile, canvasOwner } from '../../service/lib/canvas-lock.mjs'
 import { EXIT_CANVAS_BUSY } from '../../service/lib/identity.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
+import { pageRecords } from '../../shared/canvas-model.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
 
@@ -602,6 +603,21 @@ try {
       for (const port of [QUIET_PORT, QUIET_PORT + 1, BUSY_PORT + 1]) await stopTestService(port)
       for (const dir of projects) await rm(dir, { recursive: true, force: true }).catch(() => {})
     }
+  })
+
+  await step('a page entered by name goes after the last page, also past the 35th (\'aZ\' < \'aa\')', async () => {
+    const pager = await bridgeFor('multi-pages')
+    const before = pageRecords(await readSnapshot()).length
+    const names = Array.from({ length: 40 }, (_, i) => `顺序 ${String(i + 1).padStart(2, '0')}`)
+    for (const name of names) {
+      const opened = await pager.call('render_cowart_canvas_widget', { sessionName: '小序', page: name })
+      assert.ok(!opened.isError, text(opened))
+    }
+    const pages = pageRecords(await readSnapshot())
+    assert.equal(pages.length, before + names.length)
+    assert.equal(new Set(pages.map((page) => page.index)).size, pages.length, 'two pages share an index')
+    assert.deepEqual(pages.slice(-names.length).map((page) => page.name), names)
+    await pager.close()
   })
 
   await step('the service exits once no session and no page is left', async () => {
