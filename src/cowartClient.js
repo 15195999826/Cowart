@@ -149,7 +149,8 @@ export async function refreshCowartCanvasSnapshot(signal) {
       { hydrateAssets: false },
       { signal }
     )
-    return state.snapshot
+    // [fork-patch] null: the stored canvas is still the one this page got last.
+    return state.unchanged === true ? null : state.snapshot
   }
 
   const canvasData = await fetchJson(CANVAS_ENDPOINT, { signal })

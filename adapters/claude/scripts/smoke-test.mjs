@@ -329,6 +329,35 @@ try {
     assert.ok(after.structuredContent.snapshot.store[videoShapeId], 'video was dropped')
   })
 
+  await step('a page polling the canvas it already has hears it is unchanged, until something writes it', async () => {
+    const read = (since) => api('/api/tools/call', { name: 'get_cowart_canvas_state', arguments: { projectDir, canvasDir, hydrateAssets: false, ...(since ? { cowartSince: since } : {}) } })
+    const first = (await read()).structuredContent
+    const version = first.cowartVersion
+    assert.match(version, /^[0-9a-z]+\.\d+$/)
+    assert.ok(first.snapshot.store[imageShapeId])
+    const same = (await read(version)).structuredContent
+    assert.deepEqual(same, { unchanged: true, cowartVersion: version })
+    // A page's view and selection are not the canvas.
+    const pageId = first.snapshot.store[imageShapeId].parentId
+    await api('/api/tools/call', { name: 'save_cowart_view_state', arguments: { projectDir, canvasDir, viewState: { currentPageId: pageId, camera: { x: 0, y: 0, z: 1 } } } })
+    await api('/api/tools/call', { name: 'save_cowart_selection_state', arguments: { projectDir, canvasDir, selection: { selectedShapes: [] } } })
+    assert.equal((await read(version)).structuredContent.unchanged, true)
+    // The model writing it (here a label): the next poll gets the whole canvas, of a new version.
+    const label = await call('insert_cowart_text', { items: [{ text: '版本', anchorShapeId: imageShapeId, placement: 'above' }] })
+    assert.ok(!label.isError, text(label))
+    const after = (await read(version)).structuredContent
+    assert.equal(after.unchanged, undefined)
+    assert.notEqual(after.cowartVersion, version)
+    assert.ok(after.snapshot.store[label.structuredContent.texts[0].shapeId])
+    // A page saving it too.
+    const saved = await api('/api/tools/call', { name: 'save_cowart_canvas_state', arguments: { projectDir, canvasDir, snapshot: after.snapshot, protectImageRecords: true } })
+    assert.ok(!saved.isError, JSON.stringify(saved))
+    assert.notEqual((await read(after.cowartVersion)).structuredContent.cowartVersion, after.cowartVersion)
+    // A version of another service instance (one that was replaced since) gets it whole.
+    const [, count] = after.cowartVersion.split('.')
+    assert.ok((await read(`other.${count}`)).structuredContent.snapshot)
+  })
+
   await step('canvas messages become requests delivered to the session listener', async () => {
     // A canvas page follows the requests of the canvas it shows (its query names the canvas).
     const pageEvents = openEvents(`${origin}/api/page-events?${new URLSearchParams({ token, session: SESSION, canvasDir })}`)

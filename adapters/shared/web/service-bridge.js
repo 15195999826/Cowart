@@ -101,6 +101,8 @@
   // store agreed on, and a save carries only the records that differ (and the ids that are
   // gone). The service lays that over the stored canvas.
 
+  const LOCAL_ONLY_TYPES = new Set(['page', 'shape', 'binding'])
+
   const sync = (() => {
     let editor = null
     let lastFetched = null
@@ -121,19 +123,26 @@
 
     function attach(found) {
       editor = found
-      if (lastFetched) note(lastFetched)
+      if (lastFetched && note(lastFetched)) canvasHeld(lastFetched)
     }
 
     // A fetched snapshot, right after upstream applied it: every record the store agrees
-    // with is common ground; records gone from both sides are forgotten.
+    // with is common ground; records gone from both sides are forgotten. True when the page
+    // holds the snapshot as it is: upstream applied all of it (it keeps a snapshot out while
+    // the page has changes of its own to save) and the page holds nothing it lacks.
     function note(snapshot) {
       lastFetched = snapshot
-      if (!editor || !snapshot || !snapshot.store) return
+      if (!editor || !snapshot || !snapshot.store) return false
+      let agrees = true
       for (const [id, record] of Object.entries(snapshot.store)) {
         const local = editor.store.get(id)
-        if (!local) continue
+        if (!local) {
+          agrees = false
+          continue
+        }
         const remote = stable(record)
         if (stable(local) === remote) base.set(id, remote)
+        else agrees = false
       }
       // A record the stored canvas no longer has is no longer common ground, even when this
       // page still holds it (an asset kept so an undo of a deleted image can use it): the next
@@ -141,6 +150,8 @@
       for (const id of [...base.keys()]) {
         if (!snapshot.store[id]) base.delete(id)
       }
+      // Assets are left out: a page keeps those of deleted pictures for an undo.
+      return agrees && !editor.store.allRecords().some((record) => LOCAL_ONLY_TYPES.has(record.typeName) && !snapshot.store[record.id])
     }
 
     function delta(snapshot) {
@@ -362,6 +373,21 @@
 
   let firstStateSeen = false
 
+  // ---- Polling the stored canvas ---------------------------------------------------------
+  // Upstream reads the whole stored canvas every 1.6 s. The service sends its version along; a
+  // poll that says which version the page has hears 'unchanged' while the canvas still is that,
+  // and upstream's poll leaves the page alone (cowartClient.js). The whole canvas comes at least
+  // once a minute all the same.
+  const FULL_READ_MS = 60000
+  // version: what the page holds, named in its polls; read: the version of the snapshot it got last.
+  const lastRead = { version: null, read: null, snapshot: null, at: 0 }
+
+  // Only once the page holds what it read (sync.note): a poll it kept out, while it had changes
+  // of its own to save, would otherwise stay unapplied as 'unchanged' for good.
+  function canvasHeld(snapshot) {
+    if (snapshot && snapshot === lastRead.snapshot) lastRead.version = lastRead.read
+  }
+
   function installApi() {
   window.cowartMcp = {
     ...(transport?.nativeApi || {}),
@@ -390,6 +416,9 @@
         // so every id it removes is a delete made here.
         if (delta && options && options.acknowledgeDeltaRemovals) args = { ...args, acknowledgedImageShapeDeletes: delta.remove }
       }
+      if (name === 'get_cowart_canvas_state' && lastRead.version && Date.now() - lastRead.at < FULL_READ_MS) {
+        args = { ...args, cowartSince: lastRead.version }
+      }
       const read = (input) => postJson('/api/tools/call', { name, arguments: input }, (options && options.timeoutMs) || 120000)
       const result = transport && name === 'read_cowart_page_asset' && /\.(mp4|m4v|mov|webm)(?:[?#]|$)/i.test(args.assetUrl || '')
         ? await window.__cowartReadCachedVideo(args, read)
@@ -407,7 +436,14 @@
         result.structuredContent = { ...result.structuredContent, dataBase64: parts.join(''), nextOffset: null }
       }
       if (delta && !result.isError && (result.structuredContent || {}).ok !== false) delta.commit()
+      if (name === 'get_cowart_canvas_state' && !result.isError && result.structuredContent?.unchanged) {
+        // A caller that loads the canvas anew (upstream remounting it) still gets it whole.
+        result.structuredContent = { ...result.structuredContent, snapshot: lastRead.snapshot }
+        return result
+      }
       if (name === 'get_cowart_canvas_state' && !result.isError) {
+        const got = result.structuredContent || {}
+        Object.assign(lastRead, { version: null, read: got.cowartVersion || null, snapshot: got.snapshot || null, at: Date.now() })
         if (!firstStateSeen) {
           firstStateSeen = true
           pages.adjustFirstView(result.structuredContent)
@@ -416,7 +452,9 @@
         pages.canvasLoaded()
         // Upstream applies the snapshot as soon as this returns; look at what it kept then.
         const snapshot = (result.structuredContent || {}).snapshot
-        setTimeout(() => sync.note(snapshot), 0)
+        setTimeout(() => {
+          if (sync.note(snapshot)) canvasHeld(snapshot)
+        }, 0)
       }
       return result
     },

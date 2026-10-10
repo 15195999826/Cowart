@@ -6791,6 +6791,7 @@ export default function App() {
 
       try {
         const nextSnapshot = await refreshCowartCanvasSnapshot(controller.signal)
+        if (nextSnapshot === null) return // [fork-patch] unchanged since the page's last read
         const effectivePreserve =
           preserveLocalChanges || (preFetchStore && storeChangedSinceSnapshot(editor, preFetchStore))
         const { changedRecords, skippedRecords: nextSkippedRecords } = applyRemoteCanvasSnapshot(

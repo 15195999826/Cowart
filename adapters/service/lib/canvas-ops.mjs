@@ -74,6 +74,18 @@ const STATE_WRITE_TOOLS = new Map([
 ])
 const TRANSIENT_FS_ERROR = /\b(EPERM|EBUSY|EACCES)\b/
 const WRITE_RETRIES = 3
+// Upstream tools that leave the stored canvas (its pages, shapes, bindings and assets) as it
+// was. Every other call counts as a change of it (see canvasVersion).
+const CANVAS_NEUTRAL_TOOLS = new Set([
+  CANVAS_STATE_TOOL,
+  'get_cowart_selection',
+  'save_cowart_selection_state',
+  'save_cowart_view_state',
+  'read_cowart_page_asset',
+  'download_cowart_file',
+  'copy_cowart_image_to_clipboard',
+  'track_cowart_analytics_event'
+])
 
 const VIDEO_EXTENSIONS = new Map([
   ['video/mp4', '.mp4'],
@@ -150,12 +162,34 @@ export class CanvasOps extends EventEmitter {
   #log
   // `${canvasDir}\n${session}` → the selection that session's page saved last
   #selections = new Map()
+  // canvasDir → how many writes of the stored canvas this service started; with #epoch (this
+  // service instance) it names a state of the canvas (canvasVersion).
+  #writes = new Map()
+  #epoch = randomId().slice(0, 8)
+  // canvasDir → { version, snapshot } the pages were given last
+  #served = new Map()
 
   constructor({ upstream, guard, log }) {
     super()
     this.#upstream = upstream
     this.#guard = guard
     this.#log = log ?? (() => {})
+  }
+
+  // Changes after every write of the stored canvas through this service, the only writer of it
+  // (canvas-lock.mjs). A page that has the canvas of this version has it as stored.
+  canvasVersion(canvasDir) {
+    return `${this.#epoch}.${this.#writes.get(canvasDir) ?? 0}`
+  }
+
+  #noteWrite(args) {
+    let canvasDir
+    try {
+      canvasDir = resolveCowartPaths(args).canvasDir
+    } catch {
+      return
+    }
+    this.#writes.set(canvasDir, (this.#writes.get(canvasDir) ?? 0) + 1)
   }
 
   async #upstreamToolNames() {
@@ -171,11 +205,17 @@ export class CanvasOps extends EventEmitter {
   }
 
   async #callWithRetry(name, args) {
-    for (let attempt = 0; ; attempt += 1) {
-      const result = await this.#upstream.callTool(name, args)
-      const message = result?.isError ? result.content?.find((item) => item.type === 'text')?.text ?? '' : ''
-      if (!TRANSIENT_FS_ERROR.test(message) || attempt >= WRITE_RETRIES) return result
-      await delay(80 * (attempt + 1))
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        const result = await this.#upstream.callTool(name, args)
+        const message = result?.isError ? result.content?.find((item) => item.type === 'text')?.text ?? '' : ''
+        if (!TRANSIENT_FS_ERROR.test(message) || attempt >= WRITE_RETRIES) return result
+        await delay(80 * (attempt + 1))
+      }
+    } finally {
+      // Once it is over (a failed write may have written part of it): a page reading from now
+      // on gets the new version with what it reads.
+      if (!CANVAS_NEUTRAL_TOOLS.has(name)) this.#noteWrite(args)
     }
   }
 
@@ -326,14 +366,31 @@ export class CanvasOps extends EventEmitter {
     if (name === RENDER_TOOL || !(await this.#upstreamToolNames()).has(name)) return errorResult(`画布页面不能调用 ${name}。`)
 
     if (name === 'save_cowart_canvas_state') return this.#savePage(args)
+    if (name === CANVAS_STATE_TOOL) return this.#pageCanvasState(args)
     if (name === 'save_cowart_selection_state' && pane?.session) {
       this.#selections.set(`${resolveCowartPaths(args).canvasDir}\n${pane.session}`, args.selection)
     }
-    const result = await this.#callLocked(name, args)
-    if (name === CANVAS_STATE_TOOL) {
-      this.#guard.observePageFetch(resolveCowartPaths(args).canvasDir, result?.structuredContent?.snapshot)
+    return this.#callLocked(name, args)
+  }
+
+  // Every open page reads the whole stored canvas each 1.6 s (upstream's remote sync). The
+  // canvas comes with its version (cowartVersion); a page that says it has that one
+  // (cowartSince) hears it is unchanged instead of getting all of it again.
+  async #pageCanvasState({ cowartSince, ...args }) {
+    const { canvasDir } = resolveCowartPaths(args)
+    const version = this.canvasVersion(canvasDir)
+    const served = this.#served.get(canvasDir)
+    if (cowartSince === version && served?.version === version) {
+      this.#guard.observePageFetch(canvasDir, served.snapshot)
+      return textResult('画布没有变化。', { unchanged: true, cowartVersion: version })
     }
-    return result
+    const result = await this.#callLocked(CANVAS_STATE_TOOL, args)
+    const snapshot = result?.structuredContent?.snapshot
+    if (result?.isError || !snapshot) return result
+    // Of the version taken before the read: a write finishing meanwhile makes the next poll read again.
+    this.#served.set(canvasDir, { version, snapshot })
+    this.#guard.observePageFetch(canvasDir, snapshot)
+    return { ...result, structuredContent: { ...result.structuredContent, cowartVersion: version } }
   }
 
   // A page that sends a delta (what changed in it since the stored canvas last agreed with

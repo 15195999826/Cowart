@@ -23,7 +23,7 @@ const WIDGET_MARKERS = [
   '__cowartExtensions?.panels',
   '__cowartExtensions?.imageToolbar',
   '__cowartExtensions?.contextMenu',
-  // Service-served pages stream videos from the service instead of reading them through MCP.
+  // Service-served pages load pictures and videos from the service instead of reading them through MCP.
   'directAssetUrl',
   'tool.cowart-extension-',
   'cowartAiImageHolder',

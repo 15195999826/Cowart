@@ -86,6 +86,7 @@ try {
   let initialMode = 'inline'
   let initialFailures = 0
   let canvasReads = 0
+  const canvasPolls = []
   let rejectNextClaim = false
   let uploadGate = null
   let assetReadGate = null
@@ -164,6 +165,9 @@ try {
           return result
         }
         const result = await call(message.params.name, args)
+        if (pageTool?.name === 'get_cowart_canvas_state') {
+          canvasPolls.push({ since: pageTool.arguments?.cowartSince ?? null, unchanged: result.structuredContent?.payload?.structuredContent?.unchanged === true })
+        }
         if (pageTool?.name === 'read_cowart_page_asset') {
           const data = result.structuredContent?.payload?.structuredContent
           assetTransfers.push({ url: pageTool.arguments.assetUrl, bytes: data?.dataBase64?.length || 0, notModified: data?.notModified === true })
@@ -280,6 +284,24 @@ try {
   assert.ok(ok(await call('get_cowart_canvas_state',{includeSnapshot:true})).snapshot.store['shape:codex-qa'])
   passed('delta save persists edit; own request reaches ui/message once; finished requests cannot restart')
   passed('video resolves through MCP to a stable blob and retains its DOM element across sync')
+  // An idle widget names the canvas version it holds and hears 'unchanged' instead of the whole
+  // canvas; a write reaches it on its next poll, after which it is idle again.
+  const until = async (check, what, ms = 10000) => {
+    const end = Date.now() + ms
+    while (!(await check())) {
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+  let pollsFrom = canvasPolls.length
+  await until(() => canvasPolls.slice(pollsFrom).some((poll) => poll.since && poll.unchanged), 'an unchanged poll')
+  const versionLabel = ok(await call('insert_cowart_text', { items: [{ text: '版本号', x: 10, y: 450 }], pageId })).texts[0].shapeId
+  pollsFrom = canvasPolls.length
+  await until(() => frame.evaluate((id) => Boolean(window.__cowartEditor.getShape(id)), versionLabel), 'the written label in the widget')
+  assert.equal(canvasPolls.slice(pollsFrom).some((poll) => !poll.unchanged), true)
+  pollsFrom = canvasPolls.length
+  await until(() => canvasPolls.slice(pollsFrom).some((poll) => poll.since && poll.unchanged), 'unchanged polls after the write')
+  passed('an idle widget hears its canvas is unchanged instead of reading it whole, and a write reaches it on the next poll')
 
   const otherPageId = 'page:codex-async-send'
   const otherPageName = '异步请求期间翻页'
