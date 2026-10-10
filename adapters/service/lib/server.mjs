@@ -46,6 +46,11 @@ const FEEDBACK_REQUESTS = 10
 // Names a request may come with: loopback only, so a DNS-rebinding page (its own name, resolved
 // to 127.0.0.1) is turned away.
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', PAGE_HOSTNAME])
+// The most one range response carries. A video asks for `bytes=N-` and reads only as far as it
+// buffers; the rest of the file kept that connection, and a browser opens six per host: five
+// videos left the other cards and the page's own calls (saves too) waiting. A short answer ends,
+// the connection goes back to the pool, and the video asks for the next part.
+const MAX_RANGE_BYTES = 2 * 1024 * 1024
 
 const CONTENT_TYPES = new Map([
   ['.apng', 'image/apng'],
@@ -1122,7 +1127,7 @@ export class CanvasServer {
       let start = range[1] ? Number(range[1]) : fileStat.size - Number(range[2])
       let end = range[1] && range[2] ? Number(range[2]) : fileStat.size - 1
       start = Math.max(0, start)
-      end = Math.min(end, fileStat.size - 1)
+      end = Math.min(end, fileStat.size - 1, start + MAX_RANGE_BYTES - 1)
       if (start > end) {
         res.writeHead(416, { 'content-range': `bytes */${fileStat.size}` }).end()
         return

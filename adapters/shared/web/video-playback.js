@@ -196,7 +196,10 @@
       // A <source> error does not bubble, so listen in capture phase as well.
       video.addEventListener('error', () => mediaFailed(video), true)
       video.addEventListener('loadeddata', () => failures.delete(assetForVideo(video)))
-      if (video.error || video.networkState === 3) mediaFailed(video)
+      // Not networkState: a video that was just inserted reports NETWORK_NO_SOURCE until the
+      // browser starts on its <source>, which read as a failure on every new card (a retry
+      // too) until its first frame came. A source that fails later fires the error above.
+      if (video.error) mediaFailed(video)
       video.addEventListener('pause', () => {
         if (video.controls && isActive() && !restoring.has(video)) video.dataset.cowartUserPaused = '1'
       })
