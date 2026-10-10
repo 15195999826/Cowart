@@ -409,6 +409,9 @@ async function hydrateCowartHtmlDraftLocalImages(htmlContent) {
 
   const replacements = await Promise.all(
     Array.from(references.entries()).map(async ([reference, assetUrl]) => {
+      // [fork-patch] The draft's same-origin frame loads a picture the service serves itself.
+      const direct = window.cowartMcp?.directAssetUrl?.({ type: 'image', props: { src: assetUrl } })
+      if (direct) return [reference, direct]
       try {
         const asset = await readCowartPageAsset(assetUrl)
         if (!asset?.dataBase64 || !asset?.mimeType?.startsWith('image/')) return null
@@ -517,10 +520,10 @@ async function resolveCowartTldrawAssetUrl(asset) {
   const retry = cowartAssetRetry(asset.id)
   retry.cacheKey = cacheKey
   retry.asset = asset
-  // [fork-patch] A page the canvas service serves itself streams videos from it: the
-  // service answers range requests, so playback starts at once and no copy of the file
-  // sits in page memory. A host whose widget cannot reach the service (Codex) returns
-  // nothing here and keeps reading the file through MCP.
+  // [fork-patch] A page the canvas service serves itself loads pictures and videos from it:
+  // the browser caches pictures (304 when unchanged), videos stream by range requests, and
+  // no copy of the file sits in page memory. A host whose widget cannot reach the service
+  // (Codex) returns nothing here and keeps reading the file through MCP.
   const direct = window.cowartMcp?.directAssetUrl?.(asset)
   if (direct) return direct
   const cached = cowartAssetObjectUrlCache.get(cacheKey)
@@ -4054,6 +4057,8 @@ function CowartSlidesMedia({ onUnhandledHtmlClick, shape, title }) {
         const assetSource = asset?.props?.src
         if (!asset || !assetSource) throw new Error('图片资源不可用')
 
+        const direct = window.cowartMcp?.directAssetUrl?.(asset) // [fork-patch]
+        if (direct) return { kind: 'image', url: direct }
         if (assetSource.startsWith(PAGE_ASSETS_ROUTE) && hasCowartWidgetBridge()) {
           const pageAsset = await readCowartPageAsset(assetSource)
           return {

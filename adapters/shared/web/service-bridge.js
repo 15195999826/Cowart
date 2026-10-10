@@ -369,9 +369,11 @@
     // A hidden page stays out of the remote sync (upstream skips its polls while this is false):
     // a poll would lay the stored canvas over what the page has not saved yet.
     ...(transport ? { waitUntilActive: transport.waitUntilActive, isActive: transport.isActive } : { isActive: () => !document.hidden }),
-    // A page the service serves plays its videos straight from it (range requests); the
-    // native widget cannot reach the service and reads them through MCP.
-    ...(transport ? {} : { directAssetUrl: (asset) => (asset && asset.type === 'video' ? asset.props.src : null) }),
+    // A page the service serves loads its pictures and videos straight from it: videos by range
+    // requests, pictures kept by the browser (the service answers an unchanged file with a 304),
+    // and nothing copied into page memory. The native widget cannot reach the service and reads
+    // them through MCP.
+    ...(transport ? {} : { directAssetUrl: (asset) => (asset && (asset.type === 'video' || asset.type === 'image') && /^\/(page-assets|assets)\//.test(asset.props?.src || '') ? asset.props.src : null) }),
     async callServerTool(request, options) {
       const name = request && request.name
       let args = (request && request.arguments) || {}

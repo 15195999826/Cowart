@@ -87,6 +87,14 @@ function nonEmpty(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+// The browser's copy is still the file (If-None-Match wins over If-Modified-Since).
+function notModified(headers, etag, mtime) {
+  const tags = headers['if-none-match']
+  if (tags) return tags.trim() === '*' || tags.split(',').some((tag) => tag.trim().replace(/^W\//, '') === etag)
+  const since = Date.parse(headers['if-modified-since'] || '')
+  return Number.isFinite(since) && Math.floor(mtime.getTime() / 1000) * 1000 <= since
+}
+
 function validId(value) {
   return typeof value === 'string' && ID_PATTERN.test(value)
 }
@@ -1115,14 +1123,29 @@ export class CanvasServer {
       CONTENT_TYPES.get(extname(filePath).toLowerCase()) ||
       sniffMediaType(await readFileHead(filePath)) ||
       'application/octet-stream'
+    // The browser keeps what it fetched and asks again with these (no-cache: every use checks
+    // first); an unchanged file is a 304 with no body, so going back to a page with many
+    // pictures costs a round trip per picture, not the pictures.
+    const etag = `"${fileStat.size.toString(36)}-${Math.trunc(fileStat.mtimeMs).toString(36)}"`
+    const lastModified = fileStat.mtime.toUTCString()
     const headers = {
       'content-type': contentType,
       'accept-ranges': 'bytes',
       'cache-control': 'no-cache',
+      etag,
+      'last-modified': lastModified,
       'x-content-type-options': 'nosniff'
     }
+    if (notModified(req.headers, etag, fileStat.mtime)) {
+      const { 'content-type': _type, ...validators } = headers
+      res.writeHead(304, validators).end()
+      return
+    }
 
-    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '')
+    // A range of a file that changed since the browser kept the rest of it (If-Range) would
+    // mix the two: the whole new file instead.
+    const ifRange = req.headers['if-range']
+    const range = !ifRange || ifRange === etag || ifRange === lastModified ? /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '') : null
     if (range && (range[1] || range[2])) {
       let start = range[1] ? Number(range[1]) : fileStat.size - Number(range[2])
       let end = range[1] && range[2] ? Number(range[2]) : fileStat.size - 1

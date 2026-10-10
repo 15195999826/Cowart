@@ -275,6 +275,32 @@ try {
     assert.equal(crossSite.statusCode, 403)
   })
 
+  await step('page assets carry validators, so the browser keeps an unchanged file (304)', async () => {
+    const file = join(canvasDir, 'pages', 'page', 'assets', 'cached.png')
+    await writeFile(file, await readFile(join(FIXTURES, 'tiny.png')))
+    const at = (headers) => rawGet(PORT, '/page-assets/page/cached.png', { host: `127.0.0.1:${PORT}`, ...headers })
+    const first = await at({})
+    assert.equal(first.statusCode, 200)
+    assert.equal(first.headers['cache-control'], 'no-cache')
+    const { etag, 'last-modified': lastModified } = first.headers
+    assert.match(etag, /^"[0-9a-z]+-[0-9a-z]+"$/)
+    assert.ok(lastModified)
+    const kept = await at({ 'if-none-match': etag })
+    assert.equal(kept.statusCode, 304)
+    assert.equal(kept.headers.etag, etag)
+    assert.equal(kept.headers['content-length'], undefined)
+    assert.equal((await at({ 'if-none-match': `"other", W/${etag}` })).statusCode, 304)
+    assert.equal((await at({ 'if-modified-since': lastModified })).statusCode, 304)
+    assert.equal((await at({ 'if-none-match': '"other"', 'if-modified-since': lastModified })).statusCode, 200)
+    // A changed file is fetched again, and a range of the old one is not mixed with it.
+    await writeFile(file, Buffer.concat([await readFile(file), Buffer.alloc(16)]))
+    const changed = await at({ 'if-none-match': etag })
+    assert.equal(changed.statusCode, 200)
+    assert.notEqual(changed.headers.etag, etag)
+    assert.equal((await at({ range: 'bytes=0-9', 'if-range': etag })).statusCode, 200)
+    assert.equal((await at({ range: 'bytes=0-9', 'if-range': changed.headers.etag })).statusCode, 206)
+  })
+
   await step('在资源管理器中显示 shows only files of the canvas', async () => {
     const reveal = (assetUrl) => api('/api/tools/call', { name: 'reveal_cowart_file', arguments: { assetUrl, projectDir, canvasDir } })
     const shown = await reveal('/page-assets/page/tiny.mp4?v=1')
