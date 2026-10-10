@@ -302,6 +302,28 @@ try {
   pollsFrom = canvasPolls.length
   await until(() => canvasPolls.slice(pollsFrom).some((poll) => poll.since && poll.unchanged), 'unchanged polls after the write')
   passed('an idle widget hears its canvas is unchanged instead of reading it whole, and a write reaches it on the next poll')
+  // Leaving a page lets go of the Blob URLs of the pictures it showed (not of its videos, which
+  // may be too big for the asset cache); back on it, the pictures come from the widget's asset
+  // cache again (a version check, no bytes).
+  const pictureUrl = await frame.evaluate(() => [...document.querySelectorAll('img.tl-image')].map((img) => img.src).find((src) => src.startsWith('blob:')))
+  assert.ok(pictureUrl, 'a picture shown from a Blob URL')
+  const videoUrl = await frame.evaluate(() => document.querySelector('video')?.currentSrc)
+  assert.match(videoUrl, /^blob:/)
+  await frame.evaluate(() => {
+    window.__releasedUrls = []
+    window.addEventListener('cowart:asset-url-released', ({ detail }) => window.__releasedUrls.push(detail.objectUrl))
+    const editor = window.__cowartEditor
+    if (!editor.getPage('page:blob-release')) editor.createPage({ id: 'page:blob-release', name: '释放验收' })
+    editor.setCurrentPage('page:blob-release')
+  })
+  await until(() => frame.evaluate((url) => window.__releasedUrls.includes(url), pictureUrl), 'the picture Blob URL released')
+  assert.equal(await frame.evaluate((url) => window.__releasedUrls.includes(url), videoUrl), false)
+  const transfersBeforeReturn = assetTransfers.length
+  await frame.evaluate((id) => window.__cowartEditor.setCurrentPage(id), pageId)
+  await until(() => frame.evaluate(() => [...document.querySelectorAll('img.tl-image')].some((img) => img.src.startsWith('blob:') && img.complete && img.naturalWidth > 0)), 'the picture shown again')
+  const pictureReads = assetTransfers.slice(transfersBeforeReturn).filter((entry) => /\.png(?:[?#]|$)/i.test(entry.url))
+  assert.ok(pictureReads.length > 0 && pictureReads.every((entry) => entry.notModified && entry.bytes === 0), JSON.stringify(pictureReads))
+  passed('leaving a page releases its pictures (not its videos), which come back from the asset cache without transferring bytes')
 
   const otherPageId = 'page:codex-async-send'
   const otherPageName = '异步请求期间翻页'

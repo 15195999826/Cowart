@@ -420,16 +420,17 @@
         args = { ...args, cowartSince: lastRead.version }
       }
       const read = (input) => postJson('/api/tools/call', { name, arguments: input }, (options && options.timeoutMs) || 120000)
-      const result = transport && name === 'read_cowart_page_asset' && /\.(mp4|m4v|mov|webm)(?:[?#]|$)/i.test(args.assetUrl || '')
-        ? await window.__cowartReadCachedVideo(args, read)
+      // The native widget keeps the pictures and videos it read (asset-cache.js).
+      const result = transport && name === 'read_cowart_page_asset' && /\.(mp4|m4v|mov|webm|apng|avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(args.assetUrl || '')
+        ? await window.__cowartReadCachedAsset(args, read)
         : await read(args)
       if (name === 'read_cowart_page_asset' && !result.isError && result.structuredContent?.nextOffset != null) {
         const parts = [result.structuredContent.dataBase64]
         let next = result.structuredContent.nextOffset
         while (next != null) {
-          const chunk = await postJson('/api/tools/call', { name, arguments: { ...args, offset: next } }, 120000)
+          const chunk = await postJson('/api/tools/call', { name, arguments: { ...args, offset: next, expectedVersion: result.structuredContent.version } }, 120000)
           if (chunk.isError) return chunk
-          if (chunk.structuredContent.nextOffset != null && chunk.structuredContent.nextOffset <= next) throw new Error('视频读取未能继续。')
+          if (chunk.structuredContent.nextOffset != null && chunk.structuredContent.nextOffset <= next) throw new Error('素材读取未能继续。')
           parts.push(chunk.structuredContent.dataBase64)
           next = chunk.structuredContent.nextOffset
         }

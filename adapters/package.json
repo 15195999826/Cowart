@@ -27,7 +27,7 @@
     "build:artifacts": "node ./scripts/build-artifacts.mjs",
     "check:artifacts": "node ./scripts/build-artifacts.mjs --check",
     "probe:cold": "node ./scripts/probe-cold-install.mjs",
-    "test:codex": "node --test ./codex/scripts/client-test.mjs ./codex/scripts/asset-cache-test.mjs ./service/test/widget-transport-test.mjs ./service/test/video-assets-test.mjs && node ./codex/scripts/smoke-test.mjs"
+    "test:codex": "node --test ./codex/scripts/client-test.mjs ./codex/scripts/asset-cache-test.mjs ./service/test/widget-transport-test.mjs ./service/test/media-assets-test.mjs && node ./codex/scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

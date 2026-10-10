@@ -214,6 +214,17 @@
   // assets through the MCP bridge); the plain src works on the Claude host.
   const thumbUrls = new Map()
   const thumbListeners = new Set()
+  // The app lets go of the Blob URLs of assets off the page (the native widget): resolve again.
+  window.addEventListener('cowart:asset-url-released', ({ detail }) => {
+    let released = false
+    for (const [assetId, url] of thumbUrls) {
+      if (url === detail?.objectUrl) {
+        thumbUrls.delete(assetId)
+        released = true
+      }
+    }
+    if (released) for (const listener of thumbListeners) listener()
+  })
 
   function thumbForShape(editor, shape) {
     const asset = assetOfShape(editor, shape)

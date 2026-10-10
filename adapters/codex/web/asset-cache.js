@@ -1,4 +1,4 @@
-// Cache completed native video transfers across sandbox destruction. Every hit is
+// Cache completed native picture and video transfers across sandbox destruction. Every hit is
 // revalidated by the service against the actual file; no stale file or half-read
 // transfer is presented as a healthy cache entry. Storage denial falls back to MCP.
 (() => {
@@ -89,7 +89,7 @@
     const src = window.__cowartEditor?.getAsset(detail?.assetId)?.props.src
     if (src) bypass.add(src)
   })
-  window.__cowartReadCachedVideo = (args, read) => {
+  window.__cowartReadCachedAsset = (args, read) => {
     const key = `${window.__COWART_SERVICE_PAGE__?.canvasDir}\n${args.assetUrl}`
     if (inflight.has(key)) return inflight.get(key)
     const work = (async () => {
@@ -108,7 +108,7 @@
         const chunk = await read({ ...args, offset, expectedVersion: data.version })
         if (chunk.isError) return chunk
         const next = chunk.structuredContent
-        if (next.version !== data.version || (next.nextOffset != null && next.nextOffset <= offset)) throw new Error('视频读取期间文件发生变化，请重试。')
+        if (next.version !== data.version || (next.nextOffset != null && next.nextOffset <= offset)) throw new Error('素材读取期间文件发生变化，请重试。')
         parts.push(next.dataBase64)
         offset = next.nextOffset
       }

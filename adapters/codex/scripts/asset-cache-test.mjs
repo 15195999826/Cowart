@@ -9,7 +9,7 @@ function setup(indexedDB) {
   const window = { __COWART_SERVICE_PAGE__: { canvasDir: 'isolated' }, addEventListener() {} }
   const context = vm.createContext({ window, indexedDB, setTimeout, clearTimeout })
   vm.runInContext(script, context)
-  return window.__cowartReadCachedVideo
+  return window.__cowartReadCachedAsset
 }
 const within = (promise, ms) => {
   let timer

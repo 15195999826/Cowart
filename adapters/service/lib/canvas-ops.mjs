@@ -22,7 +22,7 @@ import { EDIT_TOOLS, planCanvasEdit, referencedShapeIds } from './canvas-edit.mj
 import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
 import { COPY_REFERENCE_TOOL, copyCanvasReference } from './copy-reference.mjs'
 import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
-import { readVideoAsset } from './video-assets.mjs'
+import { readMediaAsset } from './media-assets.mjs'
 
 // A canvas nobody has opened yet gets its first page from this (the schema of the bundled
 // tldraw and a document record); the page fills in the rest when it loads.
@@ -323,8 +323,8 @@ export class CanvasOps extends EventEmitter {
   async callFromPage(name, args, { host, pane } = {}) {
     if (name === 'read_cowart_page_asset') {
       try {
-        const video = await readVideoAsset(args)
-        if (video) return textResult('画布视频素材。', video)
+        const media = await readMediaAsset(args)
+        if (media) return textResult('画布素材。', media)
       } catch (error) { return errorResult(error.message) }
     }
     if (DROPPED_TOOLS.has(name)) {

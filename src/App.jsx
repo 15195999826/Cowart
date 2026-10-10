@@ -493,6 +493,35 @@ function revokeCowartCachedAsset(cacheKey) {
   if (cowartAssetSourceKeys.get(cached.src) === cacheKey) {
     cowartAssetSourceKeys.delete(cached.src)
   }
+  // [fork-patch] Whoever kept the URL (the panels' thumbnails) resolves the asset again.
+  window.dispatchEvent(new CustomEvent('cowart:asset-url-released', { detail: { objectUrl: cached.objectUrl } }))
+}
+
+// [fork-patch] A page reading assets through MCP (the native widget) holds each one as a Blob.
+// Pictures of shapes off the current page go when the page changes, and the least recently used
+// of the rest (videos too) once they add up to more than this. A shape on the current page keeps
+// its URL: tldraw may show it again, a video decoder may still read it. A released asset is read
+// again when it is shown; the widget's asset cache makes that a version check, except for videos
+// too big for it, which is why a page change leaves videos alone.
+const COWART_ASSET_BLOB_LIMIT = 256 * 1024 * 1024
+
+function releaseCowartAssetBlobs(editor, { offPage = false, keep = null } = {}) {
+  if (!editor || cowartAssetObjectUrlCache.size === 0) return
+  const shown = new Set()
+  for (const shape of editor.getCurrentPageShapes()) {
+    const src = shape.props?.assetId ? editor.getAsset(shape.props.assetId)?.props?.src : null
+    if (src) shown.add(src)
+  }
+  let total = 0
+  for (const cached of cowartAssetObjectUrlCache.values()) total += cached.bytes
+  const idle = Array.from(cowartAssetObjectUrlCache.entries())
+    .filter(([cacheKey, cached]) => cacheKey !== keep && !shown.has(cached.src))
+    .sort(([, left], [, right]) => left.usedAt - right.usedAt)
+  for (const [cacheKey, cached] of idle) {
+    if (total <= COWART_ASSET_BLOB_LIMIT && !(offPage && !cached.video)) continue
+    revokeCowartCachedAsset(cacheKey)
+    total -= cached.bytes
+  }
 }
 
 function blobFromBase64(dataBase64, mimeType) {
@@ -527,7 +556,10 @@ async function resolveCowartTldrawAssetUrl(asset) {
   const direct = window.cowartMcp?.directAssetUrl?.(asset)
   if (direct) return direct
   const cached = cowartAssetObjectUrlCache.get(cacheKey)
-  if (cached) return cached.objectUrl
+  if (cached) {
+    cached.usedAt = Date.now() // [fork-patch]
+    return cached.objectUrl
+  }
 
   const previousKey = cowartAssetSourceKeys.get(src)
   if (previousKey && previousKey !== cacheKey) {
@@ -539,9 +571,11 @@ async function resolveCowartTldrawAssetUrl(asset) {
   if (!cowartAssetReads.has(cacheKey)) {
     const read = (async () => {
       const pageAsset = await readCowartPageAsset(src)
-      const objectUrl = URL.createObjectURL(blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType))
-      cowartAssetObjectUrlCache.set(cacheKey, { objectUrl, src })
+      const blob = blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType)
+      const objectUrl = URL.createObjectURL(blob)
+      cowartAssetObjectUrlCache.set(cacheKey, { objectUrl, src, bytes: blob.size, video: blob.type.startsWith('video/'), usedAt: Date.now() })
       cowartAssetSourceKeys.set(src, cacheKey)
+      releaseCowartAssetBlobs(window.__cowartEditor, { keep: cacheKey }) // [fork-patch]
       return objectUrl
     })().finally(() => cowartAssetReads.delete(cacheKey))
     cowartAssetReads.set(cacheKey, read)
@@ -6720,6 +6754,14 @@ export default function App() {
     })
     editor.timers.setTimeout(scheduleSlidesLayout, 100)
     const disposeAnnotationBindings = registerAnnotationBindings(editor) // [fork-patch]
+    // [fork-patch] Once the page changed (and the old page's shapes unmounted), the Blob URLs of
+    // the pictures it showed go (releaseCowartAssetBlobs).
+    let assetBlobReleaseTimer = null
+    const disposeAssetBlobRelease = editor.sideEffects.registerAfterChangeHandler('instance', (previous, next) => {
+      if (previous.currentPageId === next.currentPageId) return
+      window.clearTimeout(assetBlobReleaseTimer)
+      assetBlobReleaseTimer = window.setTimeout(() => releaseCowartAssetBlobs(editor, { offPage: true }), 1000)
+    })
 
     const containerDocument = editor.getContainerDocument()
     function handleCowartCopy(event) {
@@ -6911,6 +6953,8 @@ export default function App() {
       disposeSlidesBeforeCreateHandler()
       disposeSlidesOperationHandler()
       disposeAnnotationBindings() // [fork-patch]
+      disposeAssetBlobRelease() // [fork-patch]
+      window.clearTimeout(assetBlobReleaseTimer)
       syncViewState()
       saveCanvas()
     }
