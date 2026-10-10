@@ -2,7 +2,10 @@
 // second one off the same canvas when a bridge ends up on another port (at a replacement on
 // 2026-09-15 one did, and the canvas had two writers). A service takes the lock before it
 // listens and gives it up after its last write (FORK.md 画布服务); a lock whose service is
-// gone, or whose pid another program has been given since, is taken over.
+// gone, or whose pid another program has been given since, is taken over. So is the lock of
+// a service that a newer one replaces, while it still runs: services that start meanwhile,
+// whatever their code, then wait for the newer one (on 2026-10-10 an older checkout's bridges
+// started theirs again each time).
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -98,11 +101,14 @@ function serialize(record) {
 class CanvasLock {
   #file
   #record
+  #previous
   #released = false
 
-  constructor(file, record) {
+  // previous: the lock of the service this one replaces, when it was taken over.
+  constructor(file, record, previous = null) {
     this.#file = file
     this.#record = record
+    this.#previous = previous
   }
 
   #mine() {
@@ -121,6 +127,36 @@ class CanvasLock {
     }
   }
 
+  // Whether this service still has the canvas once the service it replaced is gone. One that
+  // was stopping already can remove the lock just as it is taken over (it checks the lock is
+  // its own, then removes it); it is written back then, unless another service has it now.
+  reclaim() {
+    if (this.#released) return false
+    if (this.#mine()) return true
+    try {
+      writeFileSync(this.#file, serialize(this.#record), { flag: 'wx' })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // The replaced service did not exit: the canvas goes back to it, as a service that is stopping
+  // (so it is taken over only once its 30 s are up and it answers nowhere, as before).
+  handBack() {
+    if (this.#released) return
+    this.#released = true
+    try {
+      if (this.#previous && this.#mine()) {
+        writeFileSync(this.#file, serialize({ ...this.#previous, stoppingAt: this.#previous.stoppingAt ?? new Date().toISOString() }))
+      } else if (this.#mine()) {
+        unlinkSync(this.#file)
+      }
+    } catch {
+      // Gone already.
+    }
+  }
+
   release() {
     if (this.#released) return
     this.#released = true
@@ -133,8 +169,10 @@ class CanvasLock {
 }
 
 // Takes the canvas for this service, which is about to listen on `port`, or throws
-// ECANVASBUSY with the service that has it (error.owner).
-export async function acquireCanvasLock(canvasDir, { port }) {
+// ECANVASBUSY with the service that has it (error.owner). replacing: the pid of the service
+// this one replaces; its lock is taken over while it runs, and it keeps writing until it
+// exits (the caller waits for that, then calls reclaim(), or handBack() when it does not).
+export async function acquireCanvasLock(canvasDir, { port, replacing = null }) {
   const file = canvasLockFile(canvasDir)
   const record = { pid: process.pid, port, canvasDir, startedAt: new Date().toISOString(), id: randomUUID() }
   mkdirSync(dirname(file), { recursive: true })
@@ -147,17 +185,20 @@ export async function acquireCanvasLock(canvasDir, { port }) {
     }
     const current = await settledLock(file)
     if (current.missing) continue
-    if (current.lock && (await isLive(current.lock))) {
+    // Another bridge's replacement may have taken it over first: then that one has it.
+    const handover = Boolean(replacing) && current.lock?.pid === replacing
+    if (current.lock && !handover && (await isLive(current.lock))) {
       const error = new Error(`画布 ${canvasDir} 已经由端口 ${current.lock.port} 上的画布服务（pid ${current.lock.pid}）在用。`)
       error.code = 'ECANVASBUSY'
       error.owner = current.lock
       throw error
     }
-    // Stale. Another service may have taken it over while this one was asking its owner.
+    // Stale, or handed over. Another service may have taken it over while this one was asking
+    // its owner.
     if (readLock(file).lock?.id !== current.lock?.id) continue
     writeFileSync(file, serialize(record))
     await delay(SETTLE_MS)
-    if (readLock(file).lock?.id === record.id) return new CanvasLock(file, record)
+    if (readLock(file).lock?.id === record.id) return new CanvasLock(file, record, handover ? current.lock : null)
   }
   throw new Error(`拿不到画布锁 ${file}。`)
 }

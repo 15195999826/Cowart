@@ -1,6 +1,6 @@
 // Bridge side of the canvas service. It finds the machine-wide service on 127.0.0.1 (the
 // port is the lock), starts it in the background when nobody runs one, replaces it when
-// this checkout's code changed (identity.mjs), keeps the session connected and calls it.
+// it runs older code (identity.mjs), keeps the session connected and calls it.
 import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, renameSync, statSync } from 'node:fs'
 import net from 'node:net'
@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 import { ADAPTERS_DIR, REPO_ROOT, SHARED_CANVAS_DIR } from '../shared/paths.mjs'
 import { canvasOwner, isAlive } from './lib/canvas-lock.mjs'
-import { DEFAULT_PORT, EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, SERVICE_NAME, localIdentity, serviceVerdict } from './lib/identity.mjs'
+import { DEFAULT_PORT, EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, EXIT_REPLACED_STUCK, REPLACE_WAIT_MS, SERVICE_NAME, localIdentity, serviceVerdict } from './lib/identity.mjs'
 import { RUNTIME_DIR, SERVICE_LOG, loadOrCreateToken } from './lib/token.mjs'
 
 export const SERVICE_ENTRY = process.env.COWART_BUNDLED === '1'
@@ -130,10 +130,12 @@ function openServiceLog() {
 
 // Detached so the service is not tied to this bridge: the session ending must not end it.
 // exitCode stays null while the service runs (EXIT_* in identity.mjs say why one did not).
-export function spawnService(port, { entry = SERVICE_ENTRY } = {}) {
+// replacing: the pid of the service on the port that this one takes over from.
+export function spawnService(port, { entry = SERVICE_ENTRY, replacing = null } = {}) {
   const out = openServiceLog()
   try {
-    const child = spawn(process.execPath, [entry, '--port', String(port)], {
+    const args = [entry, '--port', String(port), ...(replacing ? ['--replace', String(replacing)] : [])]
+    const child = spawn(process.execPath, args, {
       cwd: REPO_ROOT,
       detached: true,
       windowsHide: true,
@@ -204,7 +206,7 @@ export class CanvasServiceClient {
     return `http://127.0.0.1:${this.#port}`
   }
 
-  // At startup a service running older code of this checkout is replaced; reconnects later
+  // At startup a service running older code is replaced (identity.mjs); reconnects later
   // live with whatever runs, so bridges of different versions never take turns.
   async start() {
     await this.#connect({ allowReplace: true })
@@ -267,9 +269,9 @@ export class CanvasServiceClient {
     throw new Error(`端口 ${this.basePort}–${this.basePort + PORT_ATTEMPTS - 1} 都被别的程序占着，画布服务起不来。`)
   }
 
-  // Gets a canvas service this bridge can use on `port`: the one there (replaced first, at
-  // startup and once, when it runs older code of this checkout) or one this bridge starts.
-  // Returns the port to use; null only when another program holds the port for sure. A
+  // Gets a canvas service this bridge can use on `port`: the one there, or one this bridge
+  // starts, which takes over from the one there when that runs older code (at startup and
+  // once). Returns the port to use; null only when another program holds the port for sure. A
   // port that is taken but does not answer is asked again, not skipped: moving on would
   // start a second service on the same canvas (which the canvas lock turns away).
   async #settle(port, { allowReplace }) {
@@ -277,6 +279,8 @@ export class CanvasServiceClient {
     let started = null
     let starts = 0
     let waitingFor = null
+    // The service being replaced: it answers until it has stopped.
+    let replacing = null
     let unsureSince = null
     let deadline = Date.now() + READY_TIMEOUT_MS
     for (let look = 0; ; look += 1) {
@@ -290,14 +294,28 @@ export class CanvasServiceClient {
       }
       if (probe.kind === 'cowart') {
         const { status } = probe
+        if (status.pid === replacing) {
+          // The new service (this bridge's, or another bridge's that took the canvas first)
+          // has asked it to stop, or is about to.
+          const exitCode = started?.exitCode ?? null
+          if (exitCode === EXIT_REPLACED_STUCK || Date.now() > deadline) throw new Error(`旧的画布服务（端口 ${port}）没有按时退出。`)
+          if (exitCode !== null && exitCode !== EXIT_CANVAS_BUSY) throw new Error(`画布服务没能启动（端口 ${port}，退出码 ${exitCode}），日志在 ${SERVICE_LOG}。`)
+          await delay(RETRY_MS)
+          continue
+        }
         const verdict = serviceVerdict(status, this.#mine)
         if (verdict === 'reuse') return port
         if (verdict === 'replace' && mayReplace) {
+          // Not stopped first: the new service takes the canvas over while this one still runs,
+          // then stops it, so the bridges that come back meanwhile (another checkout's among
+          // them) wait for the new one instead of starting their own (canvas-lock.mjs).
           this.log(`replacing the canvas service on ${port} (build ${status.build} → ${this.#mine.build})`)
-          if (!(await stopService(port, this.#token, 'replaced', { pid: status.pid }))) throw new Error(`旧的画布服务（端口 ${port}）没有按时退出。`)
+          started = spawnService(port, { entry: this.entry, replacing: status.pid })
+          starts += 1
+          replacing = status.pid
           // Once: the service that runs next may be one that another bridge started.
           mayReplace = false
-          deadline = Date.now() + READY_TIMEOUT_MS
+          deadline = Date.now() + REPLACE_WAIT_MS + READY_TIMEOUT_MS
           continue
         }
         if (status.protocol !== this.#mine.protocol) {
@@ -329,6 +347,8 @@ export class CanvasServiceClient {
           const owner = canvasOwner(SHARED_CANVAS_DIR)
           if (owner && owner.port !== port) return this.#joinOwner(owner, port)
           waitingFor = owner?.pid ?? null
+        } else if (exitCode === EXIT_REPLACED_STUCK) {
+          throw new Error(`旧的画布服务（端口 ${port}）没有按时退出。`)
         } else if (exitCode !== EXIT_PORT_TAKEN) {
           throw new Error(`画布服务没能启动（端口 ${port}，退出码 ${exitCode}），日志在 ${SERVICE_LOG}。`)
         }

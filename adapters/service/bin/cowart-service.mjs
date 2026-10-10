@@ -2,6 +2,7 @@
 // The machine-wide Cowart canvas service. Session bridges start it in the background (see
 // adapters/service/client.mjs); by hand:
 //   node cowart-service.mjs --port 43240   run it in the foreground
+//   (bridges add --replace <pid> when it is to take over from the service running there)
 //   node cowart-service.mjs --status       show the running service and its sessions
 //   node cowart-service.mjs --stop         stop it (bridges start a new one when needed)
 //   node cowart-service.mjs --import <canvas or project dir> …
@@ -90,7 +91,7 @@ if (process.argv.includes('--import')) {
   }
 } else {
   const { startCanvasService } = await import('../lib/service.mjs')
-  await startCanvasService({ port }).catch((error) => {
+  await startCanvasService({ port, replacing: Number(option('replace')) || null }).catch((error) => {
     process.stderr.write(`[cowart-service] failed to start: ${error?.stack || error}\n`)
     process.exit(1)
   })

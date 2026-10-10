@@ -13,9 +13,13 @@ export const DEFAULT_PORT = 43240
 // themselves (no hosts file) and treat it as a secure context, as they do localhost.
 export const PAGE_HOSTNAME = 'cowart.localhost'
 // How a service that does not start tells the bridge that started it why (its exit code):
-// another service bound the port first, or another service has the canvas (canvas-lock.mjs).
+// another service bound the port first, another service has the canvas (canvas-lock.mjs), or
+// the service it was to replace did not exit within REPLACE_WAIT_MS of being asked to stop.
 export const EXIT_PORT_TAKEN = 3
 export const EXIT_CANVAS_BUSY = 4
+export const EXIT_REPLACED_STUCK = 5
+// Under the 30 s a starting service's canvas lock counts without an answer (canvas-lock.mjs).
+export const REPLACE_WAIT_MS = 15_000
 // Bump when the API between bridges, pages and the service changes incompatibly.
 // 2: page responsibility (分页负责制) and delta saves replaced per-pane editing locks.
 export const PROTOCOL = 3
@@ -106,8 +110,9 @@ export function domainPort(env = process.env, canvasDir = SHARED_CANVAS_DIR) {
   return samePath(canvasDir, DEFAULT_CANVAS_DIR) ? 80 : 0
 }
 
-// reuse: keep the running service. replace: stop it and start this code. incompatible: the
-// running service is newer and speaks another protocol, so this bridge cannot use it.
+// reuse: keep the running service. replace: start this code to take over from it (client.mjs).
+// incompatible: the running service is newer and speaks another protocol, so this bridge
+// cannot use it.
 export function serviceVerdict(running, mine) {
   if (running.protocol === mine.protocol && running.build === mine.build) return 'reuse'
   // Same checkout, different code: the files on disk changed since the service started.

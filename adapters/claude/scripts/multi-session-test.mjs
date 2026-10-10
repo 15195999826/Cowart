@@ -5,9 +5,10 @@
 // same canvas at once, model writes kept out of other sessions' pages, each session's own
 // selection, a session ending and coming back, ended sessions forgotten once nothing waits
 // for them (and still hearing their requests when they come back), a changed checkout replacing the service
-// (with more bridges starting meanwhile, all ending up on one service), one service per
-// canvas, ports that do not answer yet waited for rather than skipped, idle exit, and the
-// desktop-only switch. Bridges run over stdio like Claude Code runs them; canvas pages are
+// (with more bridges starting meanwhile, all ending up on one service), another checkout's
+// older bridges coming back during a replacement staying with the newer service, an old
+// service that does not stop keeping the canvas, one service per canvas, ports that do not
+// answer yet waited for rather than skipped, idle exit, and the desktop-only switch. Bridges run over stdio like Claude Code runs them; canvas pages are
 // played by event streams and the page API, on a test port.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -15,14 +16,15 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { PORT_ATTEMPTS, SERVICE_ENTRY, probeService } from '../../service/client.mjs'
 import { canvasLockFile, canvasOwner } from '../../service/lib/canvas-lock.mjs'
-import { EXIT_CANVAS_BUSY } from '../../service/lib/identity.mjs'
+import { EXIT_CANVAS_BUSY, EXIT_REPLACED_STUCK, samePath } from '../../service/lib/identity.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { pageRecords } from '../../shared/canvas-model.mjs'
-import { ADAPTERS_DIR } from '../../shared/paths.mjs'
+import { ADAPTERS_DIR, REPO_ROOT } from '../../shared/paths.mjs'
 import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_MULTI_PORT) || 43295
@@ -30,7 +32,9 @@ const PORT = Number(process.env.COWART_MULTI_PORT) || 43295
 // holds, and for services started by hand.
 const QUIET_PORT = PORT + 40
 const BUSY_PORT = PORT + 60
-const HAND_PORTS = [PORT + 1, PORT + 70, PORT + 71]
+const HAND_PORTS = [PORT + 1, PORT + 70, PORT + 71, PORT + 72]
+// Another checkout's bridges and this one's, on a canvas of their own.
+const CHECKOUTS_PORT = PORT + 80
 // This checkout's code, for the replacement checks: writing another salt into the file is
 // like changing the code on disk, for every bridge and service that starts afterwards.
 const SALT_FILE = join(tmpdir(), `cowart-check-build-salt-${process.pid}.txt`)
@@ -125,9 +129,9 @@ const connectedSessions = async () =>
   (await serviceStatus(PORT))?.sessions.filter((session) => session.bridge).map((session) => session.id).sort() ?? []
 
 // The canvas services for a canvas on the test's ports: the main one and those bridges move on to.
-async function servicesOn(canvas) {
+async function servicesOn(canvas, from = PORT) {
   const found = []
-  for (let port = PORT; port < PORT + PORT_ATTEMPTS; port += 1) {
+  for (let port = from; port < from + PORT_ATTEMPTS; port += 1) {
     const probe = await probeService(port, token)
     if (probe.kind === 'cowart' && probe.status.canvasDir === canvas) found.push(probe.status)
   }
@@ -150,6 +154,20 @@ async function runService(canvas, port) {
     const status = await serviceStatus(port)
     return status?.pid === child.pid && { status }
   }, { timeoutMs: 15_000, what: `the service started by hand on ${port}` })
+}
+
+// Another checkout older than this one, the way Codex installs a release: the published files
+// (bundled bridges and service) copied elsewhere, under a lower version. Returns its Claude bridge.
+async function olderCheckout(dir) {
+  const manifest = JSON.parse(await readFile(join(ADAPTERS_DIR, 'generated', 'release-manifest.json'), 'utf8'))
+  const files = [...Object.keys(manifest.resources), ...Object.keys(manifest.artifacts).map((name) => `adapters/generated/${name}`)]
+  for (const file of files) {
+    await mkdir(dirname(join(dir, file)), { recursive: true })
+    await copyFile(join(REPO_ROOT, file), join(dir, file))
+  }
+  const pkg = JSON.parse(await readFile(join(dir, 'adapters', 'package.json'), 'utf8'))
+  await writeFile(join(dir, 'adapters', 'package.json'), JSON.stringify({ ...pkg, version: '0.0.1' }))
+  return join(dir, 'adapters', 'generated', 'cowart-claude-mcp.mjs')
 }
 
 const listen = (server, port) => new Promise((resolve, reject) => server.once('error', reject).listen(port, '127.0.0.1', resolve))
@@ -614,6 +632,53 @@ try {
     assert.equal(canvasOwner(canvasDir)?.pid, after.pid, 'the canvas lock does not name the service')
   })
 
+  await step("another checkout's older bridges that come back while this checkout replaces their service wait for the new one instead of starting their own", async () => {
+    // On 2026-10-10 the Codex release (0.2.10, bundled, many sessions) and this checkout (0.2.11)
+    // took turns: each Claude session stopped the 0.2.10 service, and the Codex bridges coming back
+    // started 0.2.10 again before the new service had the canvas.
+    const project = await mkdtemp(join(tmpdir(), 'cowart-claude-checkouts-'))
+    const older = await olderCheckout(join(project, 'older'))
+    const canvas = join(project, 'canvas')
+    await mkdir(join(canvas, 'pages', 'page'), { recursive: true })
+    await copyFile(EMPTY_CANVAS, join(canvas, 'pages', 'page', 'cowart-canvas.json'))
+    const connected = (status) => status?.sessions.filter((session) => session.bridge).length ?? 0
+    const olders = []
+    let newer = null
+    try {
+      for (let index = 0; index < 10; index += 1) {
+        // Other code, too: the same build would be reused whichever checkout runs it.
+        olders.push(await startBridge({ cwd: project, port: CHECKOUTS_PORT, session: `multi-older-${index}`, env: { ...FAST, COWART_SERVICE_BUILD_SALT: 'older' }, entry: older }))
+      }
+      await Promise.all(olders.map((bridge) => bridge.client.listTools()))
+      const before = await waitFor(async () => {
+        const status = await serviceStatus(CHECKOUTS_PORT)
+        return connected(status) === olders.length && status
+      }, { timeoutMs: 15_000, what: "the older checkout's service with its bridges" })
+      assert.equal(before.version, '0.0.1')
+      assert.ok(samePath(before.root, join(project, 'older')), before.root)
+
+      // This checkout's services start slower than the bundled release's, as they did that day
+      // (2.3 s against 0.4 s): unbundled modules, a busy machine.
+      const slowStart = join(project, 'slow-start.mjs')
+      await writeFile(slowStart, 'await new Promise((resolve) => setTimeout(resolve, 1500))\n')
+      newer = await startBridge({ cwd: project, port: CHECKOUTS_PORT, session: 'multi-newer', env: { ...FAST, NODE_OPTIONS: `--import=${pathToFileURL(slowStart).href}` } })
+      await newer.client.listTools()
+      const after = await waitFor(async () => {
+        const status = await serviceStatus(CHECKOUTS_PORT)
+        return status && status.pid !== before.pid && connected(status) === olders.length + 1 && status
+      }, { timeoutMs: 30_000, what: 'every bridge on a service after the replacement' })
+      assert.ok(samePath(after.root, REPO_ROOT), `the older checkout's service (${after.version}, ${after.root}) came back instead of this one`)
+      await delay(1500)
+      assert.equal((await serviceStatus(CHECKOUTS_PORT)).pid, after.pid, 'the service was replaced again')
+      assert.deepEqual((await servicesOn(canvas, CHECKOUTS_PORT)).map((status) => status.pid), [after.pid], 'a second service runs on the canvas')
+      assert.equal(canvasOwner(canvas)?.pid, after.pid, 'the canvas lock does not name the service')
+    } finally {
+      for (const bridge of [...olders, newer]) await bridge?.close()
+      for (const status of await servicesOn(canvas, CHECKOUTS_PORT)) await stopTestService(status.port)
+      await rm(project, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+
   await step('one service per canvas: a second one for the same canvas stays down; a lock left behind by a service that is gone does not', async () => {
     const running = await serviceStatus(PORT)
     const owner = canvasOwner(canvasDir)
@@ -638,6 +703,45 @@ try {
       assert.equal(canvasOwner(stale)?.pid, started.status.pid)
       await stopTestService(port)
       assert.equal(canvasOwner(stale), null, 'a stopped service kept the canvas')
+    }
+  })
+
+  await step('a replacement takes the canvas over before it asks the old service to stop; an old service that does not stop gets it back', async () => {
+    const stuck = join(projectDir, 'stuck-canvas')
+    await mkdir(stuck, { recursive: true })
+    const port = HAND_PORTS[3]
+    // The old service: its process runs on, and its port answers like a canvas service but it
+    // never stops.
+    const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+    let asked = null
+    const old = http.createServer(async (req, res) => {
+      if (req.url === '/api/service/shutdown') {
+        let body = ''
+        for await (const chunk of req) body += chunk
+        asked = JSON.parse(body).reason
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ service: 'cowart-canvas', pid: sleeper.pid, port, canvasDir: stuck }))
+    })
+    await listen(old, port)
+    await writeFile(canvasLockFile(stuck), JSON.stringify({ pid: sleeper.pid, port, canvasDir: stuck, startedAt: new Date().toISOString(), id: 'stuck-old' }))
+    try {
+      const child = spawn(process.execPath, [SERVICE_ENTRY, '--port', String(port), '--replace', String(sleeper.pid)], {
+        env: { ...process.env, ...FAST, COWART_CANVAS_DIR: stuck, COWART_SESSION_NAMES_FILE: join(projectDir, 'hand-names.json') },
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      const exited = new Promise((resolve) => child.on('exit', resolve))
+      // Before the old service is asked to stop, the canvas is the new one's.
+      await waitFor(() => canvasOwner(stuck)?.pid === child.pid, { timeoutMs: 15_000, what: 'the new service to take the canvas over' })
+      await waitFor(() => asked, { what: 'the old service to be asked to stop' })
+      assert.match(asked, /^replaced by \S+, pid \d+$/)
+      assert.equal(await exited, EXIT_REPLACED_STUCK)
+      const lock = JSON.parse(await readFile(canvasLockFile(stuck), 'utf8'))
+      assert.equal(lock.id, 'stuck-old', 'the canvas was not given back to the old service')
+      assert.ok(lock.stoppingAt, 'the old service is not counted as stopping')
+    } finally {
+      sleeper.kill()
+      await closeServer(old)
     }
   })
 
