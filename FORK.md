@@ -53,7 +53,10 @@ adapters/
     skills/     Codex 版共享画布、打开、生图、按标注改图 skills；插件使用这里，根 skills/ 保留上游版本
   scripts/      build-artifacts.mjs（构建 / 检查适配层发布产物）、probe-cold-install.mjs（无依赖安装冷启动验证）、
                 fix-page-order.mjs（0.2.9 之前服务给第 36 页起建的页都排在同一个 index `aa`，页菜单顺序乱；
-                它经画布服务按建页时间重排这些页，不带 --apply 只列方案）
+                它经画布服务按建页时间重排这些页，不带 --apply 只列方案）、
+                Codex 发版用的 bump-release.mjs（升插件 cachebuster 和适配层版本）、make-release-copy.mjs（从提交生成本地发布副本）、
+                verify-release.mjs（核对发布副本或已装的插件缓存，再隔离起桥）、switch-codex-entry.mjs（把 Codex 的入口换到新副本），
+                用法见「分支与同步」和「Codex 任务切换与恢复」；这几个只在开发机上跑，不进发布产物
   generated/    已打包的宿主桥、画布服务、监听入口和发布清单；安装后不用 npm install
 FORK.md         本文件
 ```
@@ -65,7 +68,7 @@ FORK.md         本文件
 - 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成和反馈测试），都过了再推送。
 - 有补丁点以后，改了 `src/` 就要在仓库根目录 `npm ci && npm run build:artifacts` 重新生成 `mcp/generated/`，并和源码一起提交；`npm run check:artifacts` 能核对两者是否一致。
 - 改动适配层后运行 `npm --prefix adapters run build:artifacts` 和 `check:artifacts`，提交 `adapters/generated/`；`npm --prefix adapters run probe:cold` 用临时目录中的发布文件验证不依赖 `node_modules`、既有服务和真实用户画布。原生 Codex widget 的视频、外链和完整交互仍需宿主验收，协议测试不能替代。
-- **Git marketplace 发布也要更新外层插件版本**：只有 `adapters/package.json` 版本或 `main` 提交变了，已安装的 Codex 仍可能复用 `.codex/plugins/cache/<marketplace>/cowart/<插件版本>`。发布用 plugin-creator 的 `update_plugin_cachebuster.py` 给 `.codex-plugin/plugin.json` 加一个新的 `+codex.<时间戳>` 后缀，同时同步根 `package.json`、`package-lock.json` 和 `plugin.json` 的版本，再构建两套产物、检查并推送。此后通过 `codex plugin marketplace upgrade cowart-github` / `codex plugin add cowart@cowart-github` 更新安装时，必须核对实际缓存中的适配层版本、build 与启动入口，不能只看 marketplace 指向 `main`。
+- **Git marketplace 发布也要更新外层插件版本**：只有 `adapters/package.json` 版本或 `main` 提交变了，已安装的 Codex 仍可能复用 `.codex/plugins/cache/<marketplace>/cowart/<插件版本>`。发布先跑 `node adapters/scripts/bump-release.mjs [<适配层版本>]`（不给版本就把适配层的补丁号加一，`--dry-run` 只列要改的、不写）：给 `.codex-plugin/plugin.json` 换一个新的 `+codex.<UTC YYYYMMDDHHMMSS>` 后缀并同步根 `package.json`、`package-lock.json` 和 `plugin.json`，同时升 `adapters/package.json`、`adapters/package-lock.json` 的版本（版本大的服务才换得掉正在跑的旧服务，见「画布服务」的版本替换）；每处版本按出现次数核对，有一处对不上就一个文件都不写；只换版本串，换行照 git 里的原样（都是 LF，只有上游提交的 `.codex-plugin/plugin.json` 是 CRLF），工作区换行跟 git 不一致（CRLF 检出）时拒绝。再先根目录、后适配层构建两套产物（适配层的发布清单记着 `mcp/generated` 的哈希，那里也带插件版本），检查并推送。（原先用 plugin-creator 的 `update_plugin_cachebuster.py`，2026-10-08 Codex 更新后本机已没有这个 skill。）此后通过 `codex plugin marketplace upgrade cowart-github` / `codex plugin add cowart@cowart-github` 更新安装时，必须核对实际缓存中的适配层版本、build 与启动入口，不能只看 marketplace 指向 `main`：`node adapters/scripts/verify-release.mjs <缓存目录>` 核这些和发布清单的哈希，再用临时的令牌目录和画布起一次它的桥。
 - **Windows 上构建前必须按 LF 检出**：`git config core.autocrlf false`、`git config core.eol lf`，再重新检出（`git rm -r --cached -q . && git reset -q --hard`，先把未提交的改动存好）。否则 `index.html` 和 SVG 图标会以 CRLF 被打进页面，产物跟上游对不上。
 
 ## 已核实的接缝（2026-09-11，2026-09-12 补充）
@@ -132,7 +135,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 
 ## Codex 任务切换与恢复（2026-09-15）
 
-- Codex 可注册已验证的本地发布副本 `~/.cowart/releases/<适配层版本>-<提交>/adapters/codex/bin/start.mjs`，避免直接加载正在开发的工作目录。副本按 `adapters/generated/release-manifest.json` 校验并复制产物/资源，再带上发布清单与启动脚本；升级时发布一个新目录，备份配置后只更新 `cowart_mcp` 的入口，并从实际安装目录验证版本与资源哈希。不能以工作目录已更新代替安装验证。
+- Codex 可注册已验证的本地发布副本 `~/.cowart/releases/<适配层版本>-<提交>/adapters/codex/bin/start.mjs`，避免直接加载正在开发的工作目录。副本按 `adapters/generated/release-manifest.json` 校验并复制产物/资源，再带上发布清单与启动脚本；升级时发布一个新目录，备份配置后只更新 `cowart_mcp` 的入口，并从实际安装目录验证版本与资源哈希。不能以工作目录已更新代替安装验证。三步各有脚本（`adapters/scripts/`）：`make-release-copy.mjs [<提交>]` 从提交的 git 对象（不读工作区）取文件、逐个核哈希，生成 `<版本>-<短提交>`，已有的副本不动；`verify-release.mjs <副本> --like <上一个副本>` 核哈希和文件布局，再用临时令牌目录、临时画布和 43600–43699 的随机端口起它的桥，确认服务跑的就是这个副本，全机的 43240 和真实画布碰不到；`switch-codex-entry.mjs <副本>` 备份 `config.toml` 后只改 `cowart_mcp` 入口里的副本目录名（`--dry-run` 只看），Codex 重开才生效。
 
 - 原生工具调用先转成标准 JSON，再经 MCP Apps 的 postMessage 发出；可选字段的 `undefined` 不能穿过宿主的 JSON 参数校验（否则为 `-32602 Invalid tool call params`）。浏览器测试在转发到 stdio 之前执行同样的严格校验，不能靠测试桥的 JSON 序列化隐藏该错误。
 - 可缓存的 widget HTML 只含静态配置，当前 session、负责页和存储位置从当前 MCP 连接的 bootstrap 获取，读取和轮询必须等握手完成。打开空闲页时自动接管；其他会话已负责的页仍需明确点击接管。按钮把当前页登记与接管作为一次操作，并直接显示失败原因，成功后立即应用返回的负责状态。
