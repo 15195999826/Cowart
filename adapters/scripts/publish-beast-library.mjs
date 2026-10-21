@@ -15,13 +15,14 @@
 //    adapters/claude/beast-library/INSTALL.md with {{VERSION}} and {{COMMIT}} filled in. The install
 //    notes offer two kinds, one per machine: 省心版 (this package, not to be edited) and 开发版 (a clone
 //    of the public GitHub repo reset to {{COMMIT}} with its remote removed, the colleague's own from
-//    then on), so the commit has to be on origin/main.
+//    then on), so the commit has to be on origin/main. README.md (the shelf's summary for people) and
+//    cover.png / .jpg / .webp (the shelf's cover) in adapters/claude/beast-library/ go in as they are.
 // 3. `beast skill put` the book. The package goes up before the book: the other way round a colleague
 //    could borrow a book whose package is not in the locker yet.
 //
 //   node adapters/scripts/publish-beast-library.mjs [<commit>] [--book-rev <n>] [--dry-run]
 //
-// --book-rev <n> republishes the book alone after INSTALL.md / SKILL.md wording changes: the library
+// --book-rev <n> republishes the book alone after INSTALL.md / SKILL.md / README.md / cover changes: the library
 // refuses changed content under the same version, so the book becomes <version>.<n> (0.2.13.1 sorts
 // after 0.2.13) while the package and the install notes stay on <version>.
 //
@@ -99,6 +100,10 @@ try {
     throw new Error(`${full.slice(0, 7)} is not on origin/main yet: push it first (the book's 开发版 clones GitHub and resets to it)`)
   }
   writeFileSync(join(book, 'INSTALL.md'), install.replaceAll('{{VERSION}}', version).replaceAll('{{COMMIT}}', full))
+  const shelf = join(REPO_ROOT, 'adapters/claude/beast-library')
+  for (const name of readdirSync(shelf)) {
+    if (name === 'README.md' || /^cover\.(png|jpe?g|webp)$/i.test(name)) cpSync(join(shelf, name), join(book, name))
+  }
   const note = join(work, 'note.md')
   writeFileSync(note, [
     `# Cowart ${version}（Claude Code 桌面版运行包）`,
