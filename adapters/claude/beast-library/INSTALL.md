@@ -12,7 +12,7 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
 
 只支持 **Claude Code 桌面版**（Windows / Mac）：Cowart 的 MCP 薄桥只在桌面版里提供工具，画布要在桌面版的 Browser 面板里开。
 你（借书人的 AI）不是跑在 Claude Code 桌面版里，就停下来告诉用户：这本书在他的环境里用不了。
-走公司中转的桌面版（环境变量 `CLAUDE_CODE_ENTRYPOINT` 是 `claude-desktop-3p`）也是桌面版，能用——注册 MCP 时要带 `COWART_ALLOW_CLI=1`（3A 第 6 步、3B 第 5 步的命令里已经带上了）。
+走公司中转的桌面版（环境变量 `CLAUDE_CODE_ENTRYPOINT` 是 `claude-desktop-3p`）也是桌面版，能用。
 
 然后**问用户要哪一种**（一台电脑上只留一种，第 1 节会把另一种清掉）：
 
@@ -75,12 +75,11 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
 6. 注册 MCP（先告诉用户要加一条用户级 MCP「cowart」）。**node 和脚本都写绝对路径**（Mac 上桌面版不一定带着终端的 PATH）：
 
    ```bash
-   claude mcp add cowart -s user -e COWART_ALLOW_CLI=1 -- "<node 的绝对路径>" "<家目录>/.cowart/releases/cowart-{{VERSION}}/adapters/generated/cowart-claude-mcp.mjs"
+   claude mcp add cowart -s user -- "<node 的绝对路径>" "<家目录>/.cowart/releases/cowart-{{VERSION}}/adapters/generated/cowart-claude-mcp.mjs"
    ```
 
    node 的绝对路径：Mac `command -v node`；Windows `(Get-Command node).Source`。Windows 上路径里的反斜杠换成 `/` 也行。
-   `COWART_ALLOW_CLI=1` 是给公司中转的桌面版用的：cowart 只认入口叫 `claude-desktop` 的会话，中转版叫 `claude-desktop-3p`，
-   不带它就一个工具都不给（`claude mcp list` 照样显示 Connected，看不出来）。官方桌面版带上也不碍事，只是终端里的 `claude` 命令行会话也会有 cowart 工具。
+   以前照 0.2.13 的说明注册时带过 `-e COWART_ALLOW_CLI=1`（给公司中转桌面版用的）：0.2.14 起中转版直接算桌面版，第 1 步注销后照上面这条重新注册、不带它就行。
 7. skill：照接入清单把这本书的 SKILL.md 放进 `~/.claude/skills/cowart/`（第 1 步已经把链接、旧的那份清掉了；还在就先回第 1 步第 3 条）。
 
 ## 3B. 开发版：clone 源码
@@ -102,10 +101,8 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
 5. 注册 MCP（先告诉用户），指向**源码入口**——改了适配层代码，重开会话就生效：
 
    ```bash
-   claude mcp add cowart -s user -e COWART_ALLOW_CLI=1 -- "<node 的绝对路径>" "<目录>/adapters/claude/bin/cowart-claude-mcp.mjs"
+   claude mcp add cowart -s user -- "<node 的绝对路径>" "<目录>/adapters/claude/bin/cowart-claude-mcp.mjs"
    ```
-
-   `COWART_ALLOW_CLI=1` 为什么要带，见 3A 第 6 步。
 
 6. skill：`node "<目录>/adapters/claude/scripts/install-skill.mjs"`，把 `~/.claude/skills/cowart` 链接到仓库里的
    `adapters/claude/skills/cowart`——**这本书的 SKILL.md 不用放**（接入清单的「放进 skill 目录」那一步照这里来），
@@ -121,13 +118,14 @@ MCP 注册只对新会话生效：请用户在桌面版里**新开一个会话**
 ## 5. 找不到 `claude` 命令
 
 告诉用户，请他在终端里能用 `claude` 之后再来；或者由你备份 `~/.claude.json` 后，在顶层 `mcpServers` 里加
-`"cowart": {"type": "stdio", "command": "<node 绝对路径>", "args": ["<脚本绝对路径>"], "env": {"COWART_ALLOW_CLI": "1"}}`
+`"cowart": {"type": "stdio", "command": "<node 绝对路径>", "args": ["<脚本绝对路径>"], "env": {}}`
 （改之前把要加的这几行给用户看，用户点头再改；注销就是删掉这一项）。
 
 ## 6. 验证（在新会话里）
 
 - 新会话的工具里有 `mcp__cowart__…`（比如 `render_cowart_canvas_widget`）。`claude mcp list` 显示 Connected 不算数：没工具时它也是 Connected。
-  新会话系统提示里 cowart 那段说「这个会话的入口是 …，所以没有 cowart 工具」= 注册时漏了 `COWART_ALLOW_CLI=1`，回 3A 第 6 步 / 3B 第 5 步重新注册。
+  新会话系统提示里 cowart 那段说「这个会话的入口是 …，所以没有 cowart 工具」= cowart 认为这个会话不是桌面版。用户确实在桌面版里，就把那句原话（带入口名）告诉用户、
+  转给作者；临时绕法是注册时加 `-e COWART_ALLOW_CLI=1`（代价是终端里的 `claude` 命令行会话也会有 cowart 工具）。
 - 用户说「打开 Cowart 画布」：Browser 面板打开画布页面，顶部显示这个会话起的名字。
 - 起不来：看 `~/.cowart-claude/service.log` 最后几十行，把报错告诉用户。
 - 回报时说清装的是**省心版 {{VERSION}}** 还是**开发版（从 {{COMMIT}} 起步、已脱钩，目录在哪）**，以及第 1 步清掉了什么。

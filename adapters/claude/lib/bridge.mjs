@@ -20,8 +20,14 @@ const LISTENER_SCRIPT = (process.env.COWART_BUNDLED === '1'
   ? join(ADAPTERS_DIR, 'generated', 'cowart-listen.mjs')
   : join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs')).replaceAll('\\', '/')
 const HOST = 'claude'
-// The canvas needs the desktop's Browser pane; other entry points get no tools.
+// The canvas needs the desktop's Browser pane; other entry points get no tools. Desktop builds
+// other than the official one add a suffix to the entry point (the relay build sends
+// claude-desktop-3p) and have the same Browser pane, so they count as the desktop too.
 const DESKTOP_ENTRYPOINT = 'claude-desktop'
+
+export function isDesktopEntrypoint(entrypoint) {
+  return entrypoint === DESKTOP_ENTRYPOINT || String(entrypoint).startsWith(`${DESKTOP_ENTRYPOINT}-`)
+}
 
 const RENDER_TOOL = 'render_cowart_canvas_widget'
 const CANVAS_STATE_TOOL = 'get_cowart_canvas_state'
@@ -281,7 +287,7 @@ function requestList({ requests, listenerConnected }, command) {
 export async function startClaudeBridge() {
   const log = (message) => process.stderr.write(`[cowart-claude] ${message}\n`)
   const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
-  const enabled = !entrypoint || entrypoint === DESKTOP_ENTRYPOINT || process.env.COWART_ALLOW_CLI === '1'
+  const enabled = !entrypoint || isDesktopEntrypoint(entrypoint) || process.env.COWART_ALLOW_CLI === '1'
   const server = new Server(
     { name: 'cowart', version: VERSION },
     { capabilities: { tools: {} }, instructions: enabled ? INSTRUCTIONS : disabledInstructions(entrypoint) }

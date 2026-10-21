@@ -65,7 +65,7 @@ npm install --prefix adapters
 claude mcp add cowart -s local -- node C:/WebProjects/Cowart/adapters/claude/bin/cowart-claude-mcp.mjs
 ```
 
-新开 Claude Code 会话后生效。工具只在桌面版提供：会话入口（`CLAUDE_CODE_ENTRYPOINT`）不是 `claude-desktop` 时（命令行版、VS Code 插件等），cowart 不提供工具、也不拉起画布服务。
+新开 Claude Code 会话后生效。工具只在桌面版提供：会话入口（`CLAUDE_CODE_ENTRYPOINT`）是 `claude-desktop` 或它带后缀的变体（公司中转版是 `claude-desktop-3p`）才算桌面版；别的入口（命令行版、VS Code 插件等）cowart 不提供工具、也不拉起画布服务。
 
 再把 Claude 版的 skill 链接进 Claude Code 的全局 skills 目录（一次就行；仓库挪了位置再跑一次，`uninstall:skill` 移除）：
 
@@ -131,7 +131,7 @@ node adapters/claude/scripts/dev-host.mjs --project <目录> [--session <标识>
 - **同一时刻改同一条记录，后保存的覆盖**：页面保存只交差异，两个面板改不同的东西互不干扰；但同一条记录（同一张卡片的位置、同一段文字）在 1.6 秒的同步间隔里被两个面板同时改，后保存的那份覆盖先保存的。
 - **视频要画布服务在线才看得到**：视频不像图片那样缓存在页面内存里，服务不在时（比如手动停掉），已打开的画布上视频会变成空框；重新打开画布即可恢复。
 - **自动播放绕开了「减少动态效果」**：tldraw 遇到系统开了这个设置就不自动播放，看起来像静态图。适配层改为每段视频加载后自动静音循环播放一次。
-- **只在桌面版提供**：命令行版、VS Code 插件里 cowart 没有工具（设 `COWART_ALLOW_CLI=1` 可放开）。
+- **只在桌面版提供**：命令行版、VS Code 插件里 cowart 没有工具（设 `COWART_ALLOW_CLI=1` 可放开）。公司中转版桌面版（`claude-desktop-3p`）也算桌面版，0.2.13 及以前要靠 `COWART_ALLOW_CLI=1` 才有工具。
 - **外部网站嵌入用不了**：页面安全策略只放行本地内容，tldraw 自带的「嵌入」（YouTube、Figma、GitHub Gist 等）会是空白，所以菜单入口已去掉；要参考网页请用「网页参考」截图卡片。
 - **长网页卡片放大看顶部时，工具栏会消失**：tldraw 的图片工具栏只在卡片中心在屏幕内时出现，「照这个做 HTML」也在这一排里；缩小一点让卡片中心回到屏幕里就有了。
 - **网页截图要本机有 Chrome 或 Edge**：Edge 152 在部分 Windows 机器上无头模式一启动就退出，所以优先用 Chrome；需要登录才能看的页面截到的是未登录的样子。

@@ -90,7 +90,7 @@ FORK.md         本文件
    都没设置时跟上游完全一样。
 5. 共用面板先用 `prepare_cowart_generation_request` 保存上传素材、拼请求；猛兽 AI 图片 / AI 视频交画布服务直接执行，其余请求进同一队列并按页路由。Claude / ZCode 由后台跑的监听唤醒（来了请求才退出）；Codex 由负责会话自己的 widget 领取，再用 `ui/message` 通知请求编号，模型通过 `get_cowart_request` 读取原文与状态。
 6. 页面的存取调用都带上 `toolOutput` 里的 `projectDir` / `canvasDir`（`src/cowartClient.js` 的 `serverToolArgs`），上游工具也都接受 `canvasDir`。→ 一个上游子进程能服务任何画布目录；画布服务在入口把它们统一换成全机那一张（见「画布服务」的一张画布）。
-7. Claude Code 桌面版给它起的 MCP 服务进程传 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`、`CLAUDE_CODE_HOST_SESSION_ID`（桌面版会话 id）和 `CLAUDE_CODE_SESSION_ID`，进程工作目录是会话的项目目录（2026-09-12 读正在跑的 MCP 进程的环境核实）。命令行版和桌面版读同一份 MCP 配置，只能靠入口变量区分。→ 桥用会话 id 当会话标识，按入口决定提不提供工具。
+7. Claude Code 桌面版给它起的 MCP 服务进程传 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`、`CLAUDE_CODE_HOST_SESSION_ID`（桌面版会话 id）和 `CLAUDE_CODE_SESSION_ID`，进程工作目录是会话的项目目录（2026-09-12 读正在跑的 MCP 进程的环境核实）。命令行版和桌面版读同一份 MCP 配置，只能靠入口变量区分。公司中转版桌面版（`%LOCALAPPDATA%\Claude-3p`）传的是 `claude-desktop-3p`，同样有 Browser 面板（2026-10-21 在 company2 的会话记录里核实）。→ 桥用会话 id 当会话标识，按入口决定提不提供工具：`claude-desktop` 和 `claude-desktop-<后缀>` 都算桌面版。
 8. 页面的同步模型（`src/App.jsx` 的 `loadRemoteCanvasSnapshot` / `saveCanvas`）：每 1.6 秒拉一次整张快照（适配层让版本没变的轮询只回「没变」，见「画布服务」的轮询带版本），本地有未保存改动时跳过不应用；保存是整张快照（`getStoreSnapshot()`），远端同步只增改、只删 shape / binding，从不删页、也不删 asset 记录（见补丁点）；上游存盘时会把保存里缺的页整个目录删掉（`mcp/lib/canvas-storage.mjs` 的 `saveStoredCanvasSnapshot`）。→ 适配层在保存请求上多带一份差异（`cowartDelta`），服务按差异合并（见「画布服务」），上游文件不用改。
 
 ## 宿主差异
@@ -132,7 +132,7 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
   - 以前是先停再拉，2026-10-10 本机因此来回替换：现役是 Codex 发布副本 0.2.10，每开一个 Claude 会话（仓库 0.2.11，版本大）就停掉它，但几十个 Codex 桥重连时抢先拉起 0.2.10（打包的单文件启动快，停后约 0.4 秒就拿到锁；仓库源码的服务那次 2.3 秒后才去拿锁），Claude 桥替换的机会已经用掉，只好沿用 0.2.10。新代码一直上不去，每开一个 Claude 会话所有画布页面断一下（视频请求中断）。
   - 检查：`COWART_SERVICE_BUILD_SALT_FILE` 模拟改了代码（写了它之后启动的桥和服务都算新代码）；`multi-session-test` 另把发布产物拷到临时目录、版本号改成 0.0.1 当「别的代码目录」，10 个它的桥连着它的服务，再起一个本仓库的桥（`NODE_OPTIONS=--import` 让它的进程晚 1.5 秒起，照那天的情形）：先停再拉时每次都是 0.0.1 抢回来，现在都是本仓库的服务留下、11 个桥都连着它。
 - **空闲退出**：没有会话连着、也没有打开的画布页面，10 分钟后退出（`COWART_SERVICE_IDLE_MS` 可改）。
-- **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop` 时，桥不提供工具、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
+- **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop`、也不是 `claude-desktop-<后缀>`（中转版 `claude-desktop-3p`）时，桥不提供工具、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
 - Claude / ZCode 网页和 Codex 原生 MCP Apps widget 使用相同的页面功能与差异保存脚本；宿主传输分别是 HTTP / SSE 和 MCP Apps 工具调用 / 轮询。共享服务保存相同的 page 与素材，切换宿主不用转换画布。
 - **在资源管理器中显示**（右键菜单）：选中一张背后有画布文件的卡片（图片、网页卡片、视频、AI HTML）右键，「复制为 / 导出为 / 下载原图」下面多这一项（Mac 上叫「在访达中显示」）。页面脚本（`canvas-chrome.js`）只把卡片的素材地址交给页面工具 `reveal_cowart_file`，画布服务（`reveal-file.mjs`）只认画布目录里的文件，在本机打开：Windows 由一段隐藏的 PowerShell 复用已经开着这个文件夹的资源管理器窗口（没有才新开）、用 Shell COM 选中文件，再借前台线程的输入把窗口提到最前（后台进程开的窗口会被 Windows 压在用户点的程序后面；服务直接起的 `explorer /select` 也没选中文件）；Mac 用 `open -R`，Linux 只开文件夹。服务就在本机，所以 Claude Code、ZCode、Codex 都能用。检查用 `COWART_REVEAL_DRY_RUN=1` 只核对路径、不开窗口。
 - **素材加载**（2026-10-10）：Claude / ZCode 的页面由画布服务直接提供，图片、视频都直接用服务的 `/page-assets/` 地址（页面桥的 `directAssetUrl`），HTML 草稿和 Slides 里的图片也是；服务给素材带 `ETag` / `Last-Modified`、`cache-control: no-cache`，浏览器每次用前问一句，没变回 304（切回看过的页每张图只传几百字节），带 `If-Range` 而文件改过时回整个新文件，不把新旧两份拼起来。原来图片经 `read_cowart_page_asset` 转成 base64 再在页面里解码成 Blob，一张 2 MB 的图要传约 2.7 MB 文字，Blob 一直留在页面内存里。Codex 原生 widget 连不到服务，照旧经 MCP 读。

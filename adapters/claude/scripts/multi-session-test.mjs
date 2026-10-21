@@ -808,6 +808,17 @@ try {
     assert.ok((await allowed.client.listTools()).tools.some((tool) => tool.name === 'render_cowart_canvas_widget'))
     await allowed.close()
   })
+
+  await step('the relay desktop build (claude-desktop-3p) counts as the desktop', async () => {
+    const relay = await bridgeFor('multi-relay-desktop', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop-3p' })
+    assert.ok((await relay.client.listTools()).tools.some((tool) => tool.name === 'render_cowart_canvas_widget'))
+    assert.doesNotMatch(relay.client.getInstructions() ?? '', /所以没有 cowart 工具/)
+    await relay.close()
+
+    const lookalike = await bridgeFor('multi-desktop-lookalike', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktopish' })
+    assert.deepEqual((await lookalike.client.listTools()).tools, [])
+    await lookalike.close()
+  })
 } finally {
   for (const child of listenerRuns) child.kill()
   for (const stream of streams) stream.close()
