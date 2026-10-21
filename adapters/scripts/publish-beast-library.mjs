@@ -19,7 +19,11 @@
 // 3. `beast skill put` the book. The package goes up before the book: the other way round a colleague
 //    could borrow a book whose package is not in the locker yet.
 //
-//   node adapters/scripts/publish-beast-library.mjs [<commit>] [--dry-run]
+//   node adapters/scripts/publish-beast-library.mjs [<commit>] [--book-rev <n>] [--dry-run]
+//
+// --book-rev <n> republishes the book alone after INSTALL.md / SKILL.md wording changes: the library
+// refuses changed content under the same version, so the book becomes <version>.<n> (0.2.13.1 sorts
+// after 0.2.13) while the package and the install notes stay on <version>.
 //
 // --dry-run builds the package and the book in a temporary folder, prints where they are and stops.
 // The beast CLI is found at COWART_BEAST_CLI, else ~/.beast/bin/beast.mjs (as the canvas service finds it).
@@ -32,8 +36,12 @@ import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SECTION = 'cowart'
-const DRY_RUN = process.argv.includes('--dry-run')
-const [commit = 'HEAD'] = process.argv.slice(2).filter((arg) => arg !== '--dry-run')
+const args = process.argv.slice(2)
+const DRY_RUN = args.includes('--dry-run')
+const revAt = args.indexOf('--book-rev')
+const BOOK_REV = revAt === -1 ? null : args.splice(revAt, 2)[1]
+if (BOOK_REV !== null && !/^[1-9]\d*$/.test(BOOK_REV ?? '')) throw new Error('--book-rev takes a positive whole number')
+const [commit = 'HEAD'] = args.filter((arg) => arg !== '--dry-run')
 
 const git = (args) => execFileSync('git', ['-C', REPO_ROOT, ...args], { encoding: 'utf8' }).trim()
 const full = git(['rev-parse', '--verify', `${commit}^{commit}`])
@@ -83,7 +91,7 @@ try {
   if (!front) throw new Error('adapters/claude/skills/cowart/SKILL.md has no front matter')
   const fields = front[1].split('\n').filter((line) => !line.startsWith('version:'))
   const at = fields.findIndex((line) => line.startsWith('name:'))
-  fields.splice(at + 1, 0, `version: ${version}`)
+  fields.splice(at + 1, 0, `version: ${BOOK_REV ? `${version}.${BOOK_REV}` : version}`)
   writeFileSync(join(book, 'SKILL.md'), `---\n${fields.join('\n')}\n---\n${skill.slice(front[0].length)}`)
   const install = readFileSync(join(REPO_ROOT, 'adapters/claude/beast-library/INSTALL.md'), 'utf8')
   // {{COMMIT}}: the 开发版 path clones the GitHub repo and resets to this commit, so origin/main must have it

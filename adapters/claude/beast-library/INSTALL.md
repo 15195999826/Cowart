@@ -31,18 +31,23 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
 | 查什么 | 怎么查 | 是哪一种 |
 |---|---|---|
 | 用户级 MCP 注册 | `claude mcp get cowart`，看命令里的脚本路径 | 在 `~/.cowart/releases/cowart-<版本>/` 下 = 省心版；在别的目录（一个 clone）下 = 开发版 |
-| 项目级 MCP 注册 | 读 `~/.claude.json`，找 `projects.<目录>.mcpServers` 里叫 `cowart` 的 | 以前在某个项目里单独注册过的，都算多出来的一份 |
-| skill | `~/.claude/skills/cowart` | 普通文件夹 = 省心版；链接（Windows junction / Mac symlink）到某个 clone = 开发版 |
-| 运行包 | `~/.cowart/releases/cowart-*` | 省心版装过的版本 |
-| Codex 插件 | 用户也用 Codex 的话：`codex plugin list` 里有没有 cowart | 另一份，告诉用户、问要不要卸 |
+| 项目级 MCP 注册 | 读 `~/.claude.json`，找 `projects.<目录>.mcpServers` 里叫 `cowart` 的 | 以前在某个项目里单独注册过的，都算多出来的一份。**项目级优先于用户级**：不清的话，在那个项目里开的会话还走旧的那份 |
+| skill | `~/.claude/skills/cowart` | 普通文件夹 = 省心版；链接（Windows junction / Mac symlink）到某个 clone = 开发版。Git Bash 的 `ls` 会把 junction 也显示成链接，拿不准用 PowerShell `(Get-Item <路径>).LinkType` |
+| 运行包 | `~/.cowart/releases/` 下**只认 `cowart-<版本>` 开头的目录** | 省心版装过的版本。`<版本>-<提交>`（如 `0.2.13-d51159a`）这种是作者开发机上 Codex 用的发布副本，不归这本书管，查到也别动 |
+| Codex | `codex plugin list` 里的 cowart，以及 `~/.codex/config.toml` 里手工注册的 `[mcp_servers.cowart_mcp]` | 另一份，告诉用户、问要不要卸 |
 
 要装的跟已有的是同一种、同一个版本：什么都不用清，直接跳到第 6 步验证。否则按下面清掉另一种（以及多出来的项目级注册）：
 
-1. **先停掉正在跑的画布服务**：`node "<已有那份的目录>/adapters/generated/cowart-service.mjs" --stop`（开发版也可以用
-   `adapters/service/bin/cowart-service.mjs --stop`）。不停的话，新旧版本号一样时新装的那份会接着用旧服务。
-2. 注销 MCP：`claude mcp remove cowart -s user`；项目级的在那个项目目录里 `claude mcp remove cowart -s local`。
-3. skill：`~/.claude/skills/cowart` 是链接就只删链接（**别删链接指向的 clone**）；是普通文件夹就整个删。
-4. 省心版的运行包 `~/.cowart/releases/cowart-*`：删掉。开发版的 clone 目录**不删**——那是用户自己的代码，告诉用户它已经不再被使用。
+1. **画布服务**：`node "<已有那份的目录>/adapters/generated/cowart-service.mjs" --status` 看正在跑的服务和连着它的会话。
+   只有它跑的正是**要删掉的那份**（省心版的旧运行包）时，才 `--stop` 停掉（不停的话，新旧版本号一样时新装的那份会接着用这个已经删了目录的旧服务）。
+   服务是别的东西起的（比如 Codex 那份、或者要留着的 clone）就**不停**，告诉用户：停了会打断那边开着的画布；版本号一样时新装的那份会直接连上它，不影响用。
+2. 注销 MCP：用户级 `claude mcp remove cowart -s user`；项目级的**进到那个项目目录里**跑 `claude mcp remove cowart -s local`。
+   项目目录已经不在了（在那里跑不了命令）：备份 `~/.claude.json`，把 `projects.<目录>.mcpServers.cowart` 那一项删掉（先给用户看要删的那几行）。
+3. skill：`~/.claude/skills/cowart` 是**链接就只删链接本身**——Windows `cmd /c rmdir "%USERPROFILE%\.claude\skills\cowart"`；
+   Mac `rm ~/.claude/skills/cowart`（不带 `-r`、末尾不加 `/`）。**别用** `Remove-Item -Recurse`、`rm -rf`，也别直接往链接里拷文件：
+   都会穿过链接改掉、删掉它指向的 clone 里的源码。是普通文件夹就整个删。
+4. 省心版的运行包 `~/.cowart/releases/cowart-<旧版本>/`：删掉。开发版的 clone 目录**不删**——那是用户自己的代码，告诉用户它已经不再被使用。
+   clone 有未提交的改动、或者还连着远程仓库（`git -C <clone> status` / `git remote -v`）时，说明它可能是谁正在用的开发环境，先特别提醒用户再注销。
 5. **别动** `~/.cowart/canvas`（画布本身）、`~/.cowart-claude/`（会话名字、令牌、日志）：两种版本共用，切换不丢画布。
 
 ## 2. Node ≥ 22.12（两种都要；AI 查，没有请用户装）
@@ -53,15 +58,17 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
 
 ## 3A. 省心版：运行包 {{VERSION}}
 
-1. 网关地址看 `~/.beast/config.json` 的 `server`（比如 `http://beast.o.com`）。
-2. 下载到临时目录：`curl -fL -o cowart-{{VERSION}}.zip "<server>/api/locker/file/cowart/cowart-{{VERSION}}.zip"`
-3. 核对：`beast locker ls cowart --json` 里这个文件的 `sha256`，跟下载下来的算出来的一样才往下走
+1. 网关地址看 `~/.beast/config.json` 的 `server`（以那里写的为准，比如 `http://beast.o.com` 或 `http://192.168.50.246:8020`）。
+2. 下载到一个新建的空临时目录：`curl.exe -fL -o cowart-{{VERSION}}.zip "<server>/api/locker/file/cowart/cowart-{{VERSION}}.zip"`
+   （PowerShell 里的 `curl` 是别名、参数不认，要写 `curl.exe`；Mac / Git Bash 写 `curl`）。
+3. 核对：`beast locker ls cowart --json` 里 `cowart-{{VERSION}}.zip` 这一项的 **`sha256` 字段**，跟下载下来的算出来的一样才往下走
    （Windows：`(Get-FileHash cowart-{{VERSION}}.zip).Hash`；Mac：`shasum -a 256 cowart-{{VERSION}}.zip`；大小写不用管）。
+   同一项的说明（`note`）里还有一串「发布清单 sha256」，那是运行包里清单文件的指纹，**不是 zip 的**，别拿它比。
 4. 解压到 `~/.cowart/releases/`（目录没有就建），解出来是 `~/.cowart/releases/cowart-{{VERSION}}/`：
    - Windows：PowerShell `Expand-Archive -Path cowart-{{VERSION}}.zip -DestinationPath "$HOME\.cowart\releases"`
      （Git Bash 里的 `tar` 解不了 zip，别用）；
    - Mac：`mkdir -p ~/.cowart/releases && unzip -q cowart-{{VERSION}}.zip -d ~/.cowart/releases`。
-5. 确认 `~/.cowart/releases/cowart-{{VERSION}}/adapters/generated/cowart-claude-mcp.mjs` 在，`release-origin.json` 里的
+5. 解出来的顶层目录就是 `cowart-{{VERSION}}`（列一下 `~/.cowart/releases/` 确认），`~/.cowart/releases/cowart-{{VERSION}}/adapters/generated/cowart-claude-mcp.mjs` 在，`release-origin.json` 里的
    `version` 是 `{{VERSION}}`。下载的 zip 删掉。
 6. 注册 MCP（先告诉用户要加一条用户级 MCP「cowart」）。**node 和脚本都写绝对路径**（Mac 上桌面版不一定带着终端的 PATH）：
 
@@ -70,7 +77,7 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
    ```
 
    node 的绝对路径：Mac `command -v node`；Windows `(Get-Command node).Source`。Windows 上路径里的反斜杠换成 `/` 也行。
-7. skill：照接入清单把这本书的 SKILL.md 放进 `~/.claude/skills/cowart/`。
+7. skill：照接入清单把这本书的 SKILL.md 放进 `~/.claude/skills/cowart/`（第 1 步已经把链接、旧的那份清掉了；还在就先回第 1 步第 3 条）。
 
 ## 3B. 开发版：clone 源码
 
