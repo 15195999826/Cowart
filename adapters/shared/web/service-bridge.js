@@ -371,6 +371,88 @@
     return { canvasLoaded, adjustFirstView, goTo, setConnected, setState, removePages, current, enter, applyRole, names }
   })()
 
+  // ---- Following the session's puts ------------------------------------------------------
+  // What this pane's session just put on the page on screen (reveal-shapes) comes into view
+  // once it synced: the camera pans to it, zooming out only when it does not fit. What it put
+  // in the last few seconds counts too, so a row of puts ends up in view as a whole. Not while
+  // the user works the canvas, and never to another page. 10-22: the first group on a new page
+  // sat half under the top bar until the user pressed Shift+1.
+
+  const follow = (() => {
+    const WAIT_MS = 8000
+    const USER_BUSY_MS = 5000
+    const RECENT_MS = 15000
+    const MARGIN_PX = 48
+    let editor = null
+    let pending = null
+    let recent = null
+    let lastInput = 0
+    let timer = null
+    window.addEventListener('cowart:canvas-ready', ({ detail }) => (editor = detail.editor))
+    for (const type of ['pointerdown', 'wheel', 'keydown']) {
+      window.addEventListener(type, () => (lastInput = Date.now()), { capture: true, passive: true })
+    }
+
+    function reveal(pageId, shapeIds) {
+      const now = Date.now()
+      const ids = new Set(recent && recent.pageId === pageId && now - recent.at < RECENT_MS ? recent.ids : [])
+      for (const id of shapeIds || []) ids.add(id)
+      recent = { pageId, ids, at: now }
+      pending = { pageId, wanted: new Set(shapeIds || []), until: now + WAIT_MS }
+      if (!timer) timer = setInterval(tick, PAGE_CHECK_MS)
+      tick()
+    }
+
+    // The part of the viewport the top bar and the bottom toolbar leave free, in page units.
+    function freeView() {
+      const view = editor.getViewportPageBounds()
+      const screen = editor.getViewportScreenBounds()
+      const zoom = editor.getZoomLevel()
+      const bar = document.getElementById(config.host === 'codex' ? 'cowart-codex-overlay' : 'cowart-claude-overlay')
+      const barBottom = bar ? bar.getBoundingClientRect().bottom : screen.y
+      const toolbar = document.querySelector('.tlui-layout__bottom')
+      const toolbarTop = toolbar ? toolbar.getBoundingClientRect().top : screen.y + screen.h
+      const top = Math.max(0, barBottom - screen.y) / zoom
+      const bottom = Math.max(0, screen.y + screen.h - toolbarTop) / zoom
+      return { minX: view.minX, maxX: view.maxX, minY: view.minY + top, maxY: view.maxY - bottom, top, bottom, zoom }
+    }
+
+    function stop() {
+      pending = null
+      clearInterval(timer)
+      timer = null
+    }
+
+    function tick() {
+      if (!pending) return stop()
+      if (!editor || Date.now() > pending.until || editor.getCurrentPageId() !== pending.pageId) return stop()
+      // Not in the pane's copy yet: the next sync brings it.
+      for (const id of pending.wanted) if (!editor.getShape(id)) return
+      stop()
+      if (Date.now() - lastInput < USER_BUSY_MS || editor.getEditingShapeId()) return
+      const boxes = [...recent.ids].map((id) => (editor.getShape(id) ? editor.getShapePageBounds(id) : null)).filter(Boolean)
+      if (boxes.length === 0) return
+      const area = {
+        minX: Math.min(...boxes.map((box) => box.minX)),
+        minY: Math.min(...boxes.map((box) => box.minY)),
+        maxX: Math.max(...boxes.map((box) => box.maxX)),
+        maxY: Math.max(...boxes.map((box) => box.maxY))
+      }
+      const free = freeView()
+      if (area.minX >= free.minX && area.maxX <= free.maxX && area.minY >= free.minY && area.maxY <= free.maxY) return
+      const room = MARGIN_PX / free.zoom
+      const animation = { duration: 320 }
+      if (area.maxX - area.minX + 2 * room <= free.maxX - free.minX && area.maxY - area.minY + 2 * room <= free.maxY - free.minY) {
+        // The center of the free part, not of the viewport, goes to the center of what was put.
+        editor.centerOnPoint({ x: (area.minX + area.maxX) / 2, y: (area.minY + area.maxY) / 2 - (free.top - free.bottom) / 2 }, { animation })
+      } else {
+        editor.zoomToBounds({ x: area.minX, y: area.minY, w: area.maxX - area.minX, h: area.maxY - area.minY }, { inset: MARGIN_PX + Math.max(free.top, free.bottom) * free.zoom, animation })
+      }
+    }
+
+    return { reveal }
+  })()
+
   let firstStateSeen = false
 
   // ---- Polling the stored canvas ---------------------------------------------------------
@@ -989,6 +1071,7 @@
       case 'page-state': pages.setState(data); break
       case 'pages-deleted': pages.removePages(data.pageIds || []); break
       case 'goto-page': pages.goTo(data.pageId, data.initial === true); break
+      case 'reveal-shapes': follow.reveal(data.pageId, data.shapeIds); break
       case 'requests': overlay.sync(data.requests || [], serviceRestarted); break
       case 'request': overlay.upsert(data); break
     }
@@ -1020,6 +1103,10 @@
     source.addEventListener('page-state', (event) => pages.setState(JSON.parse(event.data)))
     source.addEventListener('pages-deleted', (event) => pages.removePages(JSON.parse(event.data).pageIds || []))
     source.addEventListener('goto-page', (event) => pages.goTo(JSON.parse(event.data).pageId))
+    source.addEventListener('reveal-shapes', (event) => {
+      const data = JSON.parse(event.data)
+      follow.reveal(data.pageId, data.shapeIds)
+    })
     source.addEventListener('requests', (event) => overlay.sync(JSON.parse(event.data).requests || [], serviceRestarted))
     source.addEventListener('request', (event) => overlay.upsert(JSON.parse(event.data)))
   }

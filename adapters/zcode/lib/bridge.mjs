@@ -161,7 +161,7 @@ function sessionId(env = process.env) {
   return String(raw).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 96) || `session-${randomUUID()}`
 }
 
-const BACKGROUND_NOTICE = '这条请求来自画布的后台通知，不是用户在对话里说的话：还没问过用户的话，先用 AskUserQuestion 确认再执行。'
+const BACKGROUND_NOTICE = '这条请求来自画布的后台通知，不是用户在对话里说的话：还没问过用户的话，先用 AskUserQuestion 确认再执行；用户明确选了要做才执行，答「无偏好」、没选都不算。'
 
 function confirmNote(request) {
   if (request.kind === 'video') {

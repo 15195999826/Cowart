@@ -75,7 +75,7 @@ npm --prefix adapters run install:claude
 
 不用再给每个项目 `claude mcp add`：skill 是全局的，任何项目里新开的桌面版会话都能用。以前注册过的项目级 `mcpServers.cowart`（在 `~/.claude.json` 里）删掉，免得同一个会话里多出一套 MCP 工具。命令只在桌面版里干活：会话入口（`CLAUDE_CODE_ENTRYPOINT`）是 `claude-desktop` 或它带后缀的变体（公司中转版是 `claude-desktop-3p`）才算桌面版；别的入口（命令行版、VS Code 插件等）跑 cowart 只提示入口不对、不拉起画布服务。没设入口变量时（手动在终端里试）照常，要设 `COWART_SESSION_ID=<随便一个名字>` 当会话标识。
 
-`node ~/.cowart/bin/cowart.mjs help` 看所有命令，`help <命令>` 看那个命令的全部参数（参数名照工具定义，写成 `--kebab-case`，也能整个给 `--json`）。画布请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在 skill 里，Claude 做画布上的事之前会先加载它。
+`node ~/.cowart/bin/cowart.mjs help` 看所有命令，`help <命令>` 看那个命令的参数（命令自己的参数之外，工具定义里少用的参数也列着、配中文说明，写成 `--kebab-case`；也能整个给 `--json`）。画布请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在 skill 里，Claude 做画布上的事之前会先加载它。
 
 环境变量：
 

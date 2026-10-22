@@ -318,6 +318,12 @@ try {
     assert.equal(shown.structuredContent.paneOpen, true)
     await paneB.next((item) => item.event === 'goto-page' && item.data.pageId === ROLE)
     assert.equal(await paneA.saw((item) => item.event === 'goto-page'), false, "another session's pane was moved")
+    // What B puts on its page comes into view in B's pane, and only there.
+    const put = await b.call('insert_cowart_text', { items: [{ text: '看这里', x: 4000, y: 3000 }] })
+    assert.ok(!put.isError, text(put))
+    const putId = put.structuredContent.texts[0].shapeId
+    await paneB.next((item) => item.event === 'reveal-shapes' && item.data.pageId === ROLE && item.data.shapeIds.includes(putId))
+    assert.equal(await paneA.saw((item) => item.event === 'reveal-shapes'), false, "another session's pane was told to follow")
     const html = await (await fetch(shown.structuredContent.url.replace(/pageId=[^&]+/, `pageId=${encodeURIComponent(firstPageId)}`))).text()
     assert.ok(html.includes(`"heldPageId":"${ROLE}"`), 'the canvas does not open on the page its session is responsible for')
     // A bare address (the pane's card keeping only the origin) shows the canvas opened last.

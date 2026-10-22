@@ -51,9 +51,10 @@ export function requestNotice(request, { details = MCP_DETAILS } = {}) {
   const page = request.page ? `（页「${request.page}」）` : ''
   const about = request.annotations?.length ? annotationWords(request.annotations) : request.summary
   const head = `Cowart 画布请求 #${request.id}「${request.title}」${page}${about ? `：${about}` : ''}`
-  // Any answer but 跳过 goes ahead, the user's own words included; the request then gets its
-  // status like any other, or the canvas keeps asking for 执行 and offering 撤销.
-  const proceed = `选了跳过以外的再${details(request.id)} 看详情照做（用户自己打字回答也算，按用户说的办）`
+  // Only a yes goes ahead: an option that does it, or the user's own words saying so. An answer
+  // that picks nothing (AskUserQuestion can come back 「无偏好」) is no yes: on 10-22 a session
+  // took it for one and did a request the user did not want. The request then stays as it is.
+  const proceed = `用户明确选了要做的那项（或自己打字说要做）才再${details(request.id)} 看详情照做；答「无偏好」、没选、看不出要不要做都不算答应：不做、不回状态，跟用户说一句要做时再说`
   const task = requestTask(request)
   if (task === 'annotation-edit') {
     return `${head} → 马上用 AskUserQuestion 问用户一句。${ANNOTATION_EDIT_QUESTION}。${proceed}`

@@ -50,6 +50,9 @@ const ENDED_KEPT_MS = Number(process.env.COWART_ENDED_SESSION_KEPT_MS) || 60 * 6
 // A page that reconnects within this time keeps its place.
 const PANE_GRACE_MS = 5_000
 const MESSAGE_KINDS = new Set(['canvas', 'image', 'video', 'web'])
+// Model writes that put something new on a page: the session's own canvas panes bring it into
+// view (#revealPut).
+const PUT_TOOLS = new Set(['insert_cowart_image', 'insert_cowart_html_draft', 'insert_cowart_text', 'insert_cowart_frame'])
 const ID_PATTERN = /^[A-Za-z0-9_.-]{1,96}$/
 // The session's latest canvas requests a feedback item keeps.
 const FEEDBACK_REQUESTS = 10
@@ -928,6 +931,21 @@ export class CanvasServer {
     return this.#oneCanvas({ ...args, projectDir: nonEmpty(args.projectDir) ?? session.cwd ?? undefined })
   }
 
+  // What a session just put on a page, for its own canvas panes: one showing that page brings
+  // it into view (service-bridge.js: not while the user works the canvas). 10-22: the first
+  // group on a new page sat half under the top bar, and the user had to look for it.
+  #revealPut(session, result) {
+    const put = result && !result.isError ? result.structuredContent : null
+    const ids = put && !put.dryRun ? [put.shapeId, put.frameId, ...(put.texts ?? []).map((text) => text.shapeId)].filter((id) => typeof id === 'string' && id.startsWith('shape:')) : []
+    if (ids.length === 0 || !nonEmpty(put.pageId)) return result
+    const data = { pageId: put.pageId, shapeIds: [...new Set(ids)] }
+    for (const [res, stream] of this.#pageStreams) {
+      if (stream.session === session.id && stream.canvasDir === this.canvasDir) sendEvent(res, 'reveal-shapes', data)
+    }
+    this.#widgets.broadcast((pane) => pane.session === session.id && pane.canvasDir === this.canvasDir, 'reveal-shapes', data)
+    return result
+  }
+
   #ownRequest(session, id) {
     const request = this.queue.get(id)
     if (!request || request.session !== session.id) {
@@ -971,15 +989,19 @@ export class CanvasServer {
       case 'pages':
         return this.#pages(session)
       case 'insert-video':
-        return this.ops.insertVideo(await this.#pageWrite(session, INSERT_VIDEO_TOOL, this.#withDefaults(session, args)))
+        return this.#revealPut(session, await this.ops.insertVideo(await this.#pageWrite(session, INSERT_VIDEO_TOOL, this.#withDefaults(session, args))))
       case 'tool': {
         const name = String(args.name || '')
         if (name === FEEDBACK_TOOL) return this.#recordFeedback(session, args.arguments ?? {})
         let toolArgs = this.#withDefaults(session, args.arguments ?? {})
         if (PAGE_WRITE_TOOLS.has(name)) toolArgs = await this.#pageWrite(session, name, toolArgs)
-        if (EDIT_TOOLS.has(name)) return this.ops.editCanvas(name, toolArgs)
+        if (EDIT_TOOLS.has(name)) {
+          const edited = await this.ops.editCanvas(name, toolArgs)
+          return PUT_TOOLS.has(name) ? this.#revealPut(session, edited) : edited
+        }
         await this.ops.replaySelection(name, toolArgs, session.id)
-        return this.ops.callForModel(name, toolArgs)
+        const result = await this.ops.callForModel(name, toolArgs)
+        return PUT_TOOLS.has(name) ? this.#revealPut(session, result) : result
       }
       case 'request-get': {
         const request = this.#ownRequest(session, args.id)
@@ -1065,6 +1087,7 @@ export class CanvasServer {
       page: entered ? entered.name : null,
       pageCreated: Boolean(entered?.created),
       takenFrom: previous && previous !== session.id ? this.#nameOf(previous) : null,
+      alreadyHeld: Boolean(entered) && previous === session.id,
       myPage: myPage ? myPage.name : null,
       heldPageId: myPage?.id ?? null,
       paneOpen,

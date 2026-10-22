@@ -97,7 +97,7 @@ test('the notification quotes the 标注 and lets Claude offer to handle them as
   )
   assert.match(line, /是对图里界面、功能、设计的意见或问题.*就推荐照标注处理/)
   assert.match(line, /选项（推荐的放第一个）：照标注处理（答疑、改当前项目，不生图）\/ 按标注出新图（免费本地模型）\/ 按标注出新图（云端，消耗团队额度）\/ 跳过/)
-  assert.ok(line.endsWith('选了跳过以外的再调 get_cowart_request {"id": 1} 看详情照做（用户自己打字回答也算，按用户说的办）'), line)
+  assert.ok(line.endsWith('用户明确选了要做的那项（或自己打字说要做）才再调 get_cowart_request {"id": 1} 看详情照做；答「无偏好」、没选、看不出要不要做都不算答应：不做、不回状态，跟用户说一句要做时再说'), line)
 
   const many = requestNotice(agentEventPayload(queued(annotationEditText(Array.from({ length: 10 }, (_, index) => `第 ${index + 1} 条`)))))
   assert.match(many, /10 条标注：①「第 1 条」.*⑧「第 8 条」… → /)

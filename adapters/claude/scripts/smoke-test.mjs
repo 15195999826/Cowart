@@ -80,7 +80,7 @@ async function addHolder(id, props, meta) {
       y: props.y ?? 0,
       rotation: props.rotation ?? 0,
       index: props.index,
-      parentId: 'page:page',
+      parentId: props.parentId ?? 'page:page',
       isLocked: false,
       opacity: 1,
       props: { w: props.w, h: props.h, name: props.name, color: 'blue' },
@@ -617,14 +617,19 @@ try {
     const taken = ok(await cowart(['take', '命令页']))
     assert.match(taken.stdout, /^你现在负责「命令页」这一页（新建的）。/)
     assert.doesNotMatch(taken.stdout, /Cowart 画布已就绪|这张画布的页/)
+    assert.match(ok(await cowart(['take', '命令页'])).stdout, /^「命令页」这一页本来就是你负责。/)
     assert.equal((await cowart(['take'])).code, 2)
     // pages: a line a page, who holds it.
     const pages = ok(await cowart(['pages'])).stdout
     assert.match(pages, /^这张画布有 \d+ 页，你负责「命令页」/)
     assert.match(pages, /- 「命令页」 page:\S+ · 0 个图形 · 你负责/)
     // put: a path, and placement flags (negative numbers are values).
-    const image = structured(ok(await cowart(['put', 'image', tiny, '--at', '-400,-300'])).stdout)
+    const putImage = ok(await cowart(['put', 'image', tiny, '--at', '-400,-300'])).stdout
+    const image = structured(putImage)
     assert.deepEqual(image.bounds, { x: -400, y: -300, w: 96, h: 96 })
+    // In the words of the rest of the output (upstream says it in English).
+    assert.match(putImage, /^已插入图片 shape:\S+：96×96，位于 page:\S+ 的 \(-400, -300\)；文件 .+tiny.*\.png\n/)
+    assert.match(ok(await cowart(['selection'])).stdout, /^你的画布面板里(什么都没选中|选中了 \d+ 个图形：)/)
     const label = structured(ok(await cowart(['put', 'text', '标签 A', '--next-to', image.shapeId, '--align', 'middle', '--font-size', 's'])).stdout).texts[0]
     assert.equal(label.text, '标签 A')
     assert.equal(label.bounds.x, -400)
@@ -667,14 +672,57 @@ try {
     assert.match((await cowart(['put', 'image', tiny, '--at', '10'])).stderr, /--at 要写成 <x,y>/)
     assert.match((await cowart(['put', 'sticker', tiny])).stderr, /put 能放 image \/ video \/ html \/ text/)
     assert.match((await cowart(['reply', 'x', 'done'])).stderr, /要一个整数/)
+    assert.match((await cowart(['put', 'image', tiny, '--next-to', 'shape:nope'])).stderr, /^画布上没有图形 shape:nope/)
+    assert.match((await cowart(['put', 'image', join(projectDir, 'nofile.png')])).stderr, /^找不到文件：.*nofile\.png/)
+    // help: every command, its own flags in its own words; what it has no use for stays out.
     const help = ok(await cowart(['help', 'put', 'html'])).stdout
     assert.match(help, /--slide-of <Slides 框 id>/)
-    assert.match(help, /工具 insert_cowart_html_draft 的其它参数/)
-    assert.doesNotMatch(help, /--anchor-shape-id|--draft-shape-id/)
+    assert.match(help, /少用的参数：\n  --file-name <…>  存进页素材目录时的文件名/)
+    assert.doesNotMatch(help, /--anchor-shape-id|--draft-shape-id|--html-content|--shape-meta/)
+    assert.match(ok(await cowart(['help', 'listen'])).stdout, /listen\n画布请求监听：用 Bash 工具后台跑/)
+    assert.match(ok(await cowart(['help', 'put'])).stdout, /put image <图片>[\s\S]*put text <文字>/)
+    const deleteHelp = ok(await cowart(['help', 'delete'])).stdout
+    assert.match(deleteHelp, /--page <页名或 id>/)
+    assert.doesNotMatch(deleteHelp, /--page-id/)
+    assert.doesNotMatch(ok(await cowart(['help', 'open'])).stdout, /--title|--shown-page/)
+    assert.match(ok(await cowart(['help', 'feedback'])).stdout, /--kind bug\|friction\|idea  bug：/)
+    assert.match(ok(await cowart(['help', 'edit'])).stdout, /--fit  分组框贴合/)
     // A tool that fails exits 1 and says why.
     const missing = await cowart(['delete', 'shape:nope'])
     assert.equal(missing.code, 1)
     assert.match(missing.stderr, /画布上没有图形 shape:nope/)
+
+    // A request from the AI HTML panel on this page, done with the commands: put html --replace
+    // fills the holder, reply done closes it.
+    const { myPageId } = JSON.parse(ok(await cowart(['pages', '--out', 'json'])).stdout).structuredContent
+    const holderId = 'shape:clihtmlholder'
+    await addHolder(holderId, { x: 3000, w: 1024, h: 576, index: 'b30', name: 'AI HTML', parentId: myPageId }, { cowartAiDraftHolder: true, cowartAiDraftHolderVersion: 1 })
+    const asked = await api('/api/messages', {
+      text: '[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\n请根据下面的 prompt 生成一个单文件 HTML 草稿。\nprompt: 做一个登录页',
+      session: SESSION,
+      projectDir,
+      canvasDir,
+      pageId: myPageId,
+      pageName: '命令页'
+    })
+    const id = String(asked.request.id)
+    const details = ok(await cowart(['request', id])).stdout
+    assert.match(details, new RegExp(`画布请求 #${id}「生成 AI HTML」`))
+    assert.match(details, /put html <HTML 文件>/)
+    ok(await cowart(['reply', id, 'running']))
+    const htmlFile = join(projectDir, 'login.html')
+    await writeFile(htmlFile, '<!doctype html><meta charset="utf-8"><title>登录</title><form><input placeholder="账号"></form>')
+    const filled = ok(await cowart(['put', 'html', htmlFile, '--replace', holderId, '--page', myPageId])).stdout
+    assert.match(filled, new RegExp(`^已插入 HTML 草稿 shape:\\S+：1024×576，位于 ${myPageId} 的 \\(3000, 0\\)，替换了 AI HTML 框 ${holderId}；文件 .+\\.html\\n`))
+    store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
+    assert.ok(!store[holderId], 'the AI HTML holder is still there')
+    assert.ok(store[structured(filled).shapeId], 'the HTML draft is not on the canvas')
+    assert.match(ok(await cowart(['reply', id, 'done', '登录页', '放进了框里'])).stdout, new RegExp(`^已把画布请求 #${id} 标成 done：登录页 放进了框里`))
+    assert.match(ok(await cowart(['requests', '--all'])).stdout, new RegExp(`#${id} \\[done\\] 生成 AI HTML`))
+    // Beside an HTML draft, put html makes a new one: it does not rewrite that draft.
+    const second = structured(ok(await cowart(['put', 'html', htmlFile, '--next-to', structured(filled).shapeId])).stdout)
+    assert.notEqual(second.shapeId, structured(filled).shapeId)
+    assert.equal(second.updatedExistingHtmlDraft, false)
   })
 
   await step('install writes the cowart command, and the texts name it from then on', async () => {

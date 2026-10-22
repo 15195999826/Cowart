@@ -11,7 +11,9 @@
 //  - the style panel (color / fill / dash / size) only shows while it has something to
 //    style: a drawing tool is active or styled shapes are selected, not all the time;
 //  - the context menu is left for Radix to close, so it still opens after a drag that
-//    started while it was open (tldraw 5.1 bug, see below).
+//    started while it was open (tldraw 5.1 bug, see below);
+//  - the toolbar's AI HTML holder and AI Slides frame land on free canvas, not over what is
+//    at the viewport center (AI 图片 does the same in ai-image.js, AI 视频 in ai-video.js).
 (() => {
   'use strict'
   const kit = window.__cowartKit
@@ -78,6 +80,29 @@
     }
   }
   kit.onEditor(leaveTheContextMenuToRadix)
+
+  // ---- AI HTML / AI Slides 框放在空地上 ----------------------------------------------------
+  // Upstream's toolbar tools drop the frame at the viewport center whatever is there (10-22:
+  // a 1024 x 576 AI HTML holder covered a whole group of cards). Like AI 图片, it slides from
+  // there to free canvas and the view follows; frames dragged off the toolbar or pasted stay
+  // where they were put.
+  function isToolbarFrame(shape) {
+    return shape.type === 'frame' && Boolean(shape.meta && (shape.meta.cowartAiDraftHolder === true || shape.meta.cowartAiSlides === true))
+  }
+
+  function placeToolbarFrames(editor) {
+    editor.sideEffects.registerBeforeCreateHandler('shape', (shape, source) => {
+      if (source !== 'user' || !isToolbarFrame(shape)) return shape
+      const center = editor.getViewportPageBounds().center
+      const fromTool = Math.abs(shape.x + shape.props.w / 2 - center.x) < 0.5 && Math.abs(shape.y + shape.props.h / 2 - center.y) < 0.5
+      if (!fromTool) return shape
+      const rect = { x: shape.x, y: shape.y, w: shape.props.w, h: shape.props.h }
+      const position = kit.freePosition(editor, rect, shape.id)
+      queueMicrotask(() => kit.revealRect(editor, { ...rect, ...position }))
+      return { ...shape, x: position.x, y: position.y }
+    })
+  }
+  kit.onEditor(placeToolbarFrames)
 
   // ---- 截取当前帧 --------------------------------------------------------------------
   // Canvas videos play in a loop, so the frame the user right-clicked on is long gone by the
