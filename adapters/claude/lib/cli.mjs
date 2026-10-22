@@ -110,7 +110,8 @@ const camel = (name) => name.replace(/-([a-z])/g, (_, char) => char.toUpperCase(
 // for (left out of help's 少用的参数). A command's hidden tool parameters are ones it has no use
 // for or another command does (open's shownPage is take --shown): still read, never offered.
 // needs: the command is about its first positional (or what needs(args) says) and stops at its
-// usage without it.
+// usage without it. ownAnchor: an insert whose anchor is only what --next-to / --replace name,
+// never the user's selection (upstream takes a lone selected shape for one).
 const SIDES = ['right', 'left', 'below', 'above']
 const pageFlag = (about) => ({ kind: 'page', arg: '<页名或 id>', about, covers: ['pageId'], set: (target, value) => (target.pageId = value) })
 const atFlag = (about, into) => ({ kind: 'pair', arg: '<x,y>', about, into, covers: ['x', 'y'], set: (target, [x, y]) => Object.assign(target, { x, y }) })
@@ -163,22 +164,22 @@ const COMMANDS = [
   // 看
   { name: 'pages', group: '看', usage: 'pages', about: '画布上所有的页：页名、谁负责、几个图形', run: 'pages' },
   { name: 'page', group: '看', usage: 'page [页名]', about: '一页上有什么：图形、位置尺寸、素材本地路径、标注指向；默认看你负责的页', run: 'page' },
-  { name: 'selection', group: '看', tool: 'get_cowart_selection', usage: 'selection', about: '用户在本会话画布面板里选中的东西', structured: true },
+  { name: 'selection', group: '看', tool: 'get_cowart_selection', usage: 'selection', about: '用户在本会话画布面板里选中的东西：位置尺寸、所在的分组框、素材本地路径', result: 'selection' },
   // 放
   {
     name: 'put image',
     group: '放',
     tool: 'insert_cowart_image',
     positional: ['imagePath'],
-    usage: 'put image <图片> [--at x,y | --next-to <id> [--side …] | --replace <AI 图片框>] [--size 宽,高] [--page <页>]',
-    about: '放图片；--replace 替换 AI 图片框（等比放进框里）',
+    usage: 'put image <图片> [--at x,y | --next-to <id> [--side …] | --replace <AI 图片框或卡片>] [--size 宽,高] [--page <页>]',
+    about: '放图片；--replace 换掉 AI 图片框或一张卡片（新图放进它的位置）',
     flags: {
       ...PLACE,
-      replace: { kind: 'text', arg: '<AI 图片框 id>', about: '替换这个 AI 图片框：图等比放进框里、居中', covers: ['replaceAiImageHolder'], set: (target, value) => Object.assign(target, { anchorShapeId: value, replaceAiImageHolder: true }) }
+      replace: { kind: 'text', arg: '<AI 图片框或卡片 id>', about: '替换这个 AI 图片框，或者一张卡片（图、视频、HTML）：新图等比放进它的位置、居中，在同一个分组框里；卡片删掉，文件留在素材目录', covers: ['replaceShapeId', 'replaceAiImageHolder'], set: (target, value) => (target.replaceShapeId = value) }
     },
     hidden: ['cowartUrl', 'shapeMeta', 'assetMeta'],
     needs: true,
-    structured: true
+    ownAnchor: true
   },
   {
     name: 'put video',
@@ -192,8 +193,7 @@ const COMMANDS = [
       replace: { kind: 'text', arg: '<AI 视频框 id>', about: '替换这个 AI 视频框：视频放进框里', covers: ['replaceHolderShapeId'], set: (target, value) => (target.replaceHolderShapeId = value) }
     },
     hidden: ['shapeMeta'],
-    needs: true,
-    structured: true
+    needs: true
   },
   {
     name: 'put html',
@@ -218,7 +218,7 @@ const COMMANDS = [
     // The HTML comes in a file (htmlContent is for call, the way a request spells it).
     hidden: ['htmlContent', 'shapeMeta'],
     needs: (args) => Boolean(args.htmlPath || args.htmlContent),
-    structured: true
+    ownAnchor: true
   },
   {
     name: 'put text',
@@ -226,6 +226,7 @@ const COMMANDS = [
     tool: 'insert_cowart_text',
     positional: ['text'],
     item: 'items',
+    batchExample: '{"text": "1", "next-to": "shape:…", "align": "middle"}',
     usage: 'put text <文字> [--at x,y | --next-to <id> [--side below]] [--font-size s|m|l|xl] [--align middle] [--into <框>] [--page <页>]',
     about: "放文字：编号、标题、说明；放在 --next-to 的下面时跟它一样宽；一次多条用 --json '[{\"text\":…}, …]'",
     flags: {
@@ -237,8 +238,7 @@ const COMMANDS = [
       into: { kind: 'text', arg: '<框 id>|page', into: 'item', about: '放进这个分组框（框跟着长大）', covers: ['frameId'], set: (target, value) => (target.frameId = value) },
       page: pageFlag('放进这一页（默认：你负责的页）')
     },
-    needs: true,
-    structured: true
+    needs: true
   },
   // 整理
   {
@@ -254,8 +254,7 @@ const COMMANDS = [
       size: { kind: 'size', arg: '<宽,高>', about: '空框的尺寸', covers: ['w', 'h'], set: (target, [w, h]) => Object.assign(target, { w, ...(h !== undefined ? { h } : {}) }) },
       page: pageFlag('建在这一页（默认：你负责的页）')
     },
-    needs: true,
-    structured: true
+    needs: true
   },
   {
     name: 'edit',
@@ -263,6 +262,7 @@ const COMMANDS = [
     tool: 'update_cowart_shapes',
     positional: ['shapeId'],
     item: 'updates',
+    batchExample: '{"shapeId": "shape:…", "by": "40,0"}',
     usage: 'edit <shape id> [--at x,y | --by dx,dy] [--size 宽,高] [--text …] [--title …] [--into <框>|page] [--fit [--padding 40]]',
     about: "移动、改尺寸、改文字 / 框标题、进出分组框；一批一起改用 --json '[{\"shapeId\":…}, …]'",
     flags: {
@@ -276,8 +276,7 @@ const COMMANDS = [
       padding: { kind: 'number', arg: '<像素>', into: 'item', about: '--fit 时内容到框边的距离（默认 40）', covers: ['padding'], set: (target, value) => (target.padding = value) },
       page: pageFlag('改的是这一页（一般不用给）')
     },
-    needs: true,
-    structured: true
+    needs: true
   },
   {
     name: 'delete',
@@ -290,8 +289,7 @@ const COMMANDS = [
       'with-contents': { kind: 'switch', about: '删分组框时连里面的东西一起删', covers: ['deleteChildren'], set: (target, value) => (target.deleteChildren = value) },
       page: pageFlag('删的是这一页上的（一般不用给）')
     },
-    needs: true,
-    structured: true
+    needs: true
   },
   // 请求
   { name: 'requests', group: '请求', tool: LIST_REQUESTS_TOOL, usage: 'requests [--all]', about: '本会话的画布请求（「看画布」：取排队的请求）', flags: { all: { kind: 'switch', about: '连做完的也列出来', covers: ['includeFinished'], set: (target, value) => (target.includeFinished = value) } } },
@@ -313,8 +311,7 @@ const COMMANDS = [
       files: { kind: 'list', arg: '<路径>,…', about: '一起留下的本地文件（截图、生成结果、日志）', covers: ['attachments'], set: (target, value) => (target.attachments = value) },
       page: pageFlag('说的是这一页（不是你负责或正看着的页时才给）')
     },
-    needs: true,
-    structured: true
+    needs: true
   }
 ]
 
@@ -527,6 +524,27 @@ async function readParameters(json, jsonFile, command) {
   return args
 }
 
+// An entry of a batch (put text / edit --json '[…]') written with the command's own flag names
+// ("next-to", "align", "at": "x,y" or [x, y]), as one entry is on the command line; the tool's
+// fields still work. 2026-10-22: a batch had to be written in anchorShapeId and textAlign.
+function itemFromFlags(command, entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
+  const item = {}
+  for (const [key, value] of Object.entries(entry)) {
+    const name = command.flags?.[key] ? key : command.flags?.[kebab(key)] ? kebab(key) : null
+    const spec = name ? command.flags[name] : null
+    if (!spec || spec.into !== 'item') {
+      item[key] = value
+      continue
+    }
+    const read = spec.kind === 'switch'
+      ? value !== false && value !== 'false'
+      : Array.isArray(value) ? value.map((part) => numberOf(part, name)) : readOwnFlag(spec, String(value), name)
+    spec.set(item, read)
+  }
+  return item
+}
+
 async function readStdin() {
   const chunks = []
   for await (const chunk of process.stdin) chunks.push(chunk)
@@ -538,6 +556,7 @@ async function readStdin() {
 export async function buildArguments(command, schema, argv) {
   const parsed = tokenize(argv, (name) => takesValue(flagSpec(command, schema, name)))
   const args = await readParameters(parsed.json, parsed.jsonFile, command)
+  if (command?.item && Array.isArray(args[command.item])) args[command.item] = args[command.item].map((entry) => itemFromFlags(command, entry))
   const item = {}
   const given = new Set()
   for (const { name, value } of parsed.flags) {
@@ -589,9 +608,16 @@ function errorResult(message) {
 // output. The first line of an insert names the shape, where it went and its file.
 const round = (value) => Math.round(Number(value) * 100) / 100
 const placed = (s) => `${round(s.bounds.w)}×${round(s.bounds.h)}，位于 ${s.pageId} 的 (${round(s.bounds.x)}, ${round(s.bounds.y)})`
+const fileName = (path) => String(path ?? '').split(/[\\/]/).pop()
+// The file it came from, when upstream renamed it (it keeps only ASCII): 猫-水彩.png, not image.png.
+const stem = (name) => name.replace(/\.[^.]+$/, '')
+const cameFrom = (s) => {
+  const source = fileName(s.sourceImagePath)
+  return source && !stem(fileName(s.assetFile)).startsWith(stem(source)) ? `（${source}）` : ''
+}
 const RESTATED = {
   insert_cowart_image: (s) =>
-    `${s.dryRun ? '算好了（没放）：图片' : '已插入图片'} ${s.shapeId}：${placed(s)}${s.replacedAiImageHolder ? `，替换了 AI 图片框 ${s.anchorShapeId}` : ''}；文件 ${s.assetFile}`,
+    `${s.dryRun ? '算好了（没放）：图片' : '已插入图片'} ${s.shapeId}${cameFrom(s)}：${placed(s)}${s.replacedAiImageHolder ? `，替换了 AI 图片框 ${s.anchorShapeId}` : ''}；文件 ${s.assetFile}`,
   insert_cowart_html_draft: (s) =>
     `${s.dryRun ? '算好了（没放）：HTML 草稿' : '已插入 HTML 草稿'} ${s.shapeId}：${placed(s)}${s.replacedAiDraftHolder ? `，替换了 AI HTML 框 ${s.draftShapeId}` : ''}${s.updatedExistingHtmlDraft ? '，更新了原来那份草稿' : ''}；文件 ${s.assetFile}`
 }
@@ -631,7 +657,10 @@ const COMMAND_WORDS = [
   [/x \/ y 和 anchorShapeId 只给一种/g, '--at 和 --next-to 只给一种'],
   [/x \/ y 和 dx \/ dy 只给一种/g, '--at 和 --by 只给一种'],
   [/给 x 和 y（文字框左上角的页面坐标），或者给 anchorShapeId/g, '给 --at x,y（文字框左上角的页面坐标），或者给 --next-to <id>'],
-  [/frameId 是空的（拿出分组框用 "page"）/g, '--into 是空的（拿出分组框用 --into page）']
+  [/frameId 是空的（拿出分组框用 "page"）/g, '--into 是空的（拿出分组框用 --into page）'],
+  [/（update_cowart_shapes 给 dx \/ dy，框会带着里面的东西走）/g, '（edit <框 id> --by dx,dy，框会带着里面的东西走）'],
+  [/（update_cowart_shapes：它们 frameId: "(shape:[^"]+)"，框 fit: true）/g, '（edit <它的 id> --into $1，再 edit $1 --fit）'],
+  [/(^|\n)replaceShapeId：/g, '$1']
 ]
 
 // entries: how many items / updates the command sent; one needs no number.
@@ -658,8 +687,8 @@ function restated(name, result) {
     const said = localizeError(text)
     return said === text ? result : { ...result, content: [{ type: 'text', text: said }] }
   }
-  if (name === 'get_cowart_selection') {
-    const shapes = structured?.selection?.selectedShapes ?? []
+  if (name === 'get_cowart_selection' && structured?.selection) {
+    const shapes = structured.selection.selectedShapes ?? []
     const head = shapes.length ? `你的画布面板里选中了 ${shapes.length} 个图形：` : '你的画布面板里什么都没选中。'
     return { ...result, content: [{ type: 'text', text: shapes.length ? `${head}\n${resultText(result)}` : head }] }
   }
@@ -871,7 +900,7 @@ async function pageSummary(client, wanted, cli) {
   return client.call('canvas-state', { pageId })
 }
 
-export async function callTool(client, name, args, cli = cowartCommand(), { as = 'open' } = {}) {
+export async function callTool(client, name, args, cli = cowartCommand(), { as = 'open', ownAnchor = false } = {}) {
   switch (name) {
     case RENDER_TOOL: {
       const opened = await client.call('open-canvas', args)
@@ -899,14 +928,44 @@ export async function callTool(client, name, args, cli = cowartCommand(), { as =
       if (listenerConnected === false) lines.push('', restartListenerNote(`${cli} listen`))
       return textResult(lines.join('\n'), { requests, listenerConnected })
     }
+    case 'get_cowart_selection':
+      return as === 'selection' ? selectionResult(client, await client.call('tool', { name, arguments: args })) : client.call('tool', { name, arguments: args })
     default:
-      return client.call('tool', { name, arguments: args })
+      return client.call('tool', { name, arguments: args, ...(ownAnchor ? { selectionAnchor: false } : {}) })
   }
 }
 
-// What a command prints: the result's words for the session, then, for the commands that make
-// or find shapes, the structured result (ids, bounds, file paths) the next command may need.
-// The canvas snapshot only when it was asked for.
+// selection: the selected shapes as the page summary lists them (page position, frame, the
+// file on this machine). The tool gives tldraw's records (positions inside their frame, the
+// asset's address), which take a page summary more to use (2026-10-22).
+async function selectionResult(client, result) {
+  const shapes = result?.structuredContent?.selection?.selectedShapes ?? []
+  if (result?.isError || shapes.length === 0) return result
+  // The page the pane shows has them; a pane that has not said which page it shows yet (just
+  // opened) leaves the whole canvas to look through.
+  const { shownPageId } = await client.call('pages')
+  const found = new Map()
+  for (const pageId of [shownPageId ?? null, ...(shownPageId ? [null] : [])]) {
+    let page = null
+    for (const line of resultText(await client.call('canvas-state', pageId ? { pageId } : {})).split('\n')) {
+      const header = /^页面「(.*)」\((page:[^)]+)\)/.exec(line)
+      if (header) page = { name: header[1], id: header[2] }
+      const shape = shapes.find((entry) => line.startsWith(`- ${entry.id} `))
+      if (shape && !found.has(shape.id)) found.set(shape.id, { line, page })
+    }
+    if (found.size === shapes.length) break
+  }
+  const pageNames = [...new Set([...found.values()].map((entry) => entry.page?.name).filter(Boolean))]
+  const lines = shapes.map((shape) => found.get(shape.id)?.line ?? `- ${shape.id} ${shape.type ?? ''}（画布上已经没有它了）`)
+  return textResult(
+    [`你的画布面板里选中了 ${shapes.length} 个图形${pageNames.length === 1 ? `（「${pageNames[0]}」这一页）` : ''}：`, ...lines].join('\n'),
+    { selectedShapeIds: shapes.map((shape) => shape.id), pageId: [...found.values()][0]?.page?.id ?? shownPageId ?? null }
+  )
+}
+
+// What a command prints: the result's words for the session (its lines name what it made or
+// found: ids, positions, files). call adds the tool's structured result, as the tool gave it;
+// --out json gives the whole result to any command. The canvas snapshot only when asked for.
 export function formatResult(result, { command, out }) {
   if (out === 'json') return JSON.stringify(result)
   const text = resultText(result)
@@ -954,7 +1013,7 @@ function describeCommand(command, schema, cli) {
       return `  --${kebab(key)}${arg ? ` ${arg}` : ''}  ${PARAM_ABOUT[key] ?? spec.description ?? ''}`.trimEnd()
     })])
   }
-  if (command.item) sections.push([`一次多条：--json '[{…}, …]'，每条照工具 ${command.tool} 的 ${command.item} 写。`])
+  if (command.item) sections.push([`一次多条：--json '[${command.batchExample ?? '{…}'}, …]'：每条的键用上面的参数名（不带 --），工具 ${command.tool} 的 ${command.item} 字段名也认。`])
   if (command.tool) sections.push([`参数原本的定义：${cli} tools ${command.tool}`])
   return sections.map((lines) => lines.join('\n')).join('\n\n')
 }
@@ -1071,7 +1130,7 @@ export async function main(argv = process.argv.slice(2)) {
       toolName = rest[0]
       toolArgv = rest.slice(1)
       // Called by its tool name, it takes the tool's own parameters only.
-      command = { name: 'call', tool: toolName, usage: `call ${toolName} …`, structured: !commandNamed(toolName) || commandNamed(toolName).structured }
+      command = { name: 'call', tool: toolName, usage: `call ${toolName} …`, structured: true }
     }
     if (!toolName) throw new UsageError(`没有 ${name} 这个命令。\n\n${usage(cli)}`)
     // Only arguments need the parameters' definitions (the service has them for its tools).
@@ -1084,7 +1143,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (name !== 'call') speaking = { entries: command.item && Array.isArray(args[command.item]) ? args[command.item].length : 1 }
     // --page takes a page name too.
     if (typeof args.pageId === 'string' && !args.pageId.startsWith('page:')) args.pageId = await pageIdFor(client, args.pageId, cli)
-    const result = restate(toolName, await callTool(client, toolName, args, cli, { as: command.result }), speaking)
+    const result = restate(toolName, await callTool(client, toolName, args, cli, { as: command.result, ownAnchor: command.ownAnchor === true }), speaking)
     return exit(result.isError ? 1 : 0, formatResult(result, { command, out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
   } catch (error) {
     const raw = localizeError(error instanceof Error ? error.message : String(error))

@@ -999,7 +999,8 @@ export class CanvasServer {
           const edited = await this.ops.editCanvas(name, toolArgs)
           return PUT_TOOLS.has(name) ? this.#revealPut(session, edited) : edited
         }
-        await this.ops.replaySelection(name, toolArgs, session.id)
+        // Claude's put commands name their anchor (--next-to): the selection is none of it.
+        await this.ops.replaySelection(name, toolArgs, session.id, { anchor: args.selectionAnchor !== false })
         const result = await this.ops.callForModel(name, toolArgs)
         return PUT_TOOLS.has(name) ? this.#revealPut(session, result) : result
       }

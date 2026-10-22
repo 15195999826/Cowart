@@ -11,14 +11,14 @@ import { basename, join, resolve } from 'node:path'
 import { generateKeyBetween } from 'fractional-indexing'
 
 import { pageAssetUrl, pageDirName, resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
-import { fitImageToAsset, formatCanvasSummary, localPathForAssetSrc, pageBounds, pageIdOfShape, pageRecords, shapesOnPage, summarizeCanvas } from '../../shared/canvas-model.mjs'
+import { fitImageToAsset, formatCanvasSummary, localPathForAssetSrc, pageBounds, pageIdOfShape, pageRecords, placeBeside, shapesOnPage, summarizeCanvas } from '../../shared/canvas-model.mjs'
 import { sanitizeFileName, uniqueFilePath } from '../../shared/files.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { PREPARE_REQUEST_TOOL, prepareGenerationRequest } from '../../shared/generation-requests.mjs'
 import { structuredOrThrow } from '../../shared/upstream.mjs'
 import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
 import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
-import { EDIT_TOOLS, planCanvasEdit, referencedShapeIds } from './canvas-edit.mjs'
+import { DELETE_TOOL, EDIT_TOOLS, UPDATE_TOOL, planCanvasEdit, referencedShapeIds } from './canvas-edit.mjs'
 import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
 import { COPY_REFERENCE_TOOL, copyCanvasReference } from './copy-reference.mjs'
 import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
@@ -55,6 +55,13 @@ const PLACEMENT_INPUTS = {
   y: { type: 'number', description: 'Page y of the top left.' }
 }
 const PLACEMENT_NOTE = ' x, y put it exactly there; placement "above" puts it above the anchor.'
+// insert_cowart_image only: an ordinary card to replace (#replaceCard).
+const REPLACE_INPUT = {
+  replaceShapeId: {
+    type: 'string',
+    description: 'A card on the page to replace (an image, video or HTML card, also inside a group frame): the new image takes its place, centered in its box at the bitmap\'s ratio and in its frame, and the card is deleted (its file stays in the page assets). An AI 图片 holder given here is replaced the way anchorShapeId with replaceAiImageHolder does.'
+  }
+}
 // Model tools that read the canvas selection (to report it, or as the anchor of an insert).
 const SELECTION_READERS = new Set(['get_cowart_selection', 'insert_cowart_image', 'insert_cowart_html_draft', 'save_cowart_reference_image'])
 // Shape arguments that say where a write lands, in the order upstream reads them.
@@ -110,7 +117,7 @@ function withoutCanvasInputs(tool) {
 
 // Upstream's inserts with the service's placement inputs (callForModel places the result).
 function withPlacementInputs(tool) {
-  const properties = { ...tool.inputSchema.properties, ...PLACEMENT_INPUTS }
+  const properties = { ...tool.inputSchema.properties, ...PLACEMENT_INPUTS, ...(tool.name === 'insert_cowart_image' ? REPLACE_INPUT : {}) }
   const placement = properties.placement
   if (Array.isArray(placement?.enum) && !placement.enum.includes('above')) properties.placement = { ...placement, enum: [...placement.enum, 'above'] }
   return { ...tool, description: `${tool.description ?? ''}${PLACEMENT_NOTE}`, inputSchema: { ...tool.inputSchema, properties } }
@@ -127,10 +134,6 @@ function finiteOrNull(value) {
 function isGroupFrame(shape) {
   const meta = shape?.meta ?? {}
   return shape?.typeName === 'shape' && shape.type === 'frame' && !meta.cowartAiImageHolder && !meta.cowartAiDraftHolder && !meta.cowartAiVideoHolder && !meta.cowartAiSlides
-}
-
-function rectsOverlap(a, b, padding) {
-  return !(a.x + a.w + padding <= b.x || b.x + b.w + padding <= a.x || a.y + a.h + padding <= b.y || b.y + b.h + padding <= a.y)
 }
 
 export function textResult(text, structuredContent) {
@@ -291,7 +294,7 @@ export class CanvasOps extends EventEmitter {
   async targetPage(args, name) {
     if (EDIT_TOOLS.has(name)) return this.#editTargetPage(args, name)
     if (nonEmpty(args.pageId)) return args.pageId.trim()
-    const shapeId = ANCHOR_ARGS.map((key) => nonEmpty(args[key])).find(Boolean)
+    const shapeId = ['replaceShapeId', ...ANCHOR_ARGS].map((key) => nonEmpty(args[key])).find(Boolean)
     if (!shapeId) return null
     const snapshot = await this.#storedSnapshot(args)
     const shape = snapshot?.store?.[shapeId]
@@ -312,12 +315,18 @@ export class CanvasOps extends EventEmitter {
   }
 
   // Every page of every session saves into one selection file per canvas; before a model tool
-  // reads it, the file gets this session's last selection back.
-  async replaySelection(name, args, session) {
+  // reads it, the file gets this session's last selection back. anchor: false (Claude's put
+  // commands, which name their anchor with --next-to) keeps the selection from anchoring an
+  // insert; so do x, y and replaceShapeId: on 2026-10-22 a 96 px image put at x, y came out
+  // 512 x 512, the size of what the user had selected.
+  async replaySelection(name, args, session, { anchor = true } = {}) {
     if (!SELECTION_READERS.has(name) || !session) return
     const { projectDir, canvasDir } = resolveCowartPaths(args)
     let selection = this.#selections.get(`${canvasDir}\n${session}`)
-    if (MODEL_INSERT_TOOLS.has(name) && !ANCHOR_ARGS.some((key) => nonEmpty(args[key]))) selection = await this.#anchorSelection(selection, args)
+    if (MODEL_INSERT_TOOLS.has(name) && !ANCHOR_ARGS.some((key) => nonEmpty(args[key]))) {
+      const placed = finiteOrNull(args.x) !== null || finiteOrNull(args.y) !== null || nonEmpty(args.replaceShapeId)
+      selection = anchor && !placed ? await this.#anchorSelection(selection, args) : { selectedShapes: [] }
+    }
     if (selection === undefined) return
     await this.#callLocked('save_cowart_selection_state', { projectDir, canvasDir, selection })
   }
@@ -454,11 +463,18 @@ export class CanvasOps extends EventEmitter {
     if (DROPPED_TOOLS.has(name)) return textResult('画布服务不上报统计。')
     if (!(await this.#upstreamToolNames()).has(name)) return errorResult(`未知工具：${name}`)
     if (!MODEL_INSERT_TOOLS.has(name)) return this.#callLocked(name, args)
-    // Upstream places beside an anchor (right, left, below) or in free space; x, y and above
-    // are the service's, applied once upstream inserted (sized for below, as above is).
-    const { x, y, placement, ...rest } = args
-    const place = { x: finiteOrNull(x), y: finiteOrNull(y), above: placement === 'above' }
-    const upstreamArgs = placement === undefined ? rest : { ...rest, placement: place.above ? 'below' : placement }
+    if (name === 'insert_cowart_image' && nonEmpty(args.replaceShapeId)) return this.#replaceCard(args)
+    // Upstream sizes the insert and puts it beside an anchor (right, left, below) or in free
+    // space; the service then puts it at x, y or beside the anchor on any side (above too),
+    // past what is in the way (#placeInserted).
+    const { x, y, placement, replaceShapeId: _replace, ...rest } = args
+    const side = ['left', 'below', 'above'].includes(placement) ? placement : 'right'
+    const place = { x: finiteOrNull(x), y: finiteOrNull(y), side, asked: finiteOrNull(x) !== null || finiteOrNull(y) !== null || side === 'above' }
+    const upstreamArgs = placement === undefined ? rest : { ...rest, placement: side === 'above' ? 'below' : placement }
+    // An HTML draft is named after its file (upstream names it draft-<time>), when that name
+    // has something upstream keeps (it drops what is not ASCII).
+    const htmlName = name === 'insert_cowart_html_draft' && !nonEmpty(rest.fileName) && nonEmpty(rest.htmlPath) ? basename(rest.htmlPath.trim()) : null
+    if (htmlName && /[A-Za-z0-9]/.test(htmlName.replace(/\.[^.]+$/, ''))) upstreamArgs.fileName = htmlName
     // What the insert added (and the holder it replaced) survives a stale page save.
     const { canvasDir } = resolveCowartPaths(args)
     return this.#guard.withLock(writeLockKey(name, canvasDir), async () => {
@@ -466,7 +482,7 @@ export class CanvasOps extends EventEmitter {
       let result = await this.#callWithRetry(name, upstreamArgs.matchAnchor === undefined && isGroupFrame(before[nonEmpty(upstreamArgs.anchorShapeId)]) ? { ...upstreamArgs, matchAnchor: false } : upstreamArgs)
       if (result?.isError) return result
       if (name === 'insert_cowart_image') result = await this.#fitInsertedImage(upstreamArgs, result)
-      if (place.x !== null || place.y !== null || place.above) result = await this.#placeInserted(upstreamArgs, result, place)
+      result = await this.#placeInserted(upstreamArgs, result, place)
       const after = (await this.#storedSnapshot(args))?.store ?? {}
       this.#guard.trackInsertedRecords(canvasDir, Object.values(after).filter((record) => !before[record.id]))
       for (const [id, record] of Object.entries(before)) {
@@ -480,8 +496,10 @@ export class CanvasOps extends EventEmitter {
   // matches as 按标注修改 does, or displayWidth x displayHeight) whatever the bitmap's ratio,
   // and a generated image is rarely exactly the holder's ratio: it would land stretched. The
   // image is fitted back to its bitmap's ratio inside that box, centered in a holder (upstream
-  // marks what it put into one) and from the box's top left elsewhere. Best effort: when this
-  // fails, the insert stands as upstream made it.
+  // marks what it put into one) and from the box's top left elsewhere. Its asset also gets the
+  // name of the file it came from back: upstream keeps only ASCII in file names, so 猫-水彩.png
+  // was image.png on the canvas and in every summary (2026-10-22); the file keeps upstream's
+  // name. Best effort: when this fails, the insert stands as upstream made it.
   async #fitInsertedImage(args, result) {
     const inserted = result?.structuredContent
     if (!inserted?.shapeId || inserted.dryRun) return result
@@ -492,13 +510,17 @@ export class CanvasOps extends EventEmitter {
       const asset = snapshot?.store?.[shape?.props?.assetId]
       const center = Boolean(shape?.meta?.cowartGeneratedForAiImageHolder)
       const fitted = fitImageToAsset(shape, asset, { center })
-      if (!fitted) return result
+      const original = basename(nonEmpty(args.fileName) ?? nonEmpty(args.imagePath) ?? '')
+      const renamed = asset && original && asset.props?.name !== original ? { ...asset, props: { ...asset.props, name: original } } : null
+      if (!fitted && !renamed) return result
+      const changed = [fitted, renamed].filter(Boolean)
       const saved = structuredOrThrow(
-        await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store: { ...snapshot.store, [fitted.id]: fitted } } }),
+        await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store: { ...snapshot.store, ...Object.fromEntries(changed.map((record) => [record.id, record])) } } }),
         'save_cowart_canvas_state'
       )
       if (!saved.ok) throw new Error(saved.message || '保存画布失败。')
-      if ((saved.skippedRecords ?? []).some((record) => record.id === fitted.id)) throw new Error('没通过 tldraw 校验。')
+      if ((saved.skippedRecords ?? []).some((record) => changed.some((entry) => entry.id === record.id))) throw new Error('没通过 tldraw 校验。')
+      if (!fitted) return result
       const bounds = { x: fitted.x, y: fitted.y, w: fitted.props.w, h: fitted.props.h }
       const size = (w, h) => `${round2(w)}×${round2(h)}`
       const lines = [
@@ -507,18 +529,53 @@ export class CanvasOps extends EventEmitter {
       ]
       return { ...result, content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { ...inserted, bounds } }
     } catch (error) {
-      this.#log(`kept upstream's size for ${inserted.shapeId}: ${error instanceof Error ? error.message : error}`)
+      this.#log(`kept upstream's size and name for ${inserted.shapeId}: ${error instanceof Error ? error.message : error}`)
       return result
     }
   }
 
-  // Puts what upstream just inserted at x, y, or above its anchor (stepping up past the shapes
-  // there, the way upstream steps down for below). A result that replaced, filled or updated
-  // something stays where that was.
+  // An image in place of an ordinary card (insert_cowart_image's replaceShapeId; an AI 图片
+  // holder goes to upstream, which replaces those): it takes the card's place — its frame,
+  // centered in its box at the bitmap's ratio — and the card is deleted with what is bound to
+  // it (its 标注 / 注释); the card's file stays in the page assets. 2026-10-22: --replace on a
+  // plain image put the new one at the end of the row and left the old one.
+  async #replaceCard(args) {
+    const { replaceShapeId, x: _x, y: _y, placement: _placement, anchorShapeId: _anchor, sourceShapeId: _source, replaceAiImageHolder: _holder, ...rest } = args
+    const id = replaceShapeId.trim()
+    const { projectDir, canvasDir } = resolveCowartPaths(args)
+    const store = (await this.#storedSnapshot(args))?.store ?? {}
+    const card = store[id]
+    if (card?.typeName !== 'shape') return errorResult(`replaceShapeId：画布上没有图形 ${id}（id 以 get_cowart_canvas_state 列出的为准）。`)
+    if (card.meta?.cowartAiImageHolder) return this.callForModel('insert_cowart_image', { ...rest, anchorShapeId: id, replaceAiImageHolder: true })
+    if (card.type === 'frame') return errorResult(`replaceShapeId：${id} 是框，不是卡片：要换掉框里的哪一张，就给那一张的 id。`)
+    const pageId = pageIdOfShape(store, card)
+    const box = pageBounds(store, card)
+    // Upstream puts it on that page at the card's size (stretched), the fit gives it its ratio
+    // back; then it moves in and the card goes.
+    const inserted = await this.callForModel('insert_cowart_image', { ...rest, pageId, displayWidth: box.w, displayHeight: box.h, matchAnchor: false })
+    if (inserted?.isError || !inserted?.structuredContent?.shapeId) return inserted
+    const made = inserted.structuredContent
+    const at = { x: round2(box.x + (box.w - made.bounds.w) / 2), y: round2(box.y + (box.h - made.bounds.h) / 2) }
+    const frameId = store[card.parentId]?.typeName === 'shape' ? card.parentId : null
+    await this.editCanvas(UPDATE_TOOL, { projectDir, canvasDir, pageId, updates: [{ shapeId: made.shapeId, ...at, ...(frameId ? { frameId } : {}) }] })
+    const removed = await this.editCanvas(DELETE_TOOL, { projectDir, canvasDir, pageId, shapeIds: [id] })
+    const bounds = { ...at, w: made.bounds.w, h: made.bounds.h }
+    const source = basename(nonEmpty(rest.fileName) ?? nonEmpty(rest.imagePath) ?? '')
+    const text = [
+      `已用新图 ${made.shapeId}${source && source !== basename(made.assetFile ?? '') ? `（${source}）` : ''} 换掉 ${id}：${round2(bounds.w)}×${round2(bounds.h)}，位于 ${pageId} 的 (${bounds.x}, ${bounds.y})${frameId ? `，在${store[frameId]?.type === 'frame' ? '分组框' : ''} ${frameId} 里` : ''}，在原来那张的位置居中；文件 ${made.assetFile}`,
+      removed?.content?.find((item) => item.type === 'text')?.text ?? ''
+    ].filter(Boolean).join('\n')
+    return textResult(text, { ...made, bounds, parentId: frameId ?? pageId, replacedShapeId: id })
+  }
+
+  // Puts what upstream just inserted at x, y, or beside its anchor on its side (placeBeside:
+  // past what is in the way, each step to just beyond it; upstream steps by the new shape's own
+  // size). A result that replaced, filled or updated something stays where that was; place.asked
+  // (x, y or above) says so in the result.
   async #placeInserted(args, result, place) {
     const inserted = result?.structuredContent
     if (!inserted?.shapeId || inserted.dryRun) return result
-    const note = (line) => ({ ...result, content: [{ type: 'text', text: `${result.content?.[0]?.text ?? ''}\n${line}` }] })
+    const note = (line) => (place.asked ? { ...result, content: [{ type: 'text', text: `${result.content?.[0]?.text ?? ''}\n${line}` }] } : result)
     const { projectDir, canvasDir } = resolveCowartPaths(args)
     const snapshot = await this.#storedSnapshot({ projectDir, canvasDir })
     const store = snapshot?.store ?? {}
@@ -535,17 +592,13 @@ export class CanvasOps extends EventEmitter {
     } else {
       const anchor = store[inserted.anchorShapeId ?? inserted.draftShapeId]
       if (anchor?.typeName !== 'shape') return note('above 没用上：没有 anchorShapeId。')
-      const around = pageBounds(store, anchor)
       const margin = Math.max(0, finiteOrNull(args.margin) ?? 40)
-      const obstacles = Object.values(store)
+      const others = Object.values(store)
         .filter((record) => record?.typeName === 'shape' && record.parentId === shape.parentId && record.id !== shape.id && record.id !== anchor.id)
         .map((record) => pageBounds(store, record))
-      const candidate = { x: around.x, y: around.y - margin - bounds.h, w: bounds.w, h: bounds.h }
-      for (let attempt = 0; attempt < 60 && obstacles.some((other) => rectsOverlap(candidate, other, margin / 2)); attempt += 1) {
-        candidate.y -= bounds.h + margin
-      }
-      target = candidate
+      target = placeBeside(pageBounds(store, anchor), bounds, place.side, margin, others)
     }
+    if (Math.abs(target.x - bounds.x) < 0.01 && Math.abs(target.y - bounds.y) < 0.01) return result
     const moved = { ...shape, x: Math.round((shape.x + target.x - bounds.x) * 100) / 100, y: Math.round((shape.y + target.y - bounds.y) * 100) / 100 }
     const saved = structuredOrThrow(
       await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store: { ...store, [moved.id]: moved } } }),

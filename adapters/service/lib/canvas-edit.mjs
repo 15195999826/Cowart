@@ -564,9 +564,20 @@ function planFrame(draft, args) {
   ordered.forEach((shape, n) => draft.reparent(shape.id, frame.id, keys[n]))
   if (parentId !== draft.pageId) draft.growFrameToFit(parentId, bounds, 0)
 
+  // A frame drawn around cards that sit close to another group covers part of it (cards 40
+  // apart, frames 40 around them, 2026-10-22): said, with what to do about it.
+  const covered = Object.values(draft.store)
+    .filter((record) => record?.typeName === 'shape' && record.parentId === parentId && record.id !== frame.id)
+    .filter((record) => {
+      const other = pageBounds(draft.store, record)
+      return other.x < bounds.x + bounds.w && other.x + other.w > bounds.x && other.y < bounds.y + bounds.h && other.y + other.h > bounds.y
+    })
   const lines = [
     `已建分组框 ${frame.id}${name ? `「${name}」` : ''} ${describeBox(bounds)}${parentId !== draft.pageId ? `，在分组框 ${parentId} 里` : ''}。`,
-    members.length > 0 ? `框进 ${members.length} 个图形，页面上的位置不变：${ordered.map((shape) => shape.id).join('、')}` : '框里还没有东西：update_cowart_shapes 给图形传 frameId 放进来。'
+    members.length > 0 ? `框进 ${members.length} 个图形，页面上的位置不变：${ordered.map((shape) => shape.id).join('、')}` : '框里还没有东西：update_cowart_shapes 给图形传 frameId 放进来。',
+    ...(covered.length > 0
+      ? [`⚠ 新框跟框外的 ${covered.slice(0, 3).map((record) => `${record.id}${frameLabel(record)}`).join('、')}${covered.length > 3 ? ` 等 ${covered.length} 个` : ''} 叠在一起了：是这一组的，就放进来再让框贴合（update_cowart_shapes：它们 frameId: "${frame.id}"，框 fit: true）；不是，就把其中一个挪开（update_cowart_shapes 给 dx / dy，框会带着里面的东西走）。`]
+      : [])
   ]
   return { lines, result: { pageId: draft.pageId, frameId: frame.id, name, bounds: box(bounds), shapeIds: ordered.map((shape) => shape.id), parentId } }
 }

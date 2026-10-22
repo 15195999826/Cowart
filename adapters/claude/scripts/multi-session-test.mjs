@@ -472,6 +472,15 @@ try {
     assert.ok(!beside.isError, text(beside))
     assert.equal(beside.structuredContent.anchorShapeId, 'shape:r2')
     assert.equal(beside.structuredContent.parentId, ROLE)
+    // Put at x, y, or by a command (put names its anchor with --next-to), it is no anchor: it
+    // gave a 96 px image put at x, y the size of the selected card (2026-10-22).
+    const placedAt = await a.call('insert_cowart_image', { imagePath: join(FIXTURES, 'tiny.png'), pageId: ROLE, x: 5000, y: 5000 })
+    assert.ok(!placedAt.isError, text(placedAt))
+    assert.equal(placedAt.structuredContent.anchorShapeId, null)
+    assert.deepEqual(placedAt.structuredContent.bounds, { x: 5000, y: 5000, w: 96, h: 96 })
+    const putRun = await a.run(['put', 'image', join(FIXTURES, 'tiny.png'), '--out', 'json'])
+    assert.equal(putRun.code, 0, putRun.stderr)
+    assert.equal(JSON.parse(putRun.stdout).structuredContent.anchorShapeId, null)
     // A session that selected nothing (no pane) does not get another pane's selection: shape:r2
     // would have put its insert on A's page.
     await pageTool('pane-a', 'save_cowart_selection_state', { selection: { selectedShapes: [{ id: 'shape:r2', type: 'frame' }] } })

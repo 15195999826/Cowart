@@ -597,7 +597,9 @@ try {
     assert.match(text(beside), /等比放进 512×658 的范围，左上对齐：512×512/)
     store = await storedShapes()
     const next = store[beside.structuredContent.shapeId]
-    assert.deepEqual([next.x, next.y, next.props.w, next.props.h], [8000 + 512 + 40, 12.5, 512, 512])
+    // Right of it, past the turned image (it covers 8829.5–9487.5 on the page; upstream, which
+    // reads boxes unturned, put this one over it).
+    assert.deepEqual([next.x, next.y, next.props.w, next.props.h], [9487.5 + 40, 12.5, 512, 512])
 
     // An image upstream already sized to its bitmap's ratio stays as upstream placed it.
     const plain = await call('insert_cowart_image', { imagePath: portrait, anchorShapeId: fitted.id, placement: 'below', matchAnchor: false, displayWidth: 256 })
@@ -607,12 +609,13 @@ try {
   })
 
   await step('the commands follow the work: take a page, look at pages and one page, put things with one set of placement flags, arrange them', async () => {
-    const structured = (stdout) => JSON.parse(/^结构化结果：(.+)$/m.exec(stdout)?.[1] ?? 'null')
     const tiny = join(FIXTURES, 'tiny.png')
     const ok = (run) => {
       assert.equal(run.code, 0, run.stderr || run.stdout)
       return run
     }
+    // A command's words name what it made (ids, places, files); the whole result is --out json.
+    const json = async (argv) => JSON.parse(ok(await cowart([...argv, '--out', 'json'])).stdout).structuredContent
     // take: a page of its own, created; the answer is short (no address, no page list).
     const taken = ok(await cowart(['take', '命令页']))
     assert.match(taken.stdout, /^你现在负责「命令页」这一页（新建的）。/)
@@ -625,23 +628,36 @@ try {
     assert.match(pages, /- 「命令页」 page:\S+ · 0 个图形 · 你负责/)
     // put: a path, and placement flags (negative numbers are values).
     const putImage = ok(await cowart(['put', 'image', tiny, '--at', '-400,-300'])).stdout
-    const image = structured(putImage)
-    assert.deepEqual(image.bounds, { x: -400, y: -300, w: 96, h: 96 })
-    // In the words of the rest of the output (upstream says it in English).
-    assert.match(putImage, /^已插入图片 shape:\S+：96×96，位于 page:\S+ 的 \(-400, -300\)；文件 .+tiny.*\.png\n/)
+    // In the words of the rest of the output (upstream says it in English), and no more.
+    assert.match(putImage, /^已插入图片 shape:\S+：96×96，位于 page:\S+ 的 \(-400, -300\)；文件 .+tiny.*\.png\n?$/)
+    assert.doesNotMatch(putImage, /结构化结果/)
+    const image = { shapeId: /^已插入图片 (shape:\S+?)：/.exec(putImage)[1] }
+    // A file name upstream cannot keep (it keeps ASCII) stays the card's name.
+    const named = join(projectDir, '猫-水彩.png')
+    await copyFile(tiny, named)
+    const cat = ok(await cowart(['put', 'image', named, '--at', '-400,1200'])).stdout
+    assert.match(cat, /^已插入图片 shape:\S+（猫-水彩\.png）：/)
+    assert.match(ok(await cowart(['page'])).stdout, /素材 猫-水彩\.png → /)
     assert.match(ok(await cowart(['selection'])).stdout, /^你的画布面板里(什么都没选中|选中了 \d+ 个图形：)/)
-    const label = structured(ok(await cowart(['put', 'text', '标签 A', '--next-to', image.shapeId, '--align', 'middle', '--font-size', 's'])).stdout).texts[0]
+    const label = (await json(['put', 'text', '标签 A', '--next-to', image.shapeId, '--align', 'middle', '--font-size', 's'])).texts[0]
     assert.equal(label.text, '标签 A')
     assert.equal(label.bounds.x, -400)
     // group, then put beside the group: it keeps its own size instead of taking the group's.
-    const group = structured(ok(await cowart(['group', '组 A', image.shapeId, label.shapeId, '--padding', '20'])).stdout)
+    const group = await json(['group', '组 A', image.shapeId, label.shapeId, '--padding', '20'])
     assert.deepEqual(group.shapeIds.sort(), [image.shapeId, label.shapeId].sort())
-    const beside = structured(ok(await cowart(['put', 'image', tiny, '--next-to', group.frameId])).stdout)
+    const beside = await json(['put', 'image', tiny, '--next-to', group.frameId])
     assert.deepEqual([beside.bounds.w, beside.bounds.h], [96, 96])
+    // Below a card in a group: just under the group, not a card's height further down.
+    const under = await json(['put', 'image', tiny, '--next-to', image.shapeId, '--side', 'below', '--size', '96'])
+    assert.equal(under.bounds.y, group.bounds.y + group.bounds.h + 40)
+    // A frame drawn over another group says so.
+    const overlap = ok(await cowart(['group', '叠着', beside.shapeId, '--padding', '200'])).stdout
+    assert.match(overlap, new RegExp(`⚠ 新框跟框外的 .*${group.frameId}「组 A」.* 叠在一起了.*edit <框 id> --by dx,dy`))
+    ok(await cowart(['delete', /^已建分组框 (shape:\S+?)「/.exec(overlap)[1]]))
     // page: this session's page alone, without the canvas header.
     const page = ok(await cowart(['page'])).stdout
     assert.match(page, /^位置是图形在页面上的左上角/)
-    assert.match(page, /页面「命令页」\(page:\S+\)：4 个图形/)
+    assert.match(page, /页面「命令页」\(page:\S+\)：6 个图形/)
     assert.match(page, new RegExp(`${group.frameId} frame .*标题「组 A」 内含 2 个图形`))
     assert.match(page, /这一页由「.+」负责（本会话）。/)
     assert.doesNotMatch(page, /页面「Page 1」|当前页面/)
@@ -656,7 +672,7 @@ try {
     store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
     assert.ok(store[image.shapeId] && !store[group.frameId], 'deleting the group took its contents')
     // --page takes a page by name.
-    const elsewhere = structured(ok(await cowart(['put', 'image', tiny, '--page', 'Page 1', '--at', '0,900'])).stdout)
+    const elsewhere = await json(['put', 'image', tiny, '--page', 'Page 1', '--at', '0,900'])
     assert.equal(elsewhere.pageId, 'page:page')
     // The summary tool for one page (Codex calls it so).
     const onePage = await call('get_cowart_canvas_state', { pageId: 'page:page' })
@@ -705,6 +721,18 @@ try {
     const emptyFrame = ok(await cowart(['group', '空框', '--at', '5000,5000', '--size', '200,100'])).stdout
     assert.match(emptyFrame, /edit <图形 id> --into <框 id> 放进来/)
     assert.doesNotMatch(emptyFrame, /update_cowart_shapes/)
+    // --replace takes an ordinary card too: the new image goes in its place, centered at its
+    // own ratio, and the card goes (2026-10-22 it was put at the end of the row instead).
+    const wide = await writePng(join(projectDir, 'wide.png'), 400, 200)
+    const card = await json(['put', 'image', wide, '--at', '2000,2000', '--size', '400'])
+    const swapped = await json(['put', 'image', tiny, '--replace', card.shapeId])
+    assert.equal(swapped.replacedShapeId, card.shapeId)
+    assert.deepEqual(swapped.bounds, { x: 2100, y: 2000, w: 200, h: 200 })
+    store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
+    assert.ok(!store[card.shapeId] && store[swapped.shapeId], 'the card was not replaced')
+    // A batch takes the command's own flag names.
+    const batch = await json(['put', 'text', '--json', JSON.stringify([{ text: '甲', at: '2000,2400' }, { text: '乙', 'next-to': swapped.shapeId, align: 'middle' }])])
+    assert.deepEqual(batch.texts.map((entry) => [entry.text, entry.bounds.x]), [['甲', 2000], ['乙', 2100]])
 
     // A request from the AI HTML panel on this page, done with the commands: put html --replace
     // fills the holder, reply done closes it.
@@ -730,12 +758,14 @@ try {
     assert.match(filled, new RegExp(`^已插入 HTML 草稿 shape:\\S+：1024×576，位于 ${myPageId} 的 \\(3000, 0\\)，替换了 AI HTML 框 ${holderId}；文件 .+\\.html\\n`))
     store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
     assert.ok(!store[holderId], 'the AI HTML holder is still there')
-    assert.ok(store[structured(filled).shapeId], 'the HTML draft is not on the canvas')
+    const draftId = /^已插入 HTML 草稿 (shape:\S+?)：/.exec(filled)[1]
+    assert.equal(draftId, 'shape:login')
+    assert.ok(store[draftId], 'the HTML draft is not on the canvas')
     assert.match(ok(await cowart(['reply', id, 'done', '登录页', '放进了框里'])).stdout, new RegExp(`^已把画布请求 #${id} 标成 done：登录页 放进了框里`))
     assert.match(ok(await cowart(['requests', '--all'])).stdout, new RegExp(`#${id} \\[done\\] 生成 AI HTML`))
     // Beside an HTML draft, put html makes a new one: it does not rewrite that draft.
-    const second = structured(ok(await cowart(['put', 'html', htmlFile, '--next-to', structured(filled).shapeId])).stdout)
-    assert.notEqual(second.shapeId, structured(filled).shapeId)
+    const second = await json(['put', 'html', htmlFile, '--next-to', draftId])
+    assert.notEqual(second.shapeId, draftId)
     assert.equal(second.updatedExistingHtmlDraft, false)
   })
 

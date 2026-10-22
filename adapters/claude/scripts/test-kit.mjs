@@ -37,7 +37,8 @@ export async function step(name, run) {
     console.log(`PASS  ${name}`)
   } catch (error) {
     failures += 1
-    console.log(`FAIL  ${name}\n      ${error.stack?.split('\n').slice(0, 3).join('\n      ') ?? error}`)
+    // COWART_TEST_LINES shows more of a failure (a deep-equal diff takes more than 3 lines).
+    console.log(`FAIL  ${name}\n      ${error.stack?.split('\n').slice(0, Number(process.env.COWART_TEST_LINES) || 3).join('\n      ') ?? error}`)
   }
 }
 

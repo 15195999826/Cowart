@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 
 import { generateKeyBetween } from 'fractional-indexing'
 
-import { containSize, pageIdOfShape, pageRecords, shapeBounds, shapesOnPage } from './canvas-model.mjs'
+import { containSize, pageIdOfShape, pageRecords, shapeBounds, shapesOnPage, stepPast } from './canvas-model.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -121,10 +121,6 @@ export async function probeVideoFile(filePath) {
   return { mimeType, fileSize: size, width: dimensions?.width ?? null, height: dimensions?.height ?? null }
 }
 
-function overlaps(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
-}
-
 function positiveNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) && number > 0 ? number : null
@@ -212,15 +208,7 @@ export function planVideoPlacement({
   const exactY = typeof givenY === 'number' && Number.isFinite(givenY)
   if (exactX) x = givenX
   if (exactY) y = givenY
-  for (let attempt = 0; !exactX && !exactY && attempt < MAX_PLACEMENT_ATTEMPTS; attempt += 1) {
-    const candidate = { x, y, w, h }
-    const blocker = others.find((bounds) => overlaps(candidate, bounds))
-    if (!blocker) break
-    if (placement === 'below') y = blocker.y + blocker.h + margin
-    else if (placement === 'above') y = blocker.y - margin - h
-    else if (placement === 'left') x = blocker.x - margin - w
-    else x = blocker.x + blocker.w + margin
-  }
+  if (!exactX && !exactY) ({ x, y } = stepPast({ x, y, w, h }, others, placement, margin, MAX_PLACEMENT_ATTEMPTS))
 
   const siblingIndexes = Object.values(store)
     .filter((record) => record?.typeName === 'shape' && record.parentId === targetPageId && typeof record.index === 'string')

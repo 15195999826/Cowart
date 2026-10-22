@@ -20,8 +20,8 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 - **放东西的位置参数 put 都一样**：`--at x,y` 放到页面上那个位置；`--next-to <id> [--side right|left|below|above]` 放在它旁边（默认右边、跟它一样大；旁边是分组框时保持自己的大小）；`--replace <AI 框 id>` 替换 AI 图片 / 视频 / HTML 框；`--size 宽,高` 显示尺寸；`--page <页名>` 放进别的页（默认你负责的页）。
 - 命令自己的参数之外，`help <命令>` 的「少用的参数」也能用（工具定义里的参数名写成短横线形式：`matchAnchor` 写成 `--match-anchor`，开关写 `--match-anchor` / `--no-match-anchor`）。负数照常写：`--at -300,-200`。
 - 你放进一页的东西，用户的画布面板正看着那一页时会自己平移过去（用户正在操作画布时不动），不用让用户去找。
-- 整个参数对象也可以给 `--json '{…}'`（Bash 里用单引号包起来），`put text` 和 `edit` 还能给一个数组一次多条；长内容写成文件后用 `--json-file <文件>`。路径一律写成 `/` 分隔（`C:/Users/…`），带空格的加引号。
-- 输出是给你读的文字；插入、整理这类命令后面还跟一行 `结构化结果：{…}`（新图形的 `shapeId`、位置尺寸、文件路径），下一条命令要用的 id 从这里取。命令失败时退出码不是 0，原因写在输出里。
+- 整个参数对象也可以给 `--json '{…}'`（Bash 里用单引号包起来），`put text` 和 `edit` 还能给一个数组一次多条，每条的键用命令的参数名（不带 `--`：`{"text": "A1", "next-to": "shape:…", "align": "middle"}`、`{"shapeId": "shape:…", "by": "40,0"}`）；长内容写成文件后用 `--json-file <文件>`。路径一律写成 `/` 分隔（`C:/Users/…`），带空格的加引号。
+- 输出是给你读的文字：插入、整理这类命令的结果里就写着新图形的 `shapeId`、位置尺寸、文件路径（原文件名是中文的也照样标着），下一条命令要用的 id 从这里取；要完整的结果 JSON 加 `--out json`。命令失败时退出码不是 0，原因写在输出里。
 - 会话标识由桌面版自动传给 Bash 里的命令，不用管。这个命令只在 Claude Code 桌面版里干活；别的地方跑会提示入口不对。
 
 ## 1. 先记住这几件事
@@ -99,7 +99,7 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 
 请求也可以不从画布来：用户在对话里说「生一张 X 放到画布上」「把这个视频放上去」「按画布上的标注改一版」。
 
-- **生图放画布**：beast-gen 出图（免费档随便迭代，云端先说清消耗团队额度）→ 落本地 → Read 确认没问题 → `cowart put image <图>`。先 `cowart selection` 看用户有没有选中东西：选中的是 AI 图片框（`isAiImageHolder` / `meta.cowartAiImageHolder`）→ `--replace <框 id>`，图会等比放进框里居中，不用自己裁、不用传尺寸；选中的是别的图 → `--next-to <它>`；什么都没选 → 不给位置，放到空地。多张图从左到右排：第一张按上面放，之后每张 `--next-to <上一张结果里的 shapeId>`（要保持自己的大小再加 `--no-match-anchor`），不要拼成一张。
+- **生图放画布**：beast-gen 出图（免费档随便迭代，云端先说清消耗团队额度）→ 落本地 → Read 确认没问题 → `cowart put image <图>`。先 `cowart selection` 看用户有没有选中东西：选中的是 AI 图片框（`isAiImageHolder` / `meta.cowartAiImageHolder`）→ `--replace <框 id>`，图会等比放进框里居中，不用自己裁、不用传尺寸；选中的是别的图 → `--next-to <它>`；用户要换掉画布上的某张图 → `--replace <那张的 id>`（新图等比放进它的位置、留在同一个分组框里，旧的删掉，文件留在素材目录）；什么都没选 → 不给位置，放到空地。`put` 只认你给的 `--next-to` / `--replace`，不会因为用户选着什么就挨着它放。`selection` 的每一行跟 `page` 一样：页面上的位置、所在的分组框、素材本地路径（要看图就 Read 它）。多张图从左到右排：第一张按上面放，之后每张 `--next-to <上一张结果里的 shapeId>`（要保持自己的大小再加 `--no-match-anchor`），不要拼成一张。
 - **视频**：`cowart put video <视频> [--next-to <id> --side …]`；替换 AI 视频框用 `--replace <框 id>`。
 - **HTML**：先写成文件，`cowart put html <文件> [--next-to <id>] [--file-name <名字.html>]`。
 - **放哪一页**：不带 `--page` 的 put 放进你负责的页；没负责页时放进你的画布面板正看着的页。别人负责的页会被拒绝，这时告诉用户在这个会话里说「接管 <页名>」，不要自己绕。处理画布请求时把结果放回请求那一页（宿主说明会给 `--page`），哪怕这页后来换人了也放得进。给了 `--page` 又没给位置时，面板上别的页选中的东西不会被当成锚点，图就放在那一页的空地上。
@@ -115,8 +115,8 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 
 | 要做的事 | 命令 | 要点 |
 |---|---|---|
-| 排版、挪位置、改大小 | 只动一个：`cowart edit <id> --at 0,0`（`--by dx,dy` 相对移动，`--size 宽,高` 改尺寸）；一批：`cowart edit --json '[{"shapeId":"…","x":0,"y":0}, …]'` | 一整批放一次调用，一起保存；图片 / 视频只给宽（或高）时保持比例；卡片上的标注 / 注释箭头自动跟着走；已经在目标位置的那条不算错 |
-| 编号、标题、说明文字 | `cowart put text A1 --next-to <卡片 id> --align middle`；多条：`--json '[{"text":"A1","anchorShapeId":"…","textAlign":"middle"}, …]'` | 编号挂卡片下面（文字框和卡片一样宽，所以居中）；标题给 `--at x,y` 和 `--font-size xl`。给的位置就是最终位置，**不会自动避让**：先用 edit 留出空隙，一行字高约 s 24、m 32、l 49、xl 59 |
+| 排版、挪位置、改大小 | 只动一个：`cowart edit <id> --at 0,0`（`--by dx,dy` 相对移动，`--size 宽,高` 改尺寸）；一批：`cowart edit --json '[{"shapeId":"…","at":"0,0"}, …]'` | 一整批放一次调用，一起保存；图片 / 视频只给宽（或高）时保持比例；卡片上的标注 / 注释箭头自动跟着走；已经在目标位置的那条不算错 |
+| 编号、标题、说明文字 | `cowart put text A1 --next-to <卡片 id> --align middle`；多条：`--json '[{"text":"A1","next-to":"…","align":"middle"}, …]'` | 编号挂卡片下面（文字框和卡片一样宽，所以居中）；标题给 `--at x,y` 和 `--font-size xl`。给的位置就是最终位置，**不会自动避让**：先用 edit 留出空隙，一行字高约 s 24、m 32、l 49、xl 59 |
 | 分组 | `cowart group <标题> <shape id> <shape id> …` | 框按这些图形的范围定大小（`--padding` 默认 40），它们原地进框；框在页面最底层，框标题显示在框的左上角外面（组与组之间留出约 60）；之后谁拖框，里面的东西和标注一起走 |
 | 调整分组 | `cowart edit <id> --into <框 id>`（`--into page` 拿出来，位置都不变）；`cowart edit <框 id> --fit` 让框刚好包住里面的东西；`--title` 改框标题；`--text` 改文字 | 一批照样用 `--json` 数组（`frameId`、`fit`、`name`、`text`） |
 | 删除 | `cowart delete <shape id> …` | 只删用户明确要删的；卡片的标注 / 注释跟着删；删分组框默认留下里面的东西（`--with-contents` 才连内容一起删）；图 / 视频文件留在页素材目录，结果里给路径，要放回就用 put |
@@ -152,8 +152,8 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 | `listen`（Bash 后台跑） | 画布请求监听；连着 = 在线 |
 | `pages` | 每页一行：页名、id、几个图形、谁负责 |
 | `page [页名]` | 一页上有什么（默认你负责的页） |
-| `selection` | 本会话面板里选中的图形，判断 AI 图片框 / 锚点 |
-| `put image <图>` / `put video <视频>` / `put html <文件>` | 放东西：`--at x,y` / `--next-to <id> [--side …]` / `--replace <AI 框>` / `--size 宽,高` / `--page <页>`；html 另有 `--slide-of <Slides 框>` |
+| `selection` | 本会话面板里选中的图形（跟 `page` 一样一行一个，带本地路径），判断 AI 图片框 / 锚点 |
+| `put image <图>` / `put video <视频>` / `put html <文件>` | 放东西：`--at x,y` / `--next-to <id> [--side …]` / `--replace <AI 框；put image 也能换普通卡片>` / `--size 宽,高` / `--page <页>`；html 另有 `--slide-of <Slides 框>` |
 | `put text <文字>` | 放文字：`--at` 或 `--next-to`（默认下面）、`--font-size / --color / --font / --align / --into`；多条 `--json` 数组 |
 | `group <标题> <id>…` | 建分组框（或空框 `--at --size`） |
 | `edit <id> …` | 移动、改尺寸、改文字 / 框标题、进出分组框、`--fit`；一批 `--json` 数组 |

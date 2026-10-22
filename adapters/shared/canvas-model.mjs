@@ -236,6 +236,33 @@ export function parentTransform(store, parentId) {
   return parent?.typeName === 'shape' ? pageTransform(store, parent) : IDENTITY
 }
 
+// Where a shape put beside an anchor goes on that side ({ x, y, w, h } of the anchor and the
+// shape's size): right / left with the tops lined up, below / above with the left edges, margin
+// apart, then past what is in the way (others: page boxes), each step to just beyond the box
+// that blocks it. Upstream steps by the new shape's own size: under a card in a group frame
+// that left a card's height of empty canvas below the frame (2026-10-22).
+export function placeBeside(anchor, size, side = 'right', margin = 40, others = []) {
+  const at =
+    side === 'left' ? { x: anchor.x - margin - size.w, y: anchor.y }
+      : side === 'below' ? { x: anchor.x, y: anchor.y + anchor.h + margin }
+        : side === 'above' ? { x: anchor.x, y: anchor.y - margin - size.h }
+          : { x: anchor.x + anchor.w + margin, y: anchor.y }
+  return stepPast({ ...at, w: size.w, h: size.h }, others, side, margin)
+}
+
+export function stepPast(rect, others, side = 'right', margin = 40, attempts = 60) {
+  const candidate = { ...rect }
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const blocker = others.find((box) => candidate.x < box.x + box.w && candidate.x + candidate.w > box.x && candidate.y < box.y + box.h && candidate.y + candidate.h > box.y)
+    if (!blocker) break
+    if (side === 'below') candidate.y = blocker.y + blocker.h + margin
+    else if (side === 'above') candidate.y = blocker.y - margin - candidate.h
+    else if (side === 'left') candidate.x = blocker.x - margin - candidate.w
+    else candidate.x = blocker.x + blocker.w + margin
+  }
+  return candidate
+}
+
 // The page-aligned box around a shape; a group's is the box around its children.
 export function pageBounds(store, shape, children = null) {
   if (shape?.type === 'group') {
