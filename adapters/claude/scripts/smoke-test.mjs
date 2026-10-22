@@ -687,10 +687,24 @@ try {
     assert.doesNotMatch(ok(await cowart(['help', 'open'])).stdout, /--title|--shown-page/)
     assert.match(ok(await cowart(['help', 'feedback'])).stdout, /--kind bug\|friction\|idea  bug：/)
     assert.match(ok(await cowart(['help', 'edit'])).stdout, /--fit  分组框贴合/)
-    // A tool that fails exits 1 and says why.
+    assert.doesNotMatch(ok(await cowart(['help', 'reply'])).stdout, /\n\n\n/)
+    // A tool that fails exits 1 and says why, in the command's words: no entry paths, no tool
+    // names (call keeps the tool's).
     const missing = await cowart(['delete', 'shape:nope'])
     assert.equal(missing.code, 1)
-    assert.match(missing.stderr, /画布上没有图形 shape:nope/)
+    assert.match(missing.stderr, /^画布上没有图形 shape:nope（page 命令列出这一页的图形）。/)
+    assert.match((await cowart(['edit', 'shape:nope', '--by', '1,0'])).stderr, /^画布上没有图形 shape:nope（page 命令列出这一页的图形）。/)
+    assert.match((await cowart(['edit', '--json', JSON.stringify([{ shapeId: image.shapeId, dx: 1 }, { shapeId: 'shape:nope', dx: 1 }])])).stderr, /^第 2 条：画布上没有图形 shape:nope/)
+    assert.match((await cowart(['call', 'update_cowart_shapes', '--json', JSON.stringify({ updates: [{ shapeId: 'shape:nope', dx: 1 }] })])).stderr, /^updates\[0\]\.shapeId：.*get_cowart_canvas_state/)
+    assert.match((await cowart(['edit', image.shapeId, '--at', '1,2', '--by', '3,4'])).stderr, /^--at 和 --by 只给一种/)
+    for (const empty of [['put', 'text'], ['edit'], ['delete']]) {
+      const usage = await cowart(empty)
+      assert.equal(usage.code, 2, empty.join(' '))
+      assert.match(usage.stderr, new RegExp(`^用法：.+ ${empty.join(' ')} `))
+    }
+    const emptyFrame = ok(await cowart(['group', '空框', '--at', '5000,5000', '--size', '200,100'])).stdout
+    assert.match(emptyFrame, /edit <图形 id> --into <框 id> 放进来/)
+    assert.doesNotMatch(emptyFrame, /update_cowart_shapes/)
 
     // A request from the AI HTML panel on this page, done with the commands: put html --replace
     // fills the holder, reply done closes it.

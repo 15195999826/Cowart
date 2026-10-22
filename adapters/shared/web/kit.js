@@ -167,10 +167,37 @@
     return { x, y: rect.y }
   }
 
+  // The part of the viewport the status bar at the top and the bottom toolbar leave free, in
+  // page units (top / bottom: how much of the viewport they cover).
+  function freeView(editor) {
+    const view = editor.getViewportPageBounds()
+    const screen = editor.getViewportScreenBounds()
+    const zoom = editor.getZoomLevel()
+    const bar = document.getElementById('cowart-claude-overlay') || document.getElementById('cowart-codex-overlay')
+    const barBottom = bar ? bar.getBoundingClientRect().bottom : screen.y
+    const toolbar = document.querySelector('.tlui-layout__bottom')
+    const toolbarTop = toolbar ? toolbar.getBoundingClientRect().top : screen.y + screen.h
+    const top = Math.max(0, barBottom - screen.y) / zoom
+    const bottom = Math.max(0, screen.y + screen.h - toolbarTop) / zoom
+    return { minX: view.minX, maxX: view.maxX, minY: view.minY + top, maxY: view.maxY - bottom, top, bottom, zoom }
+  }
+
+  const REVEAL_MARGIN_PX = 48
+
+  // Brings rect into the free part of the view: a pan when it fits there at this zoom, else a
+  // zoom out to it (10-22: an AI HTML holder wider than the view only got centered, its edges,
+  // title and the cards beside it off screen). Nothing when it is in view already.
   function revealRect(editor, rect) {
-    const viewport = editor.getViewportPageBounds()
-    const visible = rect.x >= viewport.minX && rect.y >= viewport.minY && rect.x + rect.w <= viewport.maxX && rect.y + rect.h <= viewport.maxY
-    if (!visible) editor.centerOnPoint({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 }, { animation: { duration: 240 } })
+    const free = freeView(editor)
+    if (rect.x >= free.minX && rect.x + rect.w <= free.maxX && rect.y >= free.minY && rect.y + rect.h <= free.maxY) return
+    const room = REVEAL_MARGIN_PX / free.zoom
+    const animation = { duration: 280 }
+    if (rect.w + 2 * room <= free.maxX - free.minX && rect.h + 2 * room <= free.maxY - free.minY) {
+      // The center of the free part, not of the viewport, goes to the center of the rect.
+      editor.centerOnPoint({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 - (free.top - free.bottom) / 2 }, { animation })
+    } else {
+      editor.zoomToBounds({ x: rect.x, y: rect.y, w: rect.w, h: rect.h }, { inset: REVEAL_MARGIN_PX + Math.max(free.top, free.bottom) * free.zoom, animation })
+    }
   }
 
   function mediaKindOfShape(shape) {

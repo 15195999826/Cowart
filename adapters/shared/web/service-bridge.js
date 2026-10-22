@@ -382,7 +382,6 @@
     const WAIT_MS = 8000
     const USER_BUSY_MS = 5000
     const RECENT_MS = 15000
-    const MARGIN_PX = 48
     let editor = null
     let pending = null
     let recent = null
@@ -403,20 +402,6 @@
       tick()
     }
 
-    // The part of the viewport the top bar and the bottom toolbar leave free, in page units.
-    function freeView() {
-      const view = editor.getViewportPageBounds()
-      const screen = editor.getViewportScreenBounds()
-      const zoom = editor.getZoomLevel()
-      const bar = document.getElementById(config.host === 'codex' ? 'cowart-codex-overlay' : 'cowart-claude-overlay')
-      const barBottom = bar ? bar.getBoundingClientRect().bottom : screen.y
-      const toolbar = document.querySelector('.tlui-layout__bottom')
-      const toolbarTop = toolbar ? toolbar.getBoundingClientRect().top : screen.y + screen.h
-      const top = Math.max(0, barBottom - screen.y) / zoom
-      const bottom = Math.max(0, screen.y + screen.h - toolbarTop) / zoom
-      return { minX: view.minX, maxX: view.maxX, minY: view.minY + top, maxY: view.maxY - bottom, top, bottom, zoom }
-    }
-
     function stop() {
       pending = null
       clearInterval(timer)
@@ -431,23 +416,13 @@
       stop()
       if (Date.now() - lastInput < USER_BUSY_MS || editor.getEditingShapeId()) return
       const boxes = [...recent.ids].map((id) => (editor.getShape(id) ? editor.getShapePageBounds(id) : null)).filter(Boolean)
-      if (boxes.length === 0) return
-      const area = {
-        minX: Math.min(...boxes.map((box) => box.minX)),
-        minY: Math.min(...boxes.map((box) => box.minY)),
-        maxX: Math.max(...boxes.map((box) => box.maxX)),
-        maxY: Math.max(...boxes.map((box) => box.maxY))
-      }
-      const free = freeView()
-      if (area.minX >= free.minX && area.maxX <= free.maxX && area.minY >= free.minY && area.maxY <= free.maxY) return
-      const room = MARGIN_PX / free.zoom
-      const animation = { duration: 320 }
-      if (area.maxX - area.minX + 2 * room <= free.maxX - free.minX && area.maxY - area.minY + 2 * room <= free.maxY - free.minY) {
-        // The center of the free part, not of the viewport, goes to the center of what was put.
-        editor.centerOnPoint({ x: (area.minX + area.maxX) / 2, y: (area.minY + area.maxY) / 2 - (free.top - free.bottom) / 2 }, { animation })
-      } else {
-        editor.zoomToBounds({ x: area.minX, y: area.minY, w: area.maxX - area.minX, h: area.maxY - area.minY }, { inset: MARGIN_PX + Math.max(free.top, free.bottom) * free.zoom, animation })
-      }
+      const kit = window.__cowartKit
+      if (boxes.length === 0 || !kit) return
+      const x = Math.min(...boxes.map((box) => box.minX))
+      const y = Math.min(...boxes.map((box) => box.minY))
+      // Panned to when it fits, zoomed out to when it does not (kit.js, as for the holders the
+      // toolbar makes).
+      kit.revealRect(editor, { x, y, w: Math.max(...boxes.map((box) => box.maxX)) - x, h: Math.max(...boxes.map((box) => box.maxY)) - y })
     }
 
     return { reveal }
@@ -796,14 +771,19 @@
       // No listener running is the normal state between requests, not a fault: requests wait in
       // the service until the session runs it again, or the user says 看画布 in its conversation.
       if (transport) return ['queue', `${name} · ${duty} · 请求先排队`, name]
-      if (handlingRequest()) return ['queue', `${name} · ${duty} · 正在处理请求 · 新请求先排队`, name]
+      const handling = handlingRequest()
+      if (handling === 'running') return ['queue', `${name} · ${duty} · 正在处理请求 · 新请求先排队`, name]
+      if (handling === 'asking') return ['queue', `${name} · ${duty} · 等你在对话里确认 · 新请求先排队`, name]
       return ['queue', `${name} · ${duty} · 请求会排队 · 到对话里说「看画布」`, name]
     }
 
-    // A request of this pane's session that its conversation has: being asked about or worked on.
+    // A request of this pane's session that its conversation has: 'running' once worked on,
+    // 'asking' while the conversation asks the user about it (delivered, no answer yet).
+    // 10-22: 正在处理请求 showed while the request itself still said 请到对话里点执行.
     function handlingRequest() {
-      return [...state.requests.values()].some((request) => request.session === config.session && request.executor !== 'service'
-        && (request.status === 'running' || (request.status === 'pending' && request.delivered)))
+      const own = [...state.requests.values()].filter((request) => request.session === config.session && request.executor !== 'service')
+      if (own.some((request) => request.status === 'running')) return 'running'
+      return own.some((request) => request.status === 'pending' && request.delivered) ? 'asking' : null
     }
 
     function renderPill() {

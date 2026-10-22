@@ -109,6 +109,8 @@ const camel = (name) => name.replace(/-([a-z])/g, (_, char) => char.toUpperCase(
 // for one entry of a list tool's items / updates), covers names the tool parameters it stands
 // for (left out of help's 少用的参数). A command's hidden tool parameters are ones it has no use
 // for or another command does (open's shownPage is take --shown): still read, never offered.
+// needs: the command is about its first positional (or what needs(args) says) and stops at its
+// usage without it.
 const SIDES = ['right', 'left', 'below', 'above']
 const pageFlag = (about) => ({ kind: 'page', arg: '<页名或 id>', about, covers: ['pageId'], set: (target, value) => (target.pageId = value) })
 const atFlag = (about, into) => ({ kind: 'pair', arg: '<x,y>', about, into, covers: ['x', 'y'], set: (target, [x, y]) => Object.assign(target, { x, y }) })
@@ -175,6 +177,7 @@ const COMMANDS = [
       replace: { kind: 'text', arg: '<AI 图片框 id>', about: '替换这个 AI 图片框：图等比放进框里、居中', covers: ['replaceAiImageHolder'], set: (target, value) => Object.assign(target, { anchorShapeId: value, replaceAiImageHolder: true }) }
     },
     hidden: ['cowartUrl', 'shapeMeta', 'assetMeta'],
+    needs: true,
     structured: true
   },
   {
@@ -189,6 +192,7 @@ const COMMANDS = [
       replace: { kind: 'text', arg: '<AI 视频框 id>', about: '替换这个 AI 视频框：视频放进框里', covers: ['replaceHolderShapeId'], set: (target, value) => (target.replaceHolderShapeId = value) }
     },
     hidden: ['shapeMeta'],
+    needs: true,
     structured: true
   },
   {
@@ -213,6 +217,7 @@ const COMMANDS = [
     },
     // The HTML comes in a file (htmlContent is for call, the way a request spells it).
     hidden: ['htmlContent', 'shapeMeta'],
+    needs: (args) => Boolean(args.htmlPath || args.htmlContent),
     structured: true
   },
   {
@@ -228,10 +233,11 @@ const COMMANDS = [
       'next-to': nextToFlag('挂在这个图形旁边（默认下面）', 'item'),
       side: sideFlag('挂在 --next-to 的哪一边（默认 below）', 'item'),
       'font-size': { kind: 'text', arg: 's|m|l|xl', choices: ['s', 'm', 'l', 'xl'], into: 'item', about: '字号（默认 m）', covers: ['size'], set: (target, value) => (target.size = value) },
-      align: { kind: 'text', arg: 'start|middle|end', into: 'item', about: '文字框里的对齐', covers: ['textAlign'], set: (target, value) => (target.textAlign = value) },
+      align: { kind: 'text', arg: 'start|middle|end', choices: ['start', 'middle', 'end'], into: 'item', about: '文字框里的对齐', covers: ['textAlign'], set: (target, value) => (target.textAlign = value) },
       into: { kind: 'text', arg: '<框 id>|page', into: 'item', about: '放进这个分组框（框跟着长大）', covers: ['frameId'], set: (target, value) => (target.frameId = value) },
       page: pageFlag('放进这一页（默认：你负责的页）')
     },
+    needs: true,
     structured: true
   },
   // 整理
@@ -248,6 +254,7 @@ const COMMANDS = [
       size: { kind: 'size', arg: '<宽,高>', about: '空框的尺寸', covers: ['w', 'h'], set: (target, [w, h]) => Object.assign(target, { w, ...(h !== undefined ? { h } : {}) }) },
       page: pageFlag('建在这一页（默认：你负责的页）')
     },
+    needs: true,
     structured: true
   },
   {
@@ -269,6 +276,7 @@ const COMMANDS = [
       padding: { kind: 'number', arg: '<像素>', into: 'item', about: '--fit 时内容到框边的距离（默认 40）', covers: ['padding'], set: (target, value) => (target.padding = value) },
       page: pageFlag('改的是这一页（一般不用给）')
     },
+    needs: true,
     structured: true
   },
   {
@@ -282,12 +290,13 @@ const COMMANDS = [
       'with-contents': { kind: 'switch', about: '删分组框时连里面的东西一起删', covers: ['deleteChildren'], set: (target, value) => (target.deleteChildren = value) },
       page: pageFlag('删的是这一页上的（一般不用给）')
     },
+    needs: true,
     structured: true
   },
   // 请求
   { name: 'requests', group: '请求', tool: LIST_REQUESTS_TOOL, usage: 'requests [--all]', about: '本会话的画布请求（「看画布」：取排队的请求）', flags: { all: { kind: 'switch', about: '连做完的也列出来', covers: ['includeFinished'], set: (target, value) => (target.includeFinished = value) } } },
-  { name: 'request', group: '请求', tool: GET_REQUEST_TOOL, positional: ['id'], usage: 'request <编号>', about: '画布请求的详情（原始请求 + 宿主说明）' },
-  { name: 'reply', group: '请求', tool: REPLY_REQUEST_TOOL, positional: ['id', 'status', '...message'], usage: `reply <编号> ${AGENT_STATUSES.join('|')} [一句话]`, about: '回画布请求的状态，画布顶部照着显示' },
+  { name: 'request', group: '请求', tool: GET_REQUEST_TOOL, positional: ['id'], needs: true, usage: 'request <编号>', about: '画布请求的详情（原始请求 + 宿主说明）' },
+  { name: 'reply', group: '请求', tool: REPLY_REQUEST_TOOL, positional: ['id', 'status', '...message'], needs: true, usage: `reply <编号> ${AGENT_STATUSES.join('|')} [一句话]`, about: '回画布请求的状态，画布顶部照着显示' },
   // 其它
   {
     name: 'feedback',
@@ -304,6 +313,7 @@ const COMMANDS = [
       files: { kind: 'list', arg: '<路径>,…', about: '一起留下的本地文件（截图、生成结果、日志）', covers: ['attachments'], set: (target, value) => (target.attachments = value) },
       page: pageFlag('说的是这一页（不是你负责或正看着的页时才给）')
     },
+    needs: true,
     structured: true
   }
 ]
@@ -606,7 +616,42 @@ export function localizeError(message) {
   return message
 }
 
-export function restate(name, result) {
+// The layout tools (canvas-edit.mjs) speak in their parameters, for the models that call them:
+// which entry of a batch a message is about (updates[0].shapeId：) and what to call next. A
+// command speaks in its flags and commands (call keeps the tools' words).
+const COMMAND_WORDS = [
+  [/（id 以 get_cowart_canvas_state 列出的为准）/g, '（page 命令列出这一页的图形）'],
+  [/（建好后可以用 update_cowart_shapes 调）/g, '（建好后可以用 edit 调）'],
+  [/update_cowart_shapes 给图形传 frameId 放进来/g, 'edit <图形 id> --into <框 id> 放进来'],
+  [
+    /超出了分组框 (shape:[^\s「，]+)(「[^」]*」)?，页面上超出的部分会被裁掉：给这个框 fit: true，或者给 (\S+) frameId: "page" 拿出来/g,
+    '超出了分组框 $1$2，页面上超出的部分会被裁掉：edit $1 --fit 让框包住它，或者 edit $3 --into page 拿出来'
+  ],
+  [/要放回就用 insert_cowart_image \/ insert_cowart_video/g, '要放回就用 put image / put video'],
+  [/x \/ y 和 anchorShapeId 只给一种/g, '--at 和 --next-to 只给一种'],
+  [/x \/ y 和 dx \/ dy 只给一种/g, '--at 和 --by 只给一种'],
+  [/给 x 和 y（文字框左上角的页面坐标），或者给 anchorShapeId/g, '给 --at x,y（文字框左上角的页面坐标），或者给 --next-to <id>'],
+  [/frameId 是空的（拿出分组框用 "page"）/g, '--into 是空的（拿出分组框用 --into page）']
+]
+
+// entries: how many items / updates the command sent; one needs no number.
+export function inCommandWords(text, entries = 1) {
+  let said = text
+  for (const [pattern, words] of COMMAND_WORDS) said = said.replace(pattern, words)
+  said = said.replace(/(^|\n)(?:updates|items)\[(\d+)\](?:\.\w+)?：/g, (_, start, n) => `${start}${entries > 1 ? `第 ${Number(n) + 1} 条：` : ''}`)
+  return said.replace(/(^|\n)shapeIds：/g, '$1')
+}
+
+// speaking: { entries } for a command, null for call.
+export function restate(name, result, speaking = null) {
+  const said = restated(name, result)
+  if (!speaking) return said
+  const text = resultText(said)
+  const words = inCommandWords(text, speaking.entries)
+  return words === text ? said : { ...said, content: [{ type: 'text', text: words }] }
+}
+
+function restated(name, result) {
   const structured = result?.structuredContent
   if (result?.isError) {
     const text = resultText(result)
@@ -622,6 +667,17 @@ export function restate(name, result) {
   const [first = '', ...rest] = resultText(result).split('\n')
   if (!/^(Inserted|Planned) /.test(first)) return result
   return { ...result, content: [{ type: 'text', text: [RESTATED[name](structured), ...rest].join('\n') }] }
+}
+
+// A command run without what it is about (put text with no text, delete with no id): its
+// usage, before the tool would answer in its parameters.
+function missingSubject(command, args) {
+  if (!command?.needs) return false
+  if (typeof command.needs === 'function') return !command.needs(args)
+  const key = command.positional?.[0]?.replace(/^\.\.\./, '')
+  const holder = command.item ? (Array.isArray(args[command.item]) ? args[command.item][0] : null) ?? {} : args
+  const value = key ? holder[key] : undefined
+  return value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0)
 }
 
 export function resultText(result) {
@@ -884,26 +940,23 @@ function usage(cli) {
 }
 
 function describeCommand(command, schema, cli) {
-  const lines = [`${cli} ${command.usage}`, command.about, '']
+  // Sections, a blank line apart.
+  const sections = [[`${cli} ${command.usage}`, command.about]]
   const own = Object.entries(command.flags ?? {})
-  if (own.length > 0) {
-    lines.push('参数：')
-    for (const [name, flag] of own) lines.push(`  --${name}${flag.kind === 'switch' ? '' : ` ${flag.arg}`}  ${flag.about}`)
-  }
+  if (own.length > 0) sections.push(['参数：', ...own.map(([name, flag]) => `  --${name}${flag.kind === 'switch' ? '' : ` ${flag.arg}`}  ${flag.about}`)])
   const properties = schema?.properties ?? {}
   const itemProperties = command.item ? properties[command.item]?.items?.properties ?? {} : {}
   const others = otherFlags(command, schema)
   if (others.length > 0) {
-    lines.push(`${own.length > 0 ? '\n' : ''}少用的参数：`)
-    for (const key of others) {
+    sections.push(['少用的参数：', ...others.map((key) => {
       const spec = properties[key] ?? itemProperties[key] ?? {}
       const arg = spec.enum ? spec.enum.join('|') : spec.type === 'number' || spec.type === 'integer' ? '<数>' : spec.type === 'boolean' ? '' : '<…>'
-      lines.push(`  --${kebab(key)}${arg ? ` ${arg}` : ''}  ${PARAM_ABOUT[key] ?? spec.description ?? ''}`.trimEnd())
-    }
+      return `  --${kebab(key)}${arg ? ` ${arg}` : ''}  ${PARAM_ABOUT[key] ?? spec.description ?? ''}`.trimEnd()
+    })])
   }
-  if (command.item) lines.push('', `一次多条：--json '[{…}, …]'，每条照工具 ${command.tool} 的 ${command.item} 写。`)
-  if (command.tool) lines.push('', `参数原本的定义：${cli} tools ${command.tool}`)
-  return lines.join('\n')
+  if (command.item) sections.push([`一次多条：--json '[{…}, …]'，每条照工具 ${command.tool} 的 ${command.item} 写。`])
+  if (command.tool) sections.push([`参数原本的定义：${cli} tools ${command.tool}`])
+  return sections.map((lines) => lines.join('\n')).join('\n\n')
 }
 
 function describeOther([, , name, about], cli) {
@@ -936,6 +989,8 @@ export async function main(argv = process.argv.slice(2)) {
   // would end the process in the middle. Every way out is exit().
   setInterval(() => {}, 60_000)
   const cli = cowartCommand()
+  // Set once a command (not call) has its arguments: its results speak in its words.
+  let speaking = null
   try {
     const { name, rest } = splitCommand(argv)
     if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli))
@@ -1025,12 +1080,15 @@ export async function main(argv = process.argv.slice(2)) {
     const { args, out, help } = await buildArguments(command, schema, toolArgv)
     if (help) return exit(0, describeCommand(command, schema, cli))
     if (command.result === 'take' && !String(args.page ?? '').trim() && args.shownPage !== true) throw new UsageError(`用法：${command.usage}`)
+    if (missingSubject(command, args)) throw new UsageError(`用法：${cli} ${command.usage}`)
+    if (name !== 'call') speaking = { entries: command.item && Array.isArray(args[command.item]) ? args[command.item].length : 1 }
     // --page takes a page name too.
     if (typeof args.pageId === 'string' && !args.pageId.startsWith('page:')) args.pageId = await pageIdFor(client, args.pageId, cli)
-    const result = restate(toolName, await callTool(client, toolName, args, cli, { as: command.result }))
+    const result = restate(toolName, await callTool(client, toolName, args, cli, { as: command.result }), speaking)
     return exit(result.isError ? 1 : 0, formatResult(result, { command, out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
   } catch (error) {
-    const message = localizeError(error instanceof Error ? error.message : String(error))
+    const raw = localizeError(error instanceof Error ? error.message : String(error))
+    const message = speaking ? inCommandWords(raw, speaking.entries) : raw
     if (error instanceof UsageError) return exit(2, message)
     return exit(1, argv.includes('json') && argv.includes('--out') ? JSON.stringify(errorResult(message)) : message, argv.includes('--out') ? process.stdout : process.stderr)
   }
