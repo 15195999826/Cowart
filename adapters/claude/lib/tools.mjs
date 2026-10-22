@@ -34,10 +34,13 @@ export const OWN_TOOLS = [
     name: CANVAS_STATE_TOOL,
     title: 'Get Cowart Canvas Summary',
     description:
-      'Summarize the Cowart canvas: pages, shapes (id, type, position, size, text) and their image/video assets with local file paths, plus which session is responsible for which page. Pass includeSnapshot: true only if the raw tldraw snapshot is really needed (it can be very large).',
+      'Summarize the Cowart canvas: pages, shapes (id, type, position, size, text) and their image/video assets with local file paths, plus which session is responsible for which page. The canvas holds every session\'s pages: pass pageId to summarize the one page you work on. Pass includeSnapshot: true only if the raw tldraw snapshot is really needed (it can be very large).',
     inputSchema: {
       type: 'object',
-      properties: { includeSnapshot: { type: 'boolean' } }
+      properties: {
+        pageId: { type: 'string', description: 'Summarize this page only (page:… id).' },
+        includeSnapshot: { type: 'boolean' }
+      }
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },

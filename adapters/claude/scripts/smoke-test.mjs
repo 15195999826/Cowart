@@ -109,7 +109,7 @@ try {
     assert.doesNotMatch(skill, /timeout_ms|persistent|mcp__cowart__|claude mcp add/)
     const help = await cowart(['help'])
     assert.equal(help.code, 0, help.stderr)
-    for (const command of ['open', 'state', 'selection', 'insert-image', 'insert-video', 'insert-html', 'insert-text', 'frame', 'update', 'delete', 'request', 'reply', 'requests', 'feedback', 'listen', 'call']) {
+    for (const command of ['open', 'take', 'listen', 'pages', 'page', 'selection', 'put image', 'put video', 'put html', 'put text', 'group', 'edit', 'delete', 'requests', 'request', 'reply', 'feedback', 'call']) {
       assert.match(help.stdout, new RegExp(`^  ${command}\\b`, 'm'), `help does not list ${command}`)
     }
   })
@@ -606,56 +606,75 @@ try {
     assert.deepEqual([plain.structuredContent.bounds.w, plain.structuredContent.bounds.h], [256, 329])
   })
 
-  await step('commands take the parameters as arguments and flags, print the structured result, and turn away what they do not know', async () => {
+  await step('the commands follow the work: take a page, look at pages and one page, put things with one set of placement flags, arrange them', async () => {
     const structured = (stdout) => JSON.parse(/^结构化结果：(.+)$/m.exec(stdout)?.[1] ?? 'null')
     const tiny = join(FIXTURES, 'tiny.png')
-    // A path argument, and flags whose values are negative numbers.
-    const placed = await cowart(['insert-image', tiny, '--x', '-400', '--y', '-300'])
-    assert.equal(placed.code, 0, placed.stderr)
-    assert.match(placed.stdout, /^Inserted shape:/)
-    const image = structured(placed.stdout)
+    const ok = (run) => {
+      assert.equal(run.code, 0, run.stderr || run.stdout)
+      return run
+    }
+    // take: a page of its own, created; the answer is short (no address, no page list).
+    const taken = ok(await cowart(['take', '命令页']))
+    assert.match(taken.stdout, /^你现在负责「命令页」这一页（新建的）。/)
+    assert.doesNotMatch(taken.stdout, /Cowart 画布已就绪|这张画布的页/)
+    assert.equal((await cowart(['take'])).code, 2)
+    // pages: a line a page, who holds it.
+    const pages = ok(await cowart(['pages'])).stdout
+    assert.match(pages, /^这张画布有 \d+ 页，你负责「命令页」/)
+    assert.match(pages, /- 「命令页」 page:\S+ · 0 个图形 · 你负责/)
+    // put: a path, and placement flags (negative numbers are values).
+    const image = structured(ok(await cowart(['put', 'image', tiny, '--at', '-400,-300'])).stdout)
     assert.deepEqual(image.bounds, { x: -400, y: -300, w: 96, h: 96 })
-    // A list tool's flags make one entry; aliases and --kebab-case names both work.
-    const labelled = await cowart(['insert-text', '标签 A', '--anchor', image.shapeId, '--text-align', 'middle', '--size', 's'])
-    assert.equal(labelled.code, 0, labelled.stderr)
-    const label = structured(labelled.stdout).texts[0]
+    const label = structured(ok(await cowart(['put', 'text', '标签 A', '--next-to', image.shapeId, '--align', 'middle', '--font-size', 's'])).stdout).texts[0]
     assert.equal(label.text, '标签 A')
     assert.equal(label.bounds.x, -400)
-    const moved = await cowart(['update', '--shape', image.shapeId, '--dx', '10', '--dy=-5'])
-    assert.equal(moved.code, 0, moved.stderr)
-    // The arguments after a title are a list.
-    const framed = await cowart(['frame', '组 A', image.shapeId, label.shapeId, '--padding', '20'])
-    assert.equal(framed.code, 0, framed.stderr)
-    const frame = structured(framed.stdout)
-    assert.deepEqual(frame.shapeIds.sort(), [image.shapeId, label.shapeId].sort())
-    assert.equal(frame.name, '组 A')
-    const store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
-    assert.equal(store[image.shapeId].parentId, frame.frameId)
-    // A whole list given with --json.
-    const fitted = await cowart(['update', '--json', JSON.stringify({ updates: [{ shapeId: frame.frameId, fit: true }] })])
-    assert.equal(fitted.code, 0, fitted.stderr)
-    const deleted = await cowart(['delete', frame.frameId])
-    assert.equal(deleted.code, 0, deleted.stderr)
-    assert.ok((await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store[image.shapeId], 'deleting the frame took its contents')
+    // group, then put beside the group: it keeps its own size instead of taking the group's.
+    const group = structured(ok(await cowart(['group', '组 A', image.shapeId, label.shapeId, '--padding', '20'])).stdout)
+    assert.deepEqual(group.shapeIds.sort(), [image.shapeId, label.shapeId].sort())
+    const beside = structured(ok(await cowart(['put', 'image', tiny, '--next-to', group.frameId])).stdout)
+    assert.deepEqual([beside.bounds.w, beside.bounds.h], [96, 96])
+    // page: this session's page alone, without the canvas header.
+    const page = ok(await cowart(['page'])).stdout
+    assert.match(page, /^位置是图形在页面上的左上角/)
+    assert.match(page, /页面「命令页」\(page:\S+\)：4 个图形/)
+    assert.match(page, new RegExp(`${group.frameId} frame .*标题「组 A」 内含 2 个图形`))
+    assert.match(page, /这一页由「.+」负责（本会话）。/)
+    assert.doesNotMatch(page, /页面「Page 1」|当前页面/)
+    assert.match(ok(await cowart(['page', 'Page 1'])).stdout, /页面「Page 1」/)
+    assert.equal((await cowart(['page', '没有这页'])).code, 2)
+    // edit: one shape by flags, or a batch as a JSON array; delete.
+    ok(await cowart(['edit', image.shapeId, '--by', '10,-5']))
+    ok(await cowart(['edit', '--json', JSON.stringify([{ shapeId: group.frameId, fit: true }])]))
+    let store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
+    assert.equal(store[image.shapeId].parentId, group.frameId)
+    ok(await cowart(['delete', group.frameId]))
+    store = (await call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot.store
+    assert.ok(store[image.shapeId] && !store[group.frameId], 'deleting the group took its contents')
+    // --page takes a page by name.
+    const elsewhere = structured(ok(await cowart(['put', 'image', tiny, '--page', 'Page 1', '--at', '0,900'])).stdout)
+    assert.equal(elsewhere.pageId, 'page:page')
+    // The summary tool for one page (Codex calls it so).
+    const onePage = await call('get_cowart_canvas_state', { pageId: 'page:page' })
+    assert.deepEqual(onePage.structuredContent.pages.map((entry) => entry.id), ['page:page'])
 
     // What it does not know is turned away before anything runs (exit 2), with what it knows.
-    const unknown = await cowart(['insert-image', tiny, '--bogus', '1'])
+    const unknown = await cowart(['put', 'image', tiny, '--bogus', '1'])
     assert.equal(unknown.code, 2)
-    assert.match(unknown.stderr, /不认识 --bogus。能用的参数：.*--anchor-shape-id/)
-    const placement = await cowart(['insert-image', tiny, '--placement', 'up'])
-    assert.equal(placement.code, 2)
-    assert.match(placement.stderr, /--placement 只能是 right \/ left \/ below \/ above/)
-    const number = await cowart(['reply', 'x', 'done'])
-    assert.equal(number.code, 2)
-    assert.match(number.stderr, /要一个整数/)
-    const help = await cowart(['help', 'insert-text'])
-    assert.equal(help.code, 0, help.stderr)
-    assert.match(help.stdout, /--text-align/)
-    assert.match(help.stdout, /--anchor = --anchor-shape-id/)
+    assert.match(unknown.stderr, /不认识 --bogus。能用的参数：--at --next-to --side --size --page --replace /)
+    const side = await cowart(['put', 'image', tiny, '--next-to', image.shapeId, '--side', 'up'])
+    assert.equal(side.code, 2)
+    assert.match(side.stderr, /--side 只能是 right \/ left \/ below \/ above/)
+    assert.match((await cowart(['put', 'image', tiny, '--at', '10'])).stderr, /--at 要写成 <x,y>/)
+    assert.match((await cowart(['put', 'sticker', tiny])).stderr, /put 能放 image \/ video \/ html \/ text/)
+    assert.match((await cowart(['reply', 'x', 'done'])).stderr, /要一个整数/)
+    const help = ok(await cowart(['help', 'put', 'html'])).stdout
+    assert.match(help, /--slide-of <Slides 框 id>/)
+    assert.match(help, /工具 insert_cowart_html_draft 的其它参数/)
+    assert.doesNotMatch(help, /--anchor-shape-id|--draft-shape-id/)
     // A tool that fails exits 1 and says why.
     const missing = await cowart(['delete', 'shape:nope'])
     assert.equal(missing.code, 1)
-    assert.match(missing.stderr, /^delete_cowart_shapes：/)
+    assert.match(missing.stderr, /画布上没有图形 shape:nope/)
   })
 
   await step('install writes the cowart command, and the texts name it from then on', async () => {

@@ -11,7 +11,7 @@ import { basename, join, resolve } from 'node:path'
 import { generateKeyBetween } from 'fractional-indexing'
 
 import { pageAssetUrl, pageDirName, resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
-import { fitImageToAsset, formatCanvasSummary, localPathForAssetSrc, pageBounds, pageIdOfShape, pageRecords, summarizeCanvas } from '../../shared/canvas-model.mjs'
+import { fitImageToAsset, formatCanvasSummary, localPathForAssetSrc, pageBounds, pageIdOfShape, pageRecords, shapesOnPage, summarizeCanvas } from '../../shared/canvas-model.mjs'
 import { sanitizeFileName, uniqueFilePath } from '../../shared/files.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { PREPARE_REQUEST_TOOL, prepareGenerationRequest } from '../../shared/generation-requests.mjs'
@@ -119,6 +119,14 @@ function withPlacementInputs(tool) {
 function finiteOrNull(value) {
   const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
   return Number.isFinite(number) ? number : null
+}
+
+// A group frame (insert_cowart_frame, tldraw's frame tool), not an AI holder or Slides. An insert
+// beside a card takes the card's size by default (matchAnchor, for 按标注修改); beside a group
+// it would blow a small image up to the size of the whole group (2026-10-22), so it keeps its own.
+function isGroupFrame(shape) {
+  const meta = shape?.meta ?? {}
+  return shape?.typeName === 'shape' && shape.type === 'frame' && !meta.cowartAiImageHolder && !meta.cowartAiDraftHolder && !meta.cowartAiVideoHolder && !meta.cowartAiSlides
 }
 
 function rectsOverlap(a, b, padding) {
@@ -455,7 +463,7 @@ export class CanvasOps extends EventEmitter {
     const { canvasDir } = resolveCowartPaths(args)
     return this.#guard.withLock(writeLockKey(name, canvasDir), async () => {
       const before = (await this.#storedSnapshot(args))?.store ?? {}
-      let result = await this.#callWithRetry(name, upstreamArgs)
+      let result = await this.#callWithRetry(name, upstreamArgs.matchAnchor === undefined && isGroupFrame(before[nonEmpty(upstreamArgs.anchorShapeId)]) ? { ...upstreamArgs, matchAnchor: false } : upstreamArgs)
       if (result?.isError) return result
       if (name === 'insert_cowart_image') result = await this.#fitInsertedImage(upstreamArgs, result)
       if (place.x !== null || place.y !== null || place.above) result = await this.#placeInserted(upstreamArgs, result, place)
@@ -624,19 +632,30 @@ export class CanvasOps extends EventEmitter {
     }
   }
 
-  async canvasState(args) {
+  // The canvas summary; with pageId, of that page alone (the one canvas carries every session's
+  // pages, dozens of them: the whole summary ran to 268 KB on 2026-10-22).
+  async canvasState({ pageId: wantedPage, ...args }) {
     const result = await this.#upstream.callTool(CANVAS_STATE_TOOL, { ...args, hydrateAssets: false })
     if (args.includeSnapshot === true) return result
     const state = structuredOrThrow(result, CANVAS_STATE_TOOL)
+    const pageId = nonEmpty(wantedPage)
+    if (pageId && !pageRecords(state.snapshot).some((page) => page.id === pageId)) throw new Error(`画布上没有 ${pageId} 这一页。`)
     // Records a page cannot show are marked, so the model does not count on them.
     const invalid = state.snapshot?.store
-      ? await this.#invalidRecords(state.snapshot).catch((error) => {
+      ? await this.#invalidRecords(state.snapshot, { pageIds: pageId ? [pageId] : null }).catch((error) => {
           this.#log(`canvas summary without validation: ${error instanceof Error ? error.message : error}`)
           return []
         })
       : []
-    const summary = summarizeCanvas({ ...state, invalid })
-    return textResult(formatCanvasSummary(summary), summary)
+    const whole = summarizeCanvas({ ...state, invalid })
+    const summary = pageId ? { ...whole, pages: whole.pages.filter((page) => page.id === pageId) } : whole
+    return textResult(formatCanvasSummary(summary, { onePage: Boolean(pageId) }), summary)
+  }
+
+  // Every page in order, with how many shapes it has (no validation, no shape details).
+  async pageList(args) {
+    const snapshot = await this.#storedSnapshot(args)
+    return pageRecords(snapshot).map((page) => ({ id: page.id, name: page.name, shapes: shapesOnPage(snapshot, page.id).length }))
   }
 
   async insertVideo(args) {
@@ -669,7 +688,7 @@ export class CanvasOps extends EventEmitter {
             anchorShapeId: nonEmpty(args.anchorShapeId),
             placement: args.placement,
             margin: Number.isFinite(args.margin) ? args.margin : 40,
-            matchAnchor: args.matchAnchor,
+            matchAnchor: args.matchAnchor ?? (isGroupFrame(state.snapshot.store?.[nonEmpty(args.anchorShapeId)]) ? false : undefined),
             displayWidth: args.displayWidth,
             displayHeight: args.displayHeight,
             videoWidth,

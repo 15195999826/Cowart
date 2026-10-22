@@ -968,6 +968,8 @@ export class CanvasServer {
         return this.#openCanvas(session, args)
       case 'canvas-state':
         return this.#canvasState(session, this.#withDefaults(session, args))
+      case 'pages':
+        return this.#pages(session)
       case 'insert-video':
         return this.ops.insertVideo(await this.#pageWrite(session, INSERT_VIDEO_TOOL, this.#withDefaults(session, args)))
       case 'tool': {
@@ -1101,6 +1103,12 @@ export class CanvasServer {
     if (args.includeSnapshot === true || result?.isError) return result
     const { canvasDir } = resolveCowartPaths(args)
     const view = this.presence.view(canvasDir)
+    const pageId = nonEmpty(args.pageId)
+    if (pageId) {
+      const holder = view.pages[pageId]?.holder
+      const duty = holder ? `这一页由「${this.#nameOf(holder)}」负责${holder === session.id ? '（本会话）' : '：别的会话不能往里放东西'}。` : '这一页还没人负责。'
+      return textResult(`${result.content?.[0]?.text ?? ''}\n\n${duty}`, { ...result.structuredContent, responsibilities: view })
+    }
     const lines = Object.entries(view.pages).map(([pageId, page]) => {
       const name = (result.structuredContent?.pages ?? []).find((entry) => entry.id === pageId)?.name ?? pageId
       return `- ${name} → ${this.#nameOf(page.holder)}${page.holder === session.id ? '（本会话）' : ''}`
@@ -1110,6 +1118,22 @@ export class CanvasServer {
     const own = mine?.canvasDir === canvasDir ? '' : '\n这个会话没负责这张画布的页：不带 pageId 的插入会放进它的画布面板正看着的页（没人负责的话）。'
     const text = `${result.content?.[0]?.text ?? ''}\n\n谁负责哪一页（别的会话负责的页不能往里放东西）：\n${summary}${own}`
     return textResult(text, { ...result.structuredContent, responsibilities: view })
+  }
+
+  // Every page of the canvas: who is responsible for it, which one this session holds and which
+  // its canvas pane shows.
+  async #pages(session) {
+    const pages = await this.ops.pageList(this.#withDefaults(session))
+    const shown = this.presence.panesOf(session.id, this.canvasDir)[0]?.pageId ?? null
+    const mine = this.presence.pageOf(session.id)
+    return {
+      pages: pages.map((page) => {
+        const holder = this.presence.holderOf(this.canvasDir, page.id)
+        return { ...page, holder: holder ? this.#nameOf(holder) : null, mine: holder === session.id, shown: page.id === shown }
+      }),
+      myPageId: mine?.canvasDir === this.canvasDir ? mine.pageId : null,
+      shownPageId: shown
+    }
   }
 
   // ---- Feedback ----------------------------------------------------------------------

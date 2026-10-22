@@ -1350,7 +1350,11 @@
         Math.max(bottomLeft.x + screenWidth / 2 - width / 2, PANEL_MARGIN),
         Math.max(PANEL_MARGIN, window.innerWidth - width - PANEL_MARGIN)
       )
-      const top = Math.min(Math.max(bottomLeft.y + PANEL_OFFSET, PANEL_MARGIN), Math.max(PANEL_MARGIN, window.innerHeight - PANEL_H - PANEL_MARGIN))
+      // Above the bottom toolbar row, as the app's own panels are kept (src/App.jsx): this one sits
+      // over it and would hide the toolbar.
+      const bottomRow = document.querySelector('.tlui-layout__bottom')?.getBoundingClientRect()
+      const panelBottom = bottomRow?.height > 0 ? Math.min(window.innerHeight, bottomRow.top) : window.innerHeight
+      const top = Math.min(Math.max(bottomLeft.y + PANEL_OFFSET, PANEL_MARGIN), Math.max(PANEL_MARGIN, panelBottom - PANEL_H - PANEL_MARGIN))
       panel.style.left = `${Math.round(left)}px`
       panel.style.top = `${Math.round(top)}px`
       panel.style.width = `${Math.round(width)}px`

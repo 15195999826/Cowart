@@ -6,6 +6,12 @@
 // makes one call and leaves; `cowart listen`, run in the background, brings the session its
 // canvas requests and keeps it online while it runs (server.mjs). It used to be an MCP server,
 // registered project by project, and the session was online only while that process lived.
+//
+// The commands follow what a session does with the canvas, not the tools one by one: open it
+// and take pages (open, take, listen), look at it (pages, page, selection), put things on it
+// (put image / video / html / text, with one set of placement flags), arrange it (group, edit,
+// delete), and answer its requests. `call <tool>` runs any tool with its own parameters, the way
+// a canvas request (written for Codex) spells them.
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -91,113 +97,209 @@ export async function removeCommandLink() {
   return { removed: true }
 }
 
-// ---- Commands -------------------------------------------------------------------------
+class UsageError extends Error {}
 
-// Each command runs one tool. positional: the parameters its arguments fill, in order ('...'
-// takes the rest). item: a tool taking a list of these (insert_cowart_text's items,
-// update_cowart_shapes' updates), whose flags make one entry. aliases: short flags.
+const kebab = (name) => name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)
+const camel = (name) => name.replace(/-([a-z])/g, (_, char) => char.toUpperCase())
+
+// ---- Flags ----------------------------------------------------------------------------
+
+// A command's own flags: kind says how the value reads (pair: "x,y"; size: "w,h" or "w"; page:
+// a page name or id; switch: no value), set puts it into the tool's parameters (into: 'item'
+// for one entry of a list tool's items / updates), covers names the tool parameters it stands
+// for (left out of help's 其它参数).
+const SIDES = ['right', 'left', 'below', 'above']
+const pageFlag = (about) => ({ kind: 'page', arg: '<页名或 id>', about, covers: ['pageId'], set: (target, value) => (target.pageId = value) })
+const atFlag = (about, into) => ({ kind: 'pair', arg: '<x,y>', about, into, covers: ['x', 'y'], set: (target, [x, y]) => Object.assign(target, { x, y }) })
+const nextToFlag = (about, into) => ({ kind: 'text', arg: '<shape id>', about, into, covers: ['anchorShapeId'], set: (target, value) => (target.anchorShapeId = value) })
+const sideFlag = (about, into) => ({ kind: 'text', arg: SIDES.join('|'), choices: SIDES, about, into, covers: ['placement'], set: (target, value) => (target.placement = value) })
+const displaySizeFlag = {
+  kind: 'size',
+  arg: '<宽,高>',
+  about: '显示尺寸；只给宽就按原比例',
+  covers: ['displayWidth', 'displayHeight'],
+  set: (target, [w, h]) => {
+    target.displayWidth = w
+    if (h !== undefined) target.displayHeight = h
+    target.matchAnchor ??= false
+  }
+}
+// Where put image / video / html go.
+const PLACE = {
+  at: atFlag('放在页面上这个位置（左上角）'),
+  'next-to': nextToFlag('放在这个图形旁边（默认右边、跟它一样大；旁边是分组框时保持自己的大小）'),
+  side: sideFlag('放在 --next-to 的哪一边（默认 right）'),
+  size: displaySizeFlag,
+  page: pageFlag('放进这一页（默认：你负责的页；没负责页时是面板正看着的页）')
+}
+
 const COMMANDS = [
+  // 会话
   {
     name: 'open',
+    group: '会话',
     tool: RENDER_TOOL,
-    usage: 'open [--name <名字>] [--page <页名> | --shown-page]',
-    about: '打开画布；--page 进入（接管）这一页，没有就建；--shown-page 接管面板正看着的页',
-    aliases: { name: 'sessionName' }
+    positional: ['page'],
+    usage: 'open [页名] [--name <你的名字>]',
+    about: '打开画布：给网址、你的名字、负责哪页、下一步；带页名 = 进入 / 接管这一页（没有就建）',
+    flags: { name: { kind: 'text', arg: '<名字>', about: '你在画布上的名字（第一次打开时起一个，之后不换）', covers: ['sessionName'], set: (target, value) => (target.sessionName = value) } },
+    result: 'open'
   },
-  { name: 'state', tool: CANVAS_STATE_TOOL, usage: 'state [--snapshot]', about: '画布摘要：每页的图形、位置、尺寸、素材本地路径、标注、谁负责哪页', aliases: { snapshot: 'includeSnapshot' } },
-  { name: 'selection', tool: 'get_cowart_selection', usage: 'selection', about: '用户在本会话画布面板里选中的东西', structured: true },
   {
-    name: 'insert-image',
+    name: 'take',
+    group: '会话',
+    tool: RENDER_TOOL,
+    positional: ['page'],
+    usage: 'take <页名> | take --shown',
+    about: '换你负责的页：进入 / 接管这一页（没有就建），--shown 接管面板正看着的页；面板跟过去',
+    flags: { shown: { kind: 'switch', about: '接管你的画布面板正看着的那一页（「接管这页」）', covers: ['shownPage'], set: (target, value) => (target.shownPage = value) } },
+    result: 'take'
+  },
+  // 看
+  { name: 'pages', group: '看', usage: 'pages', about: '画布上所有的页：页名、谁负责、几个图形', run: 'pages' },
+  { name: 'page', group: '看', usage: 'page [页名]', about: '一页上有什么：图形、位置尺寸、素材本地路径、标注指向；默认看你负责的页', run: 'page' },
+  { name: 'selection', group: '看', tool: 'get_cowart_selection', usage: 'selection', about: '用户在本会话画布面板里选中的东西', structured: true },
+  // 放
+  {
+    name: 'put image',
+    group: '放',
     tool: 'insert_cowart_image',
     positional: ['imagePath'],
-    usage: 'insert-image <图片路径> [--anchor <shape id>] [--placement right|left|below|above] [--x <x> --y <y>] [--page-id <页 id>]',
-    about: '放图片；--anchor 传 AI 图片框 id 就替换它',
-    aliases: { anchor: 'anchorShapeId' },
+    usage: 'put image <图片> [--at x,y | --next-to <id> [--side …] | --replace <AI 图片框>] [--size 宽,高] [--page <页>]',
+    about: '放图片；--replace 替换 AI 图片框（等比放进框里）',
+    flags: {
+      ...PLACE,
+      replace: { kind: 'text', arg: '<AI 图片框 id>', about: '替换这个 AI 图片框：图等比放进框里、居中', covers: ['replaceAiImageHolder'], set: (target, value) => Object.assign(target, { anchorShapeId: value, replaceAiImageHolder: true }) }
+    },
     structured: true
   },
   {
-    name: 'insert-video',
+    name: 'put video',
+    group: '放',
     tool: INSERT_VIDEO_TOOL,
     positional: ['videoPath'],
-    usage: 'insert-video <视频路径> [--anchor <shape id>] [--placement …] [--x <x> --y <y>] [--replace-holder <AI 视频框 id>]',
-    about: '放视频；--replace-holder 替换 AI 视频框',
-    aliases: { anchor: 'anchorShapeId', 'replace-holder': 'replaceHolderShapeId' },
+    usage: 'put video <视频> [--at x,y | --next-to <id> [--side …] | --replace <AI 视频框>] [--size 宽,高] [--page <页>]',
+    about: '放视频；--replace 替换 AI 视频框',
+    flags: {
+      ...PLACE,
+      replace: { kind: 'text', arg: '<AI 视频框 id>', about: '替换这个 AI 视频框：视频放进框里', covers: ['replaceHolderShapeId'], set: (target, value) => (target.replaceHolderShapeId = value) }
+    },
     structured: true
   },
   {
-    name: 'insert-html',
+    name: 'put html',
+    group: '放',
     tool: 'insert_cowart_html_draft',
     positional: ['htmlPath'],
-    usage: 'insert-html <HTML 文件> [--draft <AI HTML 框 id>] [--anchor <shape id>] [--placement …] [--file-name <名字.html>]',
-    about: '放 / 替换 HTML 草稿，给 Slides 加页',
-    aliases: { draft: 'draftShapeId', anchor: 'anchorShapeId' },
+    usage: 'put html <HTML 文件> [--at x,y | --next-to <id> [--side …] | --replace <AI HTML 框> | --slide-of <Slides 框>] [--size 宽,高] [--page <页>]',
+    about: '放 HTML 草稿；--replace 替换 AI HTML 框，--slide-of 给 AI Slides 加一页',
+    flags: {
+      ...PLACE,
+      replace: { kind: 'text', arg: '<AI HTML 框 id>', about: '替换这个 AI HTML 框', covers: ['draftShapeId', 'replaceDraftHolder'], set: (target, value) => (target.draftShapeId = value) },
+      'slide-of': {
+        kind: 'text',
+        arg: '<Slides 框 id>',
+        about: '给这个 AI Slides 加一页（不替换、不删 Slides 框）',
+        covers: ['updateExistingDraft'],
+        set: (target, value) => Object.assign(target, { draftShapeId: value, replaceDraftHolder: false, updateExistingDraft: false, matchAnchor: false })
+      }
+    },
     structured: true
   },
   {
-    name: 'insert-text',
+    name: 'put text',
+    group: '放',
     tool: 'insert_cowart_text',
     positional: ['text'],
     item: 'items',
-    usage: 'insert-text <文字> (--anchor <shape id> [--placement below] | --x <x> --y <y>) [--size s|m|l|xl] [--text-align middle]',
-    about: "放文字：编号、标题、说明；一次放多条用 --json '{\"items\":[…]}'",
-    aliases: { anchor: 'anchorShapeId', align: 'textAlign' },
+    usage: 'put text <文字> [--at x,y | --next-to <id> [--side below]] [--font-size s|m|l|xl] [--align middle] [--into <框>] [--page <页>]',
+    about: "放文字：编号、标题、说明；放在 --next-to 的下面时跟它一样宽；一次多条用 --json '[{\"text\":…}, …]'",
+    flags: {
+      at: atFlag('放在页面上这个位置（左上角）', 'item'),
+      'next-to': nextToFlag('挂在这个图形旁边（默认下面）', 'item'),
+      side: sideFlag('挂在 --next-to 的哪一边（默认 below）', 'item'),
+      'font-size': { kind: 'text', arg: 's|m|l|xl', choices: ['s', 'm', 'l', 'xl'], into: 'item', about: '字号（默认 m）', covers: ['size'], set: (target, value) => (target.size = value) },
+      align: { kind: 'text', arg: 'start|middle|end', into: 'item', about: '文字框里的对齐', covers: ['textAlign'], set: (target, value) => (target.textAlign = value) },
+      into: { kind: 'text', arg: '<框 id>|page', into: 'item', about: '放进这个分组框（框跟着长大）', covers: ['frameId'], set: (target, value) => (target.frameId = value) },
+      page: pageFlag('放进这一页（默认：你负责的页）')
+    },
     structured: true
   },
+  // 整理
   {
-    name: 'frame',
+    name: 'group',
+    group: '整理',
     tool: 'insert_cowart_frame',
     positional: ['name', '...shapeIds'],
-    usage: 'frame <标题> <shape id>… [--padding 40]',
-    about: '建分组框，把这些图形原地框进去',
+    usage: 'group <标题> <shape id>… [--padding 40]',
+    about: '建分组框，把这些图形原地框进去（不给图形就用 --at 和 --size 建一个空框）',
+    flags: {
+      at: { kind: 'pair', arg: '<x,y>', about: '空框的位置（左上角）', covers: ['x', 'y'], set: (target, [x, y]) => Object.assign(target, { x, y }) },
+      size: { kind: 'size', arg: '<宽,高>', about: '空框的尺寸', covers: ['w', 'h'], set: (target, [w, h]) => Object.assign(target, { w, ...(h !== undefined ? { h } : {}) }) },
+      page: pageFlag('建在这一页（默认：你负责的页）')
+    },
     structured: true
   },
   {
-    name: 'update',
+    name: 'edit',
+    group: '整理',
     tool: 'update_cowart_shapes',
+    positional: ['shapeId'],
     item: 'updates',
-    usage: 'update --shape <shape id> [--x <x> --y <y> | --dx --dy] [--w --h] [--text …] [--name …] [--frame-id <框 id>|page] [--fit]',
-    about: "移动、改尺寸、改文字 / 框标题、进出分组框；一批一起改用 --json '{\"updates\":[…]}'",
-    aliases: { shape: 'shapeId' },
+    usage: 'edit <shape id> [--at x,y | --by dx,dy] [--size 宽,高] [--text …] [--title …] [--into <框>|page] [--fit]',
+    about: "移动、改尺寸、改文字 / 框标题、进出分组框；一批一起改用 --json '[{\"shapeId\":…}, …]'",
+    flags: {
+      at: atFlag('移到页面上这个位置（左上角）', 'item'),
+      by: { kind: 'pair', arg: '<dx,dy>', into: 'item', about: '相对移动', covers: ['dx', 'dy'], set: (target, [dx, dy]) => Object.assign(target, { dx, dy }) },
+      size: { kind: 'size', arg: '<宽,高>', into: 'item', about: '新尺寸；图片 / 视频只给宽就按比例', covers: ['w', 'h'], set: (target, [w, h]) => Object.assign(target, { w, ...(h !== undefined ? { h } : {}) }) },
+      title: { kind: 'text', arg: '<标题>', into: 'item', about: '分组框的新标题', covers: ['name'], set: (target, value) => (target.name = value) },
+      into: { kind: 'text', arg: '<框 id>|page', into: 'item', about: '放进这个分组框；page 拿出来（位置不变）', covers: ['frameId'], set: (target, value) => (target.frameId = value) },
+      page: pageFlag('改的是这一页（一般不用给）')
+    },
     structured: true
   },
   {
     name: 'delete',
+    group: '整理',
     tool: 'delete_cowart_shapes',
     positional: ['...shapeIds'],
-    usage: 'delete <shape id>… [--delete-children]',
-    about: '删除图形（页面上 Ctrl+Z 撤不回；删框默认留下里面的东西）',
+    usage: 'delete <shape id>… [--with-contents]',
+    about: '删除图形（页面上 Ctrl+Z 撤不回；删分组框默认留下里面的东西）',
+    flags: { 'with-contents': { kind: 'switch', about: '删分组框时连里面的东西一起删', covers: ['deleteChildren'], set: (target, value) => (target.deleteChildren = value) } },
     structured: true
   },
-  { name: 'request', tool: GET_REQUEST_TOOL, positional: ['id'], usage: 'request <编号>', about: '画布请求的详情（原始请求 + 宿主说明）' },
-  {
-    name: 'reply',
-    tool: REPLY_REQUEST_TOOL,
-    positional: ['id', 'status', '...message'],
-    usage: `reply <编号> ${AGENT_STATUSES.join('|')} [一句话]`,
-    about: '回画布请求的状态，画布顶部照着显示'
-  },
-  { name: 'requests', tool: LIST_REQUESTS_TOOL, usage: 'requests [--all]', about: '本会话的画布请求（「看画布」：取排队的请求）', aliases: { all: 'includeFinished' } },
+  // 请求
+  { name: 'requests', group: '请求', tool: LIST_REQUESTS_TOOL, usage: 'requests [--all]', about: '本会话的画布请求（「看画布」：取排队的请求）', flags: { all: { kind: 'switch', about: '连做完的也列出来', covers: ['includeFinished'], set: (target, value) => (target.includeFinished = value) } } },
+  { name: 'request', group: '请求', tool: GET_REQUEST_TOOL, positional: ['id'], usage: 'request <编号>', about: '画布请求的详情（原始请求 + 宿主说明）' },
+  { name: 'reply', group: '请求', tool: REPLY_REQUEST_TOOL, positional: ['id', 'status', '...message'], usage: `reply <编号> ${AGENT_STATUSES.join('|')} [一句话]`, about: '回画布请求的状态，画布顶部照着显示' },
+  // 其它
   {
     name: 'feedback',
+    group: '其它',
     tool: 'send_cowart_feedback',
     positional: ['...text'],
-    usage: 'feedback <用户原话> --title <一句话> --kind bug|friction|idea [--details …] [--shape-ids <id>,…] [--attachments <路径>,…]',
+    usage: 'feedback <用户原话> --title <一句话> --kind bug|friction|idea [--details …] [--shapes <id>,…] [--files <路径>,…]',
     about: '记下用户对 Cowart 本身的意见',
+    flags: {
+      shapes: { kind: 'list', arg: '<shape id>,…', about: '说的是画布上的这些图形', covers: ['shapeIds'], set: (target, value) => (target.shapeIds = value) },
+      files: { kind: 'list', arg: '<路径>,…', about: '一起留下的本地文件（截图、生成结果、日志）', covers: ['attachments'], set: (target, value) => (target.attachments = value) },
+      page: pageFlag('说的是这一页（不是你负责或正看着的页时才给）')
+    },
     structured: true
   }
 ]
 
 const OTHER_COMMANDS = [
-  ['listen', '画布请求监听：用 Bash 工具后台跑（run_in_background: true），来了请求才退出；它连着就表示这个会话在线'],
-  ['call <工具名> [--json \'{…}\']', '直接调一个工具，参数照工具定义（请求里写的工具调用照搬到这里）'],
-  ['tools [<工具名>]', '列出所有工具；给了工具名就打出它的参数定义'],
-  ['help [<命令>]', '用法；给了命令就列出它的全部参数'],
-  ['install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart / 删掉它`]
+  ['会话', 'listen', '画布请求监听：用 Bash 工具后台跑（run_in_background: true），来了请求才退出；它连着就表示这个会话在线'],
+  ['其它', "call <工具名> [--json '{…}']", '照工具定义直接调一个工具（画布请求里按 Codex 写的工具调用照搬到这里）'],
+  ['其它', 'tools [<工具名>]', '列出所有工具；给了工具名就打出它的参数定义'],
+  ['其它', 'help [<命令>]', '用法；给了命令就列出它的全部参数'],
+  ['其它', 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart / 删掉它`]
 ]
 
 const GLOBAL_FLAGS = [
-  ['--json <JSON 对象>', '整个参数对象（- 从标准输入读）；和其它选项一起给时选项优先'],
-  ['--json-file <文件>', '从文件读参数对象（HTML 之类的长内容用它）'],
+  ['--json <JSON>', "参数对象（- 从标准输入读）；put text、edit 也能给一个数组，一次多条"],
+  ['--json-file <文件>', '从文件读 --json'],
   ['--out json', '打出完整的结果 JSON，而不是给人读的文字']
 ]
 
@@ -205,13 +307,25 @@ function commandNamed(name) {
   return COMMANDS.find((command) => command.name === name || command.tool === name) ?? null
 }
 
-class UsageError extends Error {}
-
-const kebab = (name) => name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)
-const camel = (name) => name.replace(/-([a-z])/g, (_, char) => char.toUpperCase())
-
 // ---- Arguments ------------------------------------------------------------------------
 
+function parseJson(text, what) {
+  try {
+    return JSON.parse(text)
+  } catch (error) {
+    throw new UsageError(`${what} 不是合法的 JSON：${error.message}`)
+  }
+}
+
+function numberOf(raw, flag, { integer = false } = {}) {
+  const number = Number(raw)
+  if (String(raw).trim() === '' || !Number.isFinite(number) || (integer && !Number.isInteger(number))) {
+    throw new UsageError(`--${flag} 要一个${integer ? '整数' : '数'}，「${raw}」不是。`)
+  }
+  return number
+}
+
+// A value of a tool parameter, by its schema.
 function coerce(value, schema = {}, flag) {
   const type = schema.type
   if (value === true) {
@@ -223,11 +337,7 @@ function coerce(value, schema = {}, flag) {
     if (/^(false|0|no)$/i.test(value)) return false
     throw new UsageError(`--${flag} 只能是 true 或 false。`)
   }
-  if (type === 'number' || type === 'integer') {
-    const number = Number(value)
-    if (value === '' || !Number.isFinite(number) || (type === 'integer' && !Number.isInteger(number))) throw new UsageError(`--${flag} 要一个${type === 'integer' ? '整数' : '数'}，「${value}」不是。`)
-    return number
-  }
+  if (type === 'number' || type === 'integer') return numberOf(value, flag, { integer: type === 'integer' })
   if (type === 'array') {
     const items = value.trim().startsWith('[') ? parseJson(value, `--${flag}`) : value.split(',').map((item) => item.trim()).filter(Boolean)
     if (!Array.isArray(items)) throw new UsageError(`--${flag} 要一个列表。`)
@@ -242,16 +352,22 @@ function coerce(value, schema = {}, flag) {
   return value
 }
 
-function parseJson(text, what) {
-  try {
-    return JSON.parse(text)
-  } catch (error) {
-    throw new UsageError(`${what} 不是合法的 JSON：${error.message}`)
+// A value of a command's own flag, by its kind.
+function readOwnFlag(spec, value, flag) {
+  if (spec.kind === 'switch') return coerce(value, { type: 'boolean' }, flag)
+  if (value === true) throw new UsageError(`--${flag} 后面要给 ${spec.arg}。`)
+  if (spec.kind === 'pair' || spec.kind === 'size') {
+    const parts = String(value).split(',').map((part) => part.trim())
+    if (parts.length > 2 || (spec.kind === 'pair' && parts.length !== 2)) throw new UsageError(`--${flag} 要写成 ${spec.arg}，「${value}」不是。`)
+    return parts.map((part) => numberOf(part, flag))
   }
+  if (spec.kind === 'list') return String(value).split(',').map((item) => item.trim()).filter(Boolean)
+  if (spec.choices && !spec.choices.includes(value)) throw new UsageError(`--${flag} 只能是 ${spec.choices.join(' / ')}，不能是「${value}」。`)
+  return value
 }
 
 // Splits the arguments into the parameter object (--json / --json-file), flags and positionals.
-// A flag's value is the next argument, except for a flag that takes none (resolve tells).
+// A flag's value is the next argument, except for a flag that takes none (takesValue says).
 function tokenize(argv, takesValue) {
   const flags = []
   const positionals = []
@@ -298,13 +414,15 @@ function tokenize(argv, takesValue) {
   return { flags, positionals, json, jsonFile, out }
 }
 
-// Where a flag goes: { key, schema, into: 'top' | 'item' } or null.
+// Where a flag goes: the command's own flag, or a tool parameter by its name
+// ({ key, schema, into: 'top' | 'item' }); null when neither.
 function flagSpec(command, schema, name) {
+  const own = command?.flags?.[name]
+  if (own) return { own, into: own.into ?? 'top' }
   const properties = schema?.properties ?? {}
   const itemProperties = command?.item ? properties[command.item]?.items?.properties ?? {} : {}
-  const keyFor = (flag) => command?.aliases?.[flag] ?? (flag in properties || flag in itemProperties ? flag : camel(flag))
   const lookup = (flag) => {
-    const key = keyFor(flag)
+    const key = flag in properties || flag in itemProperties ? flag : camel(flag)
     if (key in properties && key !== command?.item) return { key, schema: properties[key], into: 'top' }
     if (key in itemProperties) return { key, schema: itemProperties[key], into: 'item' }
     return null
@@ -313,26 +431,47 @@ function flagSpec(command, schema, name) {
   if (spec) return spec
   // --no-fit
   if (name.startsWith('no-')) {
+    const ownNegated = command?.flags?.[name.slice(3)]
+    if (ownNegated?.kind === 'switch') return { own: ownNegated, into: ownNegated.into ?? 'top', negated: true }
     const negated = lookup(name.slice(3))
     if (negated?.schema?.type === 'boolean') return { ...negated, negated: true }
   }
   return null
 }
 
-function knownFlags(command, schema) {
-  const properties = schema?.properties ?? {}
-  const itemProperties = command?.item ? properties[command.item]?.items?.properties ?? {} : {}
-  return [...Object.keys(properties).filter((key) => key !== command?.item), ...Object.keys(itemProperties)].map((key) => `--${kebab(key)}`)
+function takesValue(spec) {
+  if (!spec) return true
+  if (spec.negated) return false
+  return spec.own ? spec.own.kind !== 'switch' : spec.schema?.type !== 'boolean'
 }
 
-async function readParameters(json, jsonFile) {
+// The tool parameters a command's own flags do not stand for, as flags.
+function otherFlags(command, schema) {
+  const covered = new Set(Object.values(command?.flags ?? {}).flatMap((flag) => flag.covers ?? []))
+  for (const slot of command?.positional ?? []) covered.add(slot.replace(/^\.\.\./, ''))
+  const properties = schema?.properties ?? {}
+  const itemProperties = command?.item ? properties[command.item]?.items?.properties ?? {} : {}
+  const keys = [...Object.keys(properties).filter((key) => key !== command?.item), ...Object.keys(itemProperties)]
+  return keys.filter((key) => !covered.has(key))
+}
+
+function knownFlags(command, schema) {
+  return [...Object.keys(command?.flags ?? {}), ...otherFlags(command, schema).map(kebab)].map((flag) => `--${flag}`)
+}
+
+async function readParameters(json, jsonFile, command) {
   let args = {}
-  if (jsonFile) args = parseJson(await readFile(jsonFile, 'utf8'), `--json-file ${jsonFile}`)
+  const take = (value, what) => {
+    // A list tool (put text, edit) takes the list itself.
+    if (Array.isArray(value) && command?.item) return { [command.item]: value }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new UsageError(`${what} 要一个 JSON 对象${command?.item ? '或数组' : ''}。`)
+    return value
+  }
+  if (jsonFile) args = take(parseJson(await readFile(jsonFile, 'utf8'), `--json-file ${jsonFile}`), '--json-file')
   if (json !== null) {
     const text = json === '-' ? await readStdin() : json
-    args = { ...args, ...parseJson(text, '--json') }
+    args = { ...args, ...take(parseJson(text, '--json'), '--json') }
   }
-  if (!args || typeof args !== 'object' || Array.isArray(args)) throw new UsageError('--json / --json-file 要一个 JSON 对象。')
   return args
 }
 
@@ -342,20 +481,12 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-// The tool's parameters from the command line.
+// The tool's parameters from the command line. Page names (--page) come back unresolved in
+// args.pageId; the caller resolves them.
 export async function buildArguments(command, schema, argv) {
-  const parsed = tokenize(argv, (name) => {
-    const spec = flagSpec(command, schema, name)
-    // An unknown flag takes its value, to be turned away below.
-    return !spec || (!spec.negated && spec.schema?.type !== 'boolean')
-  })
-  const args = await readParameters(parsed.json, parsed.jsonFile)
+  const parsed = tokenize(argv, (name) => takesValue(flagSpec(command, schema, name)))
+  const args = await readParameters(parsed.json, parsed.jsonFile, command)
   const item = {}
-  const put = (spec, value) => {
-    const target = spec.into === 'item' ? item : args
-    // A list flag given again adds to it.
-    target[spec.key] = Array.isArray(value) && Array.isArray(target[spec.key]) && spec.fromFlag ? [...target[spec.key], ...value] : value
-  }
   const given = new Set()
   for (const { name, value } of parsed.flags) {
     if (name === 'help') continue
@@ -364,20 +495,26 @@ export async function buildArguments(command, schema, argv) {
       const known = knownFlags(command, schema)
       throw new UsageError(`不认识 --${name}。${known.length ? `能用的参数：${known.join(' ')}` : '这个命令没有参数。'}`)
     }
+    const target = spec.into === 'item' ? item : args
+    if (spec.own) {
+      const read = readOwnFlag(spec.own, value, name)
+      spec.own.set(target, spec.negated ? !read : read)
+      continue
+    }
     const coerced = spec.negated ? !coerce(value, spec.schema, name) : coerce(value, spec.schema, name)
-    put({ ...spec, fromFlag: given.has(spec.key) }, coerced)
+    // A list flag given again adds to it.
+    target[spec.key] = Array.isArray(coerced) && Array.isArray(target[spec.key]) && given.has(spec.key) ? [...target[spec.key], ...coerced] : coerced
     given.add(spec.key)
   }
-  const positional = command?.positional ?? []
   const values = [...parsed.positionals]
-  for (const slot of positional) {
+  for (const slot of command?.positional ?? []) {
     if (values.length === 0) break
     const rest = slot.startsWith('...')
     const key = rest ? slot.slice(3) : slot
     const spec = flagSpec(command, schema, key) ?? { key, schema: {}, into: 'top' }
     const taken = rest ? values.splice(0) : [values.shift()]
     const value = spec.schema?.type === 'array' ? taken.flatMap((entry) => coerce(entry, spec.schema, key)) : coerce(taken.join(' '), spec.schema, key)
-    put(spec, value)
+    ;(spec.into === 'item' ? item : args)[spec.key ?? key] = value
   }
   if (values.length > 0) throw new UsageError(`多出来的参数：${values.join(' ')}（用法：${command ? command.usage : 'call <工具名> …'}）`)
   if (Object.keys(item).length > 0) args[command.item] = [...(Array.isArray(args[command.item]) ? args[command.item] : []), item]
@@ -424,20 +561,20 @@ function confirmNote(request) {
 }
 
 function generationNote(request, cli) {
-  const imagegen = `画布的提示词是按 Codex 写的：凡是要求用 Codex 内置 imagegen / 当前可用的图片生成能力的地方，改用 beast-gen skill（先用 Skill 工具加载它，按它的规则出图）。免费本地档：文生图用 krea2，按标注 / 参考图改图用 flux2-klein；云端档用 lib-image（Lib Image 2.5，quality=low 起步）。模板与参数以 beast gen templates 现查为准。结果下载到本地后，按请求里的要求放上画布：${cli} insert-image <本地路径> …（请求写给 insert_cowart_image 的参数照样带上）。`
+  const imagegen = `画布的提示词是按 Codex 写的：凡是要求用 Codex 内置 imagegen / 当前可用的图片生成能力的地方，改用 beast-gen skill（先用 Skill 工具加载它，按它的规则出图）。免费本地档：文生图用 krea2，按标注 / 参考图改图用 flux2-klein；云端档用 lib-image（Lib Image 2.5，quality=low 起步）。模板与参数以 beast gen templates 现查为准。结果下载到本地后，按请求里的要求放上画布（${cli} put image <本地路径> …，或照搬请求写的 insert_cowart_image 调用）。`
   if (request.kind === 'video') {
-    return `这是视频请求：先用 Skill 工具加载 beast-gen，按请求里写好的模板和参数提交，素材按请求的顺序上传后填进对应参数；生成后下载到本地，按请求放进画布：${cli} insert-video <本地路径> --replace-holder <AI 视频框的 id>。`
+    return `这是视频请求：先用 Skill 工具加载 beast-gen，按请求里写好的模板和参数提交，素材按请求的顺序上传后填进对应参数；生成后下载到本地，按请求放进画布：${cli} put video <本地路径> --replace <AI 视频框的 id>。`
   }
   if (request.kind === 'image') {
-    return `这是图片请求：先用 Skill 工具加载 beast-gen，按请求里的模板和参数出图，按 skill 的要求先读对应参考（lib-image 2.5 系读 references/image-prompting.md，ideogram4 读 references/ideogram4-caption.md，透明底读 references/transparent-asset.md）；生成后下载到本地，Read 看图，再按请求放进画布：${cli} insert-image <本地路径> …。`
+    return `这是图片请求：先用 Skill 工具加载 beast-gen，按请求里的模板和参数出图，按 skill 的要求先读对应参考（lib-image 2.5 系读 references/image-prompting.md，ideogram4 读 references/ideogram4-caption.md，透明底读 references/transparent-asset.md）；生成后下载到本地，Read 看图，再按请求放进画布：${cli} put image <本地路径> --replace <AI 图片框的 id>。`
   }
   if (request.kind === 'web') {
-    return `这是网页复刻请求：先 Read 请求里的整页截图（很长时分段看），有标注的话逐张 Read 标注的局部截图，再读渲染后的页面代码；要看真实的颜色、字体、间距，或按坐标找标注指的元素，可以用 Browser 面板打开原网址（mcp__Claude_Browser__navigate，再用 read_page / javascript_tool 读计算后的样式、用 document.elementFromPoint 定位）。做成单文件 HTML 后按请求放进画布：${cli} insert-html <HTML 文件> --draft <框 id> …。`
+    return `这是网页复刻请求：先 Read 请求里的整页截图（很长时分段看），有标注的话逐张 Read 标注的局部截图，再读渲染后的页面代码；要看真实的颜色、字体、间距，或按坐标找标注指的元素，可以用 Browser 面板打开原网址（mcp__Claude_Browser__navigate，再用 read_page / javascript_tool 读计算后的样式、用 document.elementFromPoint 定位）。做成单文件 HTML 后按请求放进画布：${cli} put html <HTML 文件> --replace <AI HTML 框 id>。`
   }
   const task = requestTask(request)
   if (task === 'annotation-edit') return `${ANNOTATION_REMARKS_NOTE}用户选「按标注出新图」时：${imagegen}`
   if (task === 'html') {
-    return `AI HTML / AI Slides 请求：不生图、不用 beast-gen；照请求写完整的单文件 HTML（CSS / JS 内联），按请求放进画布：${cli} insert-html <HTML 文件> …。`
+    return `AI HTML / AI Slides 请求：不生图、不用 beast-gen；照请求写完整的单文件 HTML（CSS / JS 内联），按请求放进画布（${cli} put html <HTML 文件> …，或照搬请求写的 insert_cowart_html_draft 调用）。`
   }
   return imagegen
 }
@@ -450,29 +587,31 @@ export function hostNotes(request, cli = cowartCommand()) {
     confirmNote(request),
     '还没加载过 cowart skill 的话，先用 Skill 工具加载它：各类请求的做法、结果放哪一页、标注怎么读都在那里。',
     generationNote(request, cli),
-    `请求里的工具调用是按 Codex 写的（insert_cowart_… 和它们的参数）：Claude Code 里用 cowart 命令跑——${cli} call <工具名> --json '{…}' 原样照搬参数（路径写成 / 分隔），或用对应的子命令加 --参数（${cli} help 列出子命令；参数写成短横线形式，比如 --anchor-shape-id）。长 HTML 先写成文件，再传文件路径。`,
+    `请求里的工具调用是按 Codex 写的（insert_cowart_… 和它们的参数）：照搬最稳——${cli} call <工具名> --json '{…}'，参数原样放进去（路径写成 / 分隔）；也可以换成 ${cli} put 加统一的位置参数（${cli} help 看对应关系）。长 HTML 先写成文件，再传文件路径。`,
     '请求里给出的截图、参考图等本地路径可以直接用 Read 工具查看。',
     `请求开头的 [@Cowart](plugin://…) 是 Codex 的插件提及，忽略即可；请求说不要调用 render_cowart_canvas_widget 时，就是不要重新 ${cli} open。`,
     ...(request.pageId
-      ? [`结果放进发出请求的那一页：放的时候带上 --page-id ${request.pageId}（请求里指定了卡片的就按卡片放；这一页后来换了别的会话负责也照样放得进去）。`]
+      ? [`结果放进发出请求的那一页：put 带上 --page ${request.pageId}（call 就在参数里带 "pageId": "${request.pageId}"；请求里指定了卡片的就按卡片放；这一页后来换了别的会话负责也照样放得进去）。`]
       : []),
     `开始执行时运行 ${cli} reply ${request.id} running；完成后 ${cli} reply ${request.id} done "<一句结果>"；失败 ${cli} reply ${request.id} failed "<原因>"；用户选跳过时 ${cli} reply ${request.id} skipped。画布上会显示这些状态。用户没点选项、自己打字回答的，按用户说的办，状态照样要回，不然画布上一直显示「请到对话里点执行」、还能点撤销。回完 done / failed / skipped，监听没在跑的话再后台启动它接下一条（reply 的结果会给命令）。`
   ]
 }
 
-function renderResult(opened, cli) {
-  const command = `${cli} listen`
-  const pageList = (opened.pages ?? []).map((page) => `「${page.name}」${page.holder ? `（${page.mine ? '你' : page.holder}负责）` : ''}`)
-  const duty = opened.page
+function dutyLine(opened) {
+  return opened.page
     ? `你现在负责「${opened.page}」这一页${opened.pageCreated ? '（新建的）' : ''}${opened.takenFrom ? `，从「${opened.takenFrom}」那里接了过来` : ''}`
     : opened.myPage
       ? `你负责的还是「${opened.myPage}」这一页`
       : '你没负责任何页（用户说「打开 Cowart 画布 <页名>」或「接管 <页名>」时再进入）'
+}
+
+// open: the canvas address and what to do next. No page list: `pages` has it.
+function openResult(opened, cli) {
+  const command = `${cli} listen`
   const lines = [
     `Cowart 画布已就绪：${opened.url}`,
     `画布：${opened.canvasDir}（这台机器上所有会话、所有项目共用这一张，按页分工）`,
-    `你在画布上的名字：${opened.sessionName}。${duty}。`,
-    ...(pageList.length > 0 ? [`这张画布的页：${pageList.join('、')}。每一页同一时间由一个会话负责：那一页的画布请求发给它，别的会话不能往那一页放东西。`] : []),
+    `你在画布上的名字：${opened.sessionName}。${dutyLine(opened)}。`,
     '',
     '接下来：',
     opened.paneOpen
@@ -482,9 +621,19 @@ function renderResult(opened, cli) {
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
       : `2. 用 Bash 工具后台启动画布请求监听（run_in_background: true，description: "Cowart 画布请求"），命令：\n   ${command}\n   它一直等着、不耗 token，画布上真来了请求才退出，退出的通知会叫醒你（通知里只有输出文件路径：先 Read 它，照里面那行用 AskUserQuestion 问用户）；处理完再这样启动一次接下一条。它连着就表示这个会话在线，你负责的页一直归你。别用 Monitor 跑它：Monitor 最多 30 分钟，到点就会叫醒会话。`,
     `画布里点 AI 按钮时就是这样叫醒你的：「Cowart 画布请求 #N」→ 先问用户，用户选了要做再 ${cli} request <N> 看详情照做。监听没在跑时请求在服务里排队，用户说「看画布」时用 ${cli} requests 取。`,
-    '之后的 cowart 命令都作用在这张画布上：不带 --page-id 的插入放进你负责的页，没负责页时放进你的画布面板正看着的页。'
+    `有哪些页：${cli} pages；你这页上有什么：${cli} page。不带 --page 的 put 放进你负责的页，没负责页时放进你的画布面板正看着的页。`
   ]
   return textResult(lines.join('\n'), { ...opened, listenCommand: command })
+}
+
+// take: whose page it is now; the pane follows (no address, no listener: open said those).
+function takeResult(opened, cli) {
+  const lines = [
+    `${dutyLine(opened)}。`,
+    opened.paneOpen ? '你的画布面板会自己跳到这一页。' : `这个会话还没开画布面板：要看就 ${cli} open 拿网址。`,
+    opened.listenerConnected ? '' : `画布请求监听没在跑：用 Bash 工具后台运行 ${cli} listen（run_in_background: true）。`
+  ].filter(Boolean)
+  return textResult(lines.join('\n'), { ...opened, listenCommand: `${cli} listen` })
 }
 
 function requestDetails(request, cli) {
@@ -499,6 +648,20 @@ function requestDetails(request, cli) {
     ...notes.map((note) => `- ${note}`)
   ].join('\n')
   return textResult(text, { ...request, hostNotes: notes })
+}
+
+function pagesResult({ pages, myPageId, shownPageId }, cli) {
+  const nameOf = (id) => pages.find((page) => page.id === id)?.name
+  const head = [
+    `这张画布有 ${pages.length} 页`,
+    myPageId ? `你负责「${nameOf(myPageId)}」` : '你没负责任何页',
+    ...(shownPageId && shownPageId !== myPageId ? [`你的画布面板正看着「${nameOf(shownPageId)}」`] : [])
+  ].join('，')
+  const lines = pages.map((page) => {
+    const who = page.mine ? '你负责' : page.holder ? `${page.holder}负责` : '没人负责'
+    return `- 「${page.name}」 ${page.id} · ${page.shapes} 个图形 · ${who}${page.shown ? ' · 面板正看着' : ''}`
+  })
+  return textResult([`${head}：`, ...lines, '', `看一页上有什么：${cli} page <页名>（不给页名就是你负责的页）。`].join('\n'), { pages, myPageId, shownPageId })
 }
 
 const detailsCommand = (cli) => (id) => `运行 ${cli} request ${id}`
@@ -532,10 +695,40 @@ async function toolSchema(client, name) {
   return tool.inputSchema ?? { type: 'object', properties: {} }
 }
 
-export async function callTool(client, name, args, cli = cowartCommand()) {
+// A page by name or id; null when there is no such page.
+async function findPage(client, wanted) {
+  const listing = await client.call('pages')
+  const value = String(wanted).trim()
+  const page = listing.pages.find((entry) => entry.id === value || entry.name === value)
+    ?? listing.pages.find((entry) => entry.name.toLowerCase() === value.toLowerCase())
+  return { page, listing }
+}
+
+async function pageIdFor(client, wanted, cli) {
+  const { page } = await findPage(client, wanted)
+  if (!page) throw new UsageError(`画布上没有叫「${wanted}」的页（${cli} pages 列出所有页；要新建就 ${cli} take ${wanted}）。`)
+  return page.id
+}
+
+// One page's contents: the named one, else the one this session holds, else the one its pane shows.
+async function pageSummary(client, wanted, cli) {
+  let pageId
+  if (wanted) {
+    pageId = await pageIdFor(client, wanted, cli)
+  } else {
+    const { myPageId, shownPageId } = await client.call('pages')
+    pageId = myPageId ?? shownPageId
+    if (!pageId) throw new UsageError(`你没负责任何页，画布面板也没在看哪一页：${cli} pages 看有哪些页，${cli} page <页名> 看某一页。`)
+  }
+  return client.call('canvas-state', { pageId })
+}
+
+export async function callTool(client, name, args, cli = cowartCommand(), { as = 'open' } = {}) {
   switch (name) {
-    case RENDER_TOOL:
-      return renderResult(await client.call('open-canvas', args), cli)
+    case RENDER_TOOL: {
+      const opened = await client.call('open-canvas', args)
+      return as === 'take' ? takeResult(opened, cli) : openResult(opened, cli)
+    }
     case CANVAS_STATE_TOOL:
       return client.call('canvas-state', args)
     case INSERT_VIDEO_TOOL:
@@ -569,43 +762,53 @@ export function formatResult(result, { command, out }) {
   if (out === 'json') return JSON.stringify(result)
   const text = resultText(result)
   const structured = result.structuredContent
-  const wanted = command?.structured || !command || (command.tool === CANVAS_STATE_TOOL && structured?.snapshot)
+  const wanted = command?.tool === CANVAS_STATE_TOOL ? Boolean(structured?.snapshot) : command?.structured || !command
   if (result.isError || !structured || !wanted) return text
   return `${text}\n\n结构化结果：${JSON.stringify(structured)}`
 }
 
 function usage(cli) {
   const entry = (name, about) => `  ${name}\n      ${about}`
-  return [
+  const groups = ['会话', '看', '放', '整理', '请求', '其它']
+  const lines = [
     `cowart ${VERSION}：Claude Code 桌面版里的 Cowart 画布（用 Bash 工具运行；做画布上的事之前先加载 cowart skill）。`,
-    `用法：${cli} <命令> [参数]`,
-    '',
-    '命令：',
-    ...COMMANDS.map((command) => entry(command.usage, command.about)),
-    ...OTHER_COMMANDS.map(([name, about]) => entry(name, about)),
+    `用法：${cli} <命令> [参数]`
+  ]
+  for (const group of groups) {
+    lines.push('', `${group}：`)
+    for (const command of COMMANDS.filter((entry) => entry.group === group)) lines.push(entry(command.usage, command.about))
+    for (const [inGroup, name, about] of OTHER_COMMANDS) if (inGroup === group) lines.push(entry(name, about))
+  }
+  lines.push(
     '',
     '每个命令都能用：',
     ...GLOBAL_FLAGS.map(([name, about]) => entry(name, about)),
     '',
-    '参数名照工具定义，写成短横线形式（anchorShapeId → --anchor-shape-id）；列表用逗号分隔或重复给；开关写 --fit / --no-fit。',
-    `${cli} help <命令> 列出那个命令的全部参数。`
-  ].join('\n')
+    '位置参数 put 都一样：--at x,y 放到那里；--next-to <id> [--side right|left|below|above] 放在它旁边；--replace <AI 框> 替换框；--page <页名> 放进别的页。',
+    `${cli} help <命令> 列出那个命令的全部参数（命令自己的参数之外，工具的其它参数照工具定义写成 --kebab-case 也能用）。`
+  )
+  return lines.join('\n')
 }
 
-function describeSchema(schema, command) {
+function describeCommand(command, schema, cli) {
+  const lines = [`${cli} ${command.usage}`, command.about, '']
+  const own = Object.entries(command.flags ?? {})
+  if (own.length > 0) {
+    lines.push('参数：')
+    for (const [name, flag] of own) lines.push(`  --${name}${flag.kind === 'switch' ? '' : ` ${flag.arg}`}  ${flag.about}`)
+  }
   const properties = schema?.properties ?? {}
-  const required = new Set(schema?.required ?? [])
-  const line = (key, spec, prefix = '') => {
-    const type = spec?.enum ? spec.enum.join('|') : spec?.type === 'array' ? `${spec.items?.type ?? ''} 列表` : spec?.type ?? ''
-    return `  ${prefix}--${kebab(key)}${type ? ` <${type}>` : ''}${required.has(key) ? '（必填）' : ''}${spec?.description ? `  ${spec.description}` : ''}`
+  const itemProperties = command.item ? properties[command.item]?.items?.properties ?? {} : {}
+  const others = otherFlags(command, schema)
+  if (others.length > 0) {
+    lines.push(`${own.length > 0 ? '\n' : ''}工具 ${command.tool} 的其它参数（照工具定义）：`)
+    for (const key of others) {
+      const spec = properties[key] ?? itemProperties[key] ?? {}
+      const type = spec.enum ? spec.enum.join('|') : spec.type === 'array' ? `${spec.items?.type ?? ''} 列表` : spec.type ?? ''
+      lines.push(`  --${kebab(key)}${type ? ` <${type}>` : ''}${spec.description ? `  ${spec.description}` : ''}`)
+    }
   }
-  const lines = Object.entries(properties).filter(([key]) => key !== command?.item).map(([key, spec]) => line(key, spec))
-  if (command?.item) {
-    const itemSchema = properties[command.item]?.items ?? {}
-    lines.push(`  ${command.item} 的每一条（给这些选项就是一条；多条用 --json '{"${command.item}":[…]}'）：`)
-    for (const [key, spec] of Object.entries(itemSchema.properties ?? {})) lines.push(line(key, spec, '  '))
-  }
-  if (command?.aliases) lines.push(`  简写：${Object.entries(command.aliases).map(([short, key]) => `--${short} = --${kebab(key)}`).join('，')}`)
+  if (command.item) lines.push('', `一次多条：--json '[{…}, …]'，每条照工具 ${command.tool} 的 ${command.item} 写。`)
   return lines.join('\n')
 }
 
@@ -618,14 +821,25 @@ async function exit(code, text, stream = code === 0 ? process.stdout : process.s
   process.exit(code)
 }
 
+// `put image a.png` is the command 「put image」; anything else is one word.
+function splitCommand(argv) {
+  const [first, second, ...rest] = argv
+  if (first === 'put' || first === 'help') {
+    if (first === 'put' && !second) throw new UsageError('put 后面写放什么：put image / put video / put html / put text。')
+    if (first === 'put') return { name: `put ${second}`, rest }
+    if (second === 'put' && rest[0]) return { name: 'help', rest: [`put ${rest[0]}`, ...rest.slice(1)] }
+  }
+  return { name: first, rest: [second, ...rest].filter((value) => value !== undefined) }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   // A command waits for the service (one starting, a port that does not answer yet) on timers
   // fetch does not count as work (its timeouts are unref'd): with nothing else running, Node
   // would end the process in the middle. Every way out is exit().
   setInterval(() => {}, 60_000)
   const cli = cowartCommand()
-  const [name, ...rest] = argv
   try {
+    const { name, rest } = splitCommand(argv)
     if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli))
     if (name === '--version') return exit(0, VERSION)
     if (name === 'install') {
@@ -636,6 +850,7 @@ export async function main(argv = process.argv.slice(2)) {
       const removed = await removeCommandLink()
       return exit(0, removed.removed ? `已删掉 ${COMMAND_LINK}。` : `没删 ${COMMAND_LINK}：${removed.reason}。`)
     }
+    if (name.startsWith('put ') && !commandNamed(name)) throw new UsageError(`没有 ${name}：put 能放 image / video / html / text。`)
 
     const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
     if (entrypoint && !isDesktopEntrypoint(entrypoint) && process.env.COWART_ALLOW_CLI !== '1') {
@@ -674,7 +889,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
       if (rest.includes('json')) return exit(0, JSON.stringify({ tools }))
       return exit(0, tools.map((tool) => {
-        const command = COMMANDS.find((entry) => entry.tool === tool.name)
+        const command = COMMANDS.find((entry) => entry.tool === tool.name && !entry.run)
         return `${tool.name}${command ? `（${cli} ${command.name}）` : ''}：${String(tool.description ?? '').split(/(?<=[.。])\s/)[0]}`
       }).join('\n'))
     }
@@ -682,7 +897,15 @@ export async function main(argv = process.argv.slice(2)) {
     if (name === 'help') {
       const command = commandNamed(rest[0])
       if (!command) return exit(2, `没有 ${rest[0]} 这个命令。\n\n${usage(cli)}`)
-      return exit(0, `${cli} ${command.usage}\n${command.about}（工具 ${command.tool}）\n\n参数：\n${describeSchema(await toolSchema(client, command.tool), command)}`)
+      return exit(0, describeCommand(command, command.tool ? await toolSchema(client, command.tool) : {}, cli))
+    }
+
+    if (name === 'pages' || name === 'page') {
+      const { flags, positionals, out } = tokenize(rest, () => true)
+      if (flags.length > 0) throw new UsageError(`${name} 没有参数${flags[0].name === 'help' ? '' : `（不认识 --${flags[0].name}）`}：${commandNamed(name).usage}`)
+      if (name === 'pages' && positionals.length > 0) throw new UsageError(`pages 不带参数；看一页用 ${cli} page <页名>。`)
+      const result = name === 'pages' ? pagesResult(await client.call('pages'), cli) : await pageSummary(client, positionals.join(' ') || null, cli)
+      return exit(result.isError ? 1 : 0, formatResult(result, { command: commandNamed(name), out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
     }
 
     let command = commandNamed(name)
@@ -692,18 +915,20 @@ export async function main(argv = process.argv.slice(2)) {
       if (!rest[0]) throw new UsageError(`用法：${cli} call <工具名> [--json '{…}'] [--参数 值 …]`)
       toolName = rest[0]
       toolArgv = rest.slice(1)
-      command = commandNamed(toolName)
-      // Called by its tool name, it takes the tool's parameters as they are.
-      if (command) command = { ...command, positional: [], item: undefined, structured: command.structured }
+      // Called by its tool name, it takes the tool's own parameters only.
+      command = { name: 'call', tool: toolName, usage: `call ${toolName} …`, structured: !commandNamed(toolName) || commandNamed(toolName).structured }
     }
     if (!toolName) throw new UsageError(`没有 ${name} 这个命令。\n\n${usage(cli)}`)
-    // Only flags and arguments need the parameters' definitions (the service has them for its tools).
+    // Only arguments need the parameters' definitions (the service has them for its tools).
     const needsSchema = toolArgv.some((arg) => arg !== '--out' && arg !== 'json') || name === 'call'
     const schema = needsSchema ? await toolSchema(client, toolName) : {}
     const { args, out, help } = await buildArguments(command, schema, toolArgv)
-    if (help) return exit(0, `${cli} ${command?.usage ?? `call ${toolName} …`}\n\n参数：\n${describeSchema(schema, command)}`)
-    const result = await callTool(client, toolName, args, cli)
-    return exit(result.isError ? 1 : 0, formatResult(result, { command: command ?? null, out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
+    if (help) return exit(0, describeCommand(command, schema, cli))
+    if (command.result === 'take' && !String(args.page ?? '').trim() && args.shownPage !== true) throw new UsageError(`用法：${command.usage}`)
+    // --page takes a page name too.
+    if (typeof args.pageId === 'string' && !args.pageId.startsWith('page:')) args.pageId = await pageIdFor(client, args.pageId, cli)
+    const result = await callTool(client, toolName, args, cli, { as: command.result })
+    return exit(result.isError ? 1 : 0, formatResult(result, { command, out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (error instanceof UsageError) return exit(2, message)

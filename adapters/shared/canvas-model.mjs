@@ -405,10 +405,10 @@ export function summarizeCanvas({ snapshot, viewState, canvasDir, storage, inval
   }
 }
 
-export function formatCanvasSummary(summary) {
+// onePage: the summary of one page (the canvas and the page the last pane showed go unsaid).
+export function formatCanvasSummary(summary, { onePage = false } = {}) {
   const lines = [
-    `Cowart 画布：${summary.canvasDir}（${summary.storage}）`,
-    `当前页面：${summary.currentPageId ?? '（无）'}`,
+    ...(onePage ? [] : [`Cowart 画布：${summary.canvasDir}（${summary.storage}）`, `当前页面：${summary.currentPageId ?? '（无）'}`]),
     '位置是图形在页面上的左上角 (x, y) 和宽×高；父级是它所在的分组框。'
   ]
   if (summary.pages.length === 0) lines.push('画布还是空的。')

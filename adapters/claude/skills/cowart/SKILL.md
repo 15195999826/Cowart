@@ -1,6 +1,6 @@
 ---
 name: cowart
-description: Claude Code 桌面版里的 Cowart 画布（tldraw 无限画布，全机一张、按页分工）怎么配合用户干活：用 Bash 跑 cowart 命令（node ~/.cowart/bin/cowart.mjs）打开画布、进入 / 接管页，后台跑监听收画布发来的「Cowart 画布请求 #N」（按标注修改、按标注生图、AI HTML、AI Slides、照网页做 HTML，本机没 beast 命令行时的 AI 图片 / AI 视频）并处理，把生成的图片 / 视频 / HTML 放上画布并放对页，整理页面（给图编号、加标题、分组、排版、删除），读画布摘要里的标注和素材。用户说「打开 Cowart 画布」「接管 X」「进入 X」「接管这页」「看画布」，后台监听叫醒你说「Cowart 画布请求」，或者要把任何图 / 视频 / HTML「放到画布上」、按画布上的标注改图、给画布上的图编号 / 分组 / 排整齐 / 删掉、问画布上有什么——哪怕没提 Cowart 三个字——都先读本 skill 再动手。Cowart 在 Claude Code 里没有 MCP 工具，只有这个命令；命令怎么写、请求怎么回状态、结果放哪页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在这里。
+description: Claude Code 桌面版里的 Cowart 画布（tldraw 无限画布，全机一张、按页分工）怎么配合用户干活：用 Bash 跑 cowart 命令（node ~/.cowart/bin/cowart.mjs）打开画布、进入 / 接管页、看页上有什么，后台跑监听收画布发来的「Cowart 画布请求 #N」（按标注修改、按标注生图、AI HTML、AI Slides、照网页做 HTML，本机没 beast 命令行时的 AI 图片 / AI 视频）并处理，把生成的图片 / 视频 / HTML 放上画布并放对页，整理页面（给图编号、加标题、分组、排版、删除），读画布摘要里的标注和素材。用户说「打开 Cowart 画布」「接管 X」「进入 X」「接管这页」「看画布」，后台监听叫醒你说「Cowart 画布请求」，或者要把任何图 / 视频 / HTML「放到画布上」、按画布上的标注改图、给画布上的图编号 / 分组 / 排整齐 / 删掉、问画布上有什么——哪怕没提 Cowart 三个字——都先读本 skill 再动手。Cowart 在 Claude Code 里没有 MCP 工具，只有这个命令；命令怎么写、请求怎么回状态、结果放哪页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在这里。
 ---
 
 # Cowart 画布 · Claude Code 桌面版用法
@@ -16,16 +16,17 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 ```
 
 - `~/.cowart/bin/cowart.mjs` 是安装 Cowart 时写下的入口，它指向这台机器上装的那一份 Cowart。这个文件不存在（报 `Cannot find module`）就是还没装：告诉用户在 Cowart 仓库里跑 `npm --prefix adapters run install:claude`，或者照猛兽图书馆《cowart》的安装说明装，装好之前别的都别做。
-- `cowart help` 列出所有命令；`cowart help <命令>` 列出那个命令的全部参数。
-- 参数名照工具定义，写成短横线形式：`anchorShapeId` 写成 `--anchor-shape-id`。常用的有简写（`--anchor`）。列表用逗号分隔或者重复写，开关写 `--fit` / `--no-fit`。负数照常写：`--x -300`。
-- 整个参数对象也可以给 `--json '{…}'`（Bash 里用单引号包起来），长内容写成文件后用 `--json-file <文件>`。路径一律写成 `/` 分隔（`C:/Users/…`），带空格的加引号。
+- 命令按要干的事分组：**会话** `open` / `take` / `listen`，**看** `pages` / `page` / `selection`，**放** `put image|video|html|text`，**整理** `group` / `edit` / `delete`，**请求** `requests` / `request` / `reply`，另有 `feedback`、`call`。`cowart help` 列出全部；`cowart help <命令>`（比如 `help put image`）列出那个命令的全部参数。
+- **放东西的位置参数 put 都一样**：`--at x,y` 放到页面上那个位置；`--next-to <id> [--side right|left|below|above]` 放在它旁边（默认右边、跟它一样大；旁边是分组框时保持自己的大小）；`--replace <AI 框 id>` 替换 AI 图片 / 视频 / HTML 框；`--size 宽,高` 显示尺寸；`--page <页名>` 放进别的页（默认你负责的页）。
+- 命令自己的参数之外，工具的其它参数照工具定义写成短横线形式也能用（`matchAnchor` 写成 `--match-anchor`，开关写 `--fit` / `--no-fit`）。负数照常写：`--at -300,-200`。
+- 整个参数对象也可以给 `--json '{…}'`（Bash 里用单引号包起来），`put text` 和 `edit` 还能给一个数组一次多条；长内容写成文件后用 `--json-file <文件>`。路径一律写成 `/` 分隔（`C:/Users/…`），带空格的加引号。
 - 输出是给你读的文字；插入、整理这类命令后面还跟一行 `结构化结果：{…}`（新图形的 `shapeId`、位置尺寸、文件路径），下一条命令要用的 id 从这里取。命令失败时退出码不是 0，原因写在输出里。
 - 会话标识由桌面版自动传给 Bash 里的命令，不用管。这个命令只在 Claude Code 桌面版里干活；别的地方跑会提示入口不对。
 
 ## 1. 先记住这几件事
 
 - **全机只有一张画布**，在 `~/.cowart/canvas`，所有会话、所有项目共用。画布分页（tldraw 的页，画布左上角切换），一页一块板。命令不区分项目目录，不用传 projectDir / canvasDir。
-- **分页负责制**：每页同一时间由一个会话负责，每个会话最多负责一页。换人只有三种方式：用户在会话里说「打开 Cowart 画布 X」「接管 X」「进入 X」（`cowart open --page X`）、说「接管这页」（`--shown-page`）、或点画布顶部的「X 来负责」按钮。用户在画布上翻页只是看，不改变谁负责。
+- **分页负责制**：每页同一时间由一个会话负责，每个会话最多负责一页。换人只有三种方式：用户在会话里说「打开 Cowart 画布 X」（`cowart open X`）、「接管 X」「进入 X」（`cowart take X`）、说「接管这页」（`cowart take --shown`）、或点画布顶部的「X 来负责」按钮。用户在画布上翻页只是看，不改变谁负责。
 - **你有名字**：本会话第一次打开画布时起一个像人的短名字（小川、阿满这种，不是角色、不是任务名），整个会话不换，别跟画布上已有的会话重名。用户和别的会话在画布顶部看到的就是它。
 - **请求按页送人**：在某页点 AI 按钮，请求发给负责这一页的会话，跟在谁的面板里点无关；没人负责的页，点它的那个面板所属的会话顺手负责。
 - **监听连着 = 你在线**：后台跑着的 `cowart listen` 就是这个会话在画布上的「在线」。它来了请求退出、你处理完再启动，这段时间你也算在线、负责的页还是你的。会话被关、监听停了一两分钟没再起来，画布就当你离开，你负责的页空出来；之后你再跑任何 cowart 命令就回来了，那页没被别人接走的话还是你的。
@@ -37,14 +38,16 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 | 用户说 | 命令 |
 |---|---|
 | 打开 Cowart 画布 | `cowart open --name <你的名字>`，不进任何页 |
-| 打开 Cowart 画布 角色设定 / 接管 角色设定 / 进入 角色设定 | 加 `--page 角色设定`（没有就建；原来负责它的会话让出，你之前负责的页放掉） |
-| 接管这页 | 加 `--shown-page`（你的画布面板正看着的那页） |
+| 打开 Cowart 画布 角色设定 | `cowart open 角色设定 --name <你的名字>`（没有就建；原来负责它的会话让出，你之前负责的页放掉） |
+| 接管 角色设定 / 进入 角色设定（画布已经开着） | `cowart take 角色设定`：结果很短，面板自己跳过去 |
+| 接管这页 | `cowart take --shown`（你的画布面板正看着的那页） |
 
 结果里有「接下来」，照做：
 
 1. 用 `mcp__Claude_Browser__preview_start`（参数 `url`）在 Browser 面板打开网址；结果说面板已经开着就不用再开。没有 Browser 面板时把网址发给用户，让他在浏览器里打开。
 2. 结果没说「监听已经连着」就用 **Bash 工具后台运行**（`run_in_background: true`，description「Cowart 画布请求」）监听：`node ~/.cowart/bin/cowart.mjs listen`。它一直等着、不耗 token，画布上真来了请求才退出；退出的完成通知会叫醒你（通知里只有输出文件路径，内容要 Read 它）。没有定时器，服务换版本重启它也自己接上，会话挂一晚上都不会被叫醒。它是画布请求送到本会话的唯一通道，也是你在线的凭据；没在跑时请求在服务里排队（不会丢）。**别用 Monitor 跑它**：Monitor 最多 30 分钟，到点就叫醒会话，空闲时也白耗 token。监听退出并说「重新打开画布」时，再 `cowart open` 一次，照结果重跑监听。
-3. 之后别再为别的画布操作重新 open：画布自己每 1.6 秒同步，插进去的东西几秒内就显示。只有用户明确要重开 / 刷新时才再调。
+3. 之后别再为别的画布操作重新 open：画布自己每 1.6 秒同步，放上去的东西几秒内就显示；换页用 `take`。只有用户明确要重开 / 刷新时才再 open。
+4. open 的结果不列页：`cowart pages` 看画布上有哪些页、谁负责；`cowart page` 看你这页上有什么。
 
 ## 3. 画布请求：监听叫醒你之后
 
@@ -61,24 +64,24 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 
 ### 3.1 各类请求怎么做
 
-请求原文里写的是 Codex 的工具调用（`insert_cowart_image`、`insert_cowart_html_draft`、`insert_cowart_video` 和参数）。照搬最省事：`cowart call <工具名> --json '{…}'`，参数原样放进去；也可以用下表的子命令。
+请求原文里写的是 Codex 的工具调用（`insert_cowart_image`、`insert_cowart_html_draft`、`insert_cowart_video` 和参数）。照搬最省事：`cowart call <工具名> --json '{…}'`，参数原样放进去；也可以用下表的 put 命令。
 
 | 请求 | 你拿到什么 | 做法 | 结果怎么放 |
 |---|---|---|---|
-| 按标注修改（图片），选了「按标注出新图」 | 原图 shape id、逐条标注（文字 + 指向位置，占卡片宽高的百分比）、带标注的截图路径 | Read 截图和原图（原图本地路径在画布摘要里）；按标注改图用 beast-gen 的 `flux2-klein`（本地免费）或用户在确认时选的云端模型 | `cowart insert-image <新图> --anchor <原图 id> --placement right`（默认跟原图同尺寸）；原图和标注不动 |
+| 按标注修改（图片），选了「按标注出新图」 | 原图 shape id、逐条标注（文字 + 指向位置，占卡片宽高的百分比）、带标注的截图路径 | Read 截图和原图（原图本地路径在 `cowart page` 里）；按标注改图用 beast-gen 的 `flux2-klein`（本地免费）或用户在确认时选的云端模型 | `cowart put image <新图> --next-to <原图 id>`（默认放右边、跟原图同尺寸）；原图和标注不动 |
 | 按标注修改（图片），选了「照标注处理」 | 同上 | 标注是意见或问题，不是改图要求：Read 截图，在对话里逐条回答，要改的地方在当前项目里改（改动大的先跟用户对一下）；不生图，原始请求里「生成新图、放到原图旁边」那几句不适用 | 不往画布放东西；`reply <N> done "已在对话里逐条答复"` |
-| 按标注生图（AI HTML 草稿 → 图） | 草稿截图 + 标注 | 同上，草稿当构图和风格参考 | 放草稿右边（`--anchor <草稿 id>`） |
-| AI HTML | AI HTML 框 id、提示词、可能有参考图 | 写完整可运行的单文件 HTML（CSS / JS 内联），先存成文件 | `cowart insert-html <文件> --draft <框 id>`（默认替换框） |
-| 按标注修改 AI HTML | 原草稿的 HTML 文件路径、截图、标注 | 以原 HTML 为基础改，另存一份 | `cowart insert-html <新文件> --anchor <原草稿 id> --placement right`，不覆盖原文件、原草稿 |
-| AI Slides / 按标注修改 AI Slides | Slides 框 id、页数、提示词 | 每页一份 1024×576 的单文件 HTML | 按请求里列的参数逐页放：`cowart insert-html <第 n 页> --draft <Slides 框 id> --no-replace-draft-holder --no-update-existing-draft --no-match-anchor`，不替换、不删 Slides 框 |
-| 照这个做 HTML（网页参考卡片） | 网址、整页截图、渲染后的页面代码、标注（坐标是页面 CSS 像素）、右边已建好的 AI HTML 框 | 见 3.2 | `cowart insert-html <文件> --draft <框 id>` |
-| AI 图片 / AI 视频（本机没 beast 命令行时） | 面板里选好的模板、参数、素材本地路径和 Required steps | 照请求里的步骤：素材 `beast gen upload` → `beast gen submit` → `wait` → `output` 落本地 | 图片 `cowart insert-image <图> --anchor <框 id>` 替换框；视频 `cowart insert-video <视频> --replace-holder <框 id>` |
+| 按标注生图（AI HTML 草稿 → 图） | 草稿截图 + 标注 | 同上，草稿当构图和风格参考 | 放草稿右边（`--next-to <草稿 id>`） |
+| AI HTML | AI HTML 框 id、提示词、可能有参考图 | 写完整可运行的单文件 HTML（CSS / JS 内联），先存成文件 | `cowart put html <文件> --replace <框 id>` |
+| 按标注修改 AI HTML | 原草稿的 HTML 文件路径、截图、标注 | 以原 HTML 为基础改，另存一份 | `cowart put html <新文件> --next-to <原草稿 id>`，不覆盖原文件、原草稿 |
+| AI Slides / 按标注修改 AI Slides | Slides 框 id、页数、提示词 | 每页一份 1024×576 的单文件 HTML | 逐页 `cowart put html <第 n 页> --slide-of <Slides 框 id>`（请求里列的其它参数照带），不替换、不删 Slides 框 |
+| 照这个做 HTML（网页参考卡片） | 网址、整页截图、渲染后的页面代码、标注（坐标是页面 CSS 像素）、右边已建好的 AI HTML 框 | 见 3.2 | `cowart put html <文件> --replace <框 id>` |
+| AI 图片 / AI 视频（本机没 beast 命令行时） | 面板里选好的模板、参数、素材本地路径和 Required steps | 照请求里的步骤：素材 `beast gen upload` → `beast gen submit` → `wait` → `output` 落本地 | 图片 `cowart put image <图> --replace <框 id>`；视频 `cowart put video <视频> --replace <框 id>` |
 
 **Codex 口吻怎么翻译**：请求是上游按 Codex 写的，遇到这些照下面理解：
 
 - 开头的 `[@Cowart](plugin://…)` 是 Codex 的插件提及，忽略。
 - 「用内置 imagegen」「用 Codex 当前可用的图片生成能力」= 用 beast-gen skill：先用 Skill 工具加载它，按它的选型表和写法出图，`beast gen output` 落本地，Read 看一眼没问题再插。免费档随便迭代：文生图 `krea2`，指令改图 / 多图合成 `flux2-klein`，最强保身份 / 参考图多 `flux2-dev`，带字物料 `ideogram4`；云端 `lib-image` 消耗团队额度，只在用户选了云端时用。
-- 「调用 insert_cowart_… 工具」= 跑对应的 cowart 命令（见上面）。「不要调用 render_cowart_canvas_widget」= 不要重新 `cowart open`。
+- 「调用 insert_cowart_… 工具」= `cowart call` 照搬，或换成对应的 put 命令（见上面）。「不要调用 render_cowart_canvas_widget」= 不要重新 `cowart open`。
 - 「把图片下载到当前项目的 canvas/pages/<page-id>/assets/」：画布不在项目里。插入命令会自己把文件拷进页素材目录，你只管给本地路径。只有 AI HTML 里要嵌本地图片时，才把图放进画布摘要给的 canvasDir 下 `pages/<页 id 去掉 page: 前缀>/assets/`，HTML 里用 `/page-assets/<同一个目录名>/<文件名>` 引用；不要用 file:// 或 http(s) 图片，页面安全策略会拦。
 - 请求里给的截图、参考图路径都是本地文件，直接 Read。
 
@@ -89,40 +92,40 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 1. Read 整页截图（很长时分段看）把握整体观感。有标注时逐条 Read 它的局部截图：截图里的箭头和字是用户画的，不是网页内容。
 2. 读渲染后的页面代码取配色、字体层级、间距、圆角、阴影、动效。想看真实的计算样式、或按坐标找标注指的是哪个元素，用 Browser 面板打开原网址（`mcp__Claude_Browser__navigate`，再 `read_page` / `javascript_tool`，坐标用 `document.elementFromPoint`）。
 3. 做成完整、独立的单文件 HTML：CSS / JS 内联，字体用系统字体近似，图片用 CSS 渐变、inline SVG 或 data URI，不盗链原站资源；按请求给的宽度排版，长度大致对应截图。标注要照着改，注释只当背景，做出来的页面里不能出现箭头和字。
-4. 存成文件（简短英文 .html 名），`cowart insert-html <文件> --draft <框 id>`。
+4. 存成文件（简短英文 .html 名），`cowart put html <文件> --replace <框 id>`。
 
 ## 4. 用户在对话里直接要的画布操作
 
 请求也可以不从画布来：用户在对话里说「生一张 X 放到画布上」「把这个视频放上去」「按画布上的标注改一版」。
 
-- **生图放画布**：beast-gen 出图（免费档随便迭代，云端先说清消耗团队额度）→ 落本地 → Read 确认没问题 → `cowart insert-image <图>`。先 `cowart selection` 看用户有没有选中东西：选中的是 AI 图片框（`isAiImageHolder` / `meta.cowartAiImageHolder`）→ `--anchor <框 id>`，默认替换，图会等比放进框里居中，不用自己裁、不用传尺寸；选中的是别的图 → `--anchor <它> --placement right`；什么都没选 → 不传 anchor，放到空地。多张图从左到右排：第一张按上面放，之后每张用上一张结果里的 `shapeId` 作 `--anchor`，加 `--no-replace-ai-image-holder --no-match-anchor --placement right`，不要拼成一张。
-- **视频**：`cowart insert-video <视频> [--anchor <id> --placement …]`；替换 AI 视频框用 `--replace-holder <框 id>`。
-- **HTML**：先写成文件，`cowart insert-html <文件> [--file-name <名字.html>] [--anchor <id>]`。
-- **放哪一页**：不带 `--page-id` 的插入放进你负责的页；没负责页时放进你的画布面板正看着的页。别人负责的页会被拒绝，这时告诉用户在这个会话里说「接管 <页名>」，不要自己绕。处理画布请求时把结果放回请求那一页（宿主说明会给 `--page-id`），哪怕这页后来换人了也放得进。给了 `--page-id` 又没给锚点时，面板上别的页选中的东西不会被当成锚点，图就放在那一页的空地上。
-- **文件**：给插入命令的是本地路径，它自己拷进页素材目录，原文件不动。产物用时间戳或唯一文件名，不覆盖已有素材。
-- **看画布**：`cowart state` 是紧凑摘要：每页的图形（id、类型、页面上的左上角位置和尺寸、文字、所在的分组框）、素材本地路径、标注指向哪张卡片、谁负责哪页。`--snapshot` 只在真要原始 tldraw 记录时用，很大。`cowart selection` 是用户在本会话画布面板里选中的东西。
+- **生图放画布**：beast-gen 出图（免费档随便迭代，云端先说清消耗团队额度）→ 落本地 → Read 确认没问题 → `cowart put image <图>`。先 `cowart selection` 看用户有没有选中东西：选中的是 AI 图片框（`isAiImageHolder` / `meta.cowartAiImageHolder`）→ `--replace <框 id>`，图会等比放进框里居中，不用自己裁、不用传尺寸；选中的是别的图 → `--next-to <它>`；什么都没选 → 不给位置，放到空地。多张图从左到右排：第一张按上面放，之后每张 `--next-to <上一张结果里的 shapeId>`（要保持自己的大小再加 `--no-match-anchor`），不要拼成一张。
+- **视频**：`cowart put video <视频> [--next-to <id> --side …]`；替换 AI 视频框用 `--replace <框 id>`。
+- **HTML**：先写成文件，`cowart put html <文件> [--next-to <id>] [--file-name <名字.html>]`。
+- **放哪一页**：不带 `--page` 的 put 放进你负责的页；没负责页时放进你的画布面板正看着的页。别人负责的页会被拒绝，这时告诉用户在这个会话里说「接管 <页名>」，不要自己绕。处理画布请求时把结果放回请求那一页（宿主说明会给 `--page`），哪怕这页后来换人了也放得进。给了 `--page` 又没给位置时，面板上别的页选中的东西不会被当成锚点，图就放在那一页的空地上。
+- **文件**：给 put 的是本地路径，它自己拷进页素材目录，原文件不动。产物用时间戳或唯一文件名，不覆盖已有素材。
+- **看画布**：`cowart pages` 每页一行：页名、页 id、几个图形、谁负责。`cowart page [页名]` 是一页的紧凑摘要（默认你负责的页）：每个图形的 id、类型、页面上的左上角位置和尺寸、文字、所在的分组框、素材本地路径、标注指向哪张卡片。画布上是所有会话、所有项目的页，别一次把整张画布读出来。`cowart selection` 是用户在本会话画布面板里选中的东西。
 - **用户粘来的画布索引**：画布上右键「拷贝索引」拷的，形如 `Cowart 画布 页面「角色设定」 shape:kL9x 图片「主角正面.png」 C:\…\主角正面.png`（多选时一行一个）。它指的就是画布上那张卡片：要看图直接 Read 后面那个路径，要改它 / 挪它 / 删它就用这个 `shape:` id 跑下面的命令（那一页不归你时，先让用户在这个会话里说「接管 <页名>」）。视频右键还有「截取当前帧」，截下的那一帧是张普通图片卡片，素材名形如 `<视频名> 1.9s.png`。
 
 ### 4.1 整理页面：编号、标题、分组、排版、删除
 
 用户说「给图编号」「分组」「排整齐」「加个标题 / 说明」「把 X 删掉」时用下面这几个命令。**不要手改画布文件**（`~/.cowart/canvas` 下的 JSON）：记录字段跟 tldraw 5.1 对不上，页面就显示不了，下次保存还会被悄悄丢掉，摘要里却照样列着，看着像成功了。也不要把字画成图片再插。
 
-先 `cowart state` 看这一页：每个图形一行，位置是它在页面上的左上角 (x, y) 和宽×高，「父级」是它所在的分组框，分组框带「标题「…」」和「内含 N 个图形」。下面所有命令的 x / y 都是这个坐标。
+先 `cowart page` 看这一页：每个图形一行，位置是它在页面上的左上角 (x, y) 和宽×高，「父级」是它所在的分组框，分组框带「标题「…」」和「内含 N 个图形」。下面所有命令的 x / y 都是这个坐标。
 
 | 要做的事 | 命令 | 要点 |
 |---|---|---|
-| 排版、挪位置、改大小 | `cowart update --json '{"updates":[{"shapeId":"…","x":0,"y":0}, …]}'`；只动一个：`cowart update --shape <id> --x 0 --y 0` | 一整批放一次调用，一起保存；`dx / dy` 是相对移动；图片 / 视频只给 `w` 或 `h` 时保持比例；卡片上的标注 / 注释箭头自动跟着走；已经在目标位置的那条不算错 |
-| 编号、标题、说明文字 | `cowart insert-text A1 --anchor <卡片 id> --text-align middle`；多条：`--json '{"items":[…]}'` | 编号挂卡片下面（文字框和卡片一样宽，所以居中）；标题给 `--x --y` 和 `--size xl`。给的位置就是最终位置，**不会自动避让**：先用 update 留出空隙，一行字高约 s 24、m 32、l 49、xl 59 |
-| 分组 | `cowart frame <标题> <shape id> <shape id> …` | 框按这些图形的范围定大小（`--padding` 默认 40），它们原地进框；框在页面最底层，框标题显示在框的左上角外面（组与组之间留出约 60）；之后谁拖框，里面的东西和标注一起走 |
-| 调整分组 | `cowart update` | `frameId` 放进某个框、`"page"` 拿出来（位置都不变）；`fit: true` 让框刚好包住里面的东西；`name` 改框标题；`text` 改文字 |
-| 删除 | `cowart delete <shape id> …` | 只删用户明确要删的；卡片的标注 / 注释跟着删；删分组框默认留下里面的东西（`--delete-children` 才连内容一起删）；图 / 视频文件留在页素材目录，结果里给路径，要放回就用插入命令 |
+| 排版、挪位置、改大小 | 只动一个：`cowart edit <id> --at 0,0`（`--by dx,dy` 相对移动，`--size 宽,高` 改尺寸）；一批：`cowart edit --json '[{"shapeId":"…","x":0,"y":0}, …]'` | 一整批放一次调用，一起保存；图片 / 视频只给宽（或高）时保持比例；卡片上的标注 / 注释箭头自动跟着走；已经在目标位置的那条不算错 |
+| 编号、标题、说明文字 | `cowart put text A1 --next-to <卡片 id> --align middle`；多条：`--json '[{"text":"A1","anchorShapeId":"…","textAlign":"middle"}, …]'` | 编号挂卡片下面（文字框和卡片一样宽，所以居中）；标题给 `--at x,y` 和 `--font-size xl`。给的位置就是最终位置，**不会自动避让**：先用 edit 留出空隙，一行字高约 s 24、m 32、l 49、xl 59 |
+| 分组 | `cowart group <标题> <shape id> <shape id> …` | 框按这些图形的范围定大小（`--padding` 默认 40），它们原地进框；框在页面最底层，框标题显示在框的左上角外面（组与组之间留出约 60）；之后谁拖框，里面的东西和标注一起走 |
+| 调整分组 | `cowart edit <id> --into <框 id>`（`--into page` 拿出来，位置都不变）；`cowart edit <框 id> --fit` 让框刚好包住里面的东西；`--title` 改框标题；`--text` 改文字 | 一批照样用 `--json` 数组（`frameId`、`fit`、`name`、`text`） |
+| 删除 | `cowart delete <shape id> …` | 只删用户明确要删的；卡片的标注 / 注释跟着删；删分组框默认留下里面的东西（`--with-contents` 才连内容一起删）；图 / 视频文件留在页素材目录，结果里给路径，要放回就用 put |
 
-- 放图 / 视频 / HTML 也能给 `--x --y`（精确放到那里），或 `--placement above` 放到锚点上方。
-- 典型的「给这页的图编号、分组」：摘要看尺寸 → 一次 `update` 排成网格（每行下面留出编号的高度，组之间留出框标题的位置）→ 一次 `insert-text --json '{"items":[…]}'` 给每张图加编号 → 每组一次 `frame`（带上图和它的编号）→ 需要的话加大标题 → 再看一次摘要核对。
+- put 图 / 视频 / HTML 也能给 `--at x,y`（精确放到那里），或 `--side above` 放到 `--next-to` 的上方。
+- 典型的「给这页的图编号、分组」：`page` 看尺寸 → 一次 `edit --json` 排成网格（每行下面留出编号的高度，组之间留出框标题的位置）→ 一次 `put text --json` 给每张图加编号 → 每组一次 `group`（带上图和它的编号）→ 需要的话加大标题 → 再 `page` 核对。
 - 只能整理本会话负责的页（没负责页时是面板正看着、没人负责的那页）；一次调用只改一页。
 - 这些改动在画布服务上完成，页面几秒内同步过来，但**用户在页面上按 Ctrl+Z 撤不回**。排版、编号放手做；删除前说清楚删哪些（拿不准就问），删完告诉用户删了什么、文件在哪。
-- 结果里出现「⚠ … 超出了分组框」时照提示处理（给框 `fit`，或给它 `frameId: "page"`），不然页面上超出的部分被框裁掉。
-- 摘要里标「⚠ … 是无效记录」的东西页面上看不到、下次保存会被丢掉，别当它在画布上；需要的话用命令重新放一份。
+- 结果里出现「⚠ … 超出了分组框」时照提示处理（`cowart edit <框> --fit`，或 `cowart edit <它> --into page`），不然页面上超出的部分被框裁掉。
+- 摘要里标「⚠ … 是无效记录」的东西页面上看不到、下次保存会被丢掉，别当它在画布上；需要的话用 put 重新放一份。
 
 ## 5. 标注和注释
 
@@ -133,7 +136,7 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 - shape:def arrow (…) 「这是主角，别换脸」 注释（常驻说明） → shape:img1
 ```
 
-- 用户在对话里说「按标注改」：从摘要取标注文字和它指向的卡片（素材本地路径也在那行），**不需要向用户要截图，也不要按距离或颜色猜**。
+- 用户在对话里说「按标注改」：从 `cowart page` 取标注文字和它指向的卡片（素材本地路径也在那行），**不需要向用户要截图，也不要按距离或颜色猜**。
 - 标注（红）是这次要改的地方；注释（蓝）是常驻背景（人物不能变、品牌色这类），不是修改要求。
 - 「改」不一定是改图：图是项目截图、设计稿时，标注多半是对界面、功能的意见或问题，照意见处理（答疑、改项目），别默认去生图。
 - 结果放在原卡片旁边，原图和标注都不动、不删、不移。需求做完由用户自己点卡片工具栏的「清理标注」。
@@ -141,22 +144,22 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 
 ## 6. 命令速查
 
-| 命令 | 工具 | 干什么 |
-|---|---|---|
-| `open [--name 名字] [--page 页名 \| --shown-page]` | `render_cowart_canvas_widget` | 打开画布、进入 / 接管页；结果带网址、监听命令、谁负责哪页 |
-| `listen`（Bash 后台跑） | — | 画布请求监听；连着 = 在线 |
-| `state [--snapshot]` | `get_cowart_canvas_state` | 画布摘要，默认不带快照 |
-| `selection` | `get_cowart_selection` | 本会话面板里选中的图形，判断 AI 图片框 / 锚点 |
-| `insert-image <图>` | `insert_cowart_image` | `--anchor` + `--placement`（right / left / below / above），或 `--x --y`，或 `--anchor` 传 AI 图片框 id 替换它；`--page-id` |
-| `insert-video <视频>` | `insert_cowart_video` | `--x --y` 或锚点 + `--placement`；`--replace-holder` 替换 AI 视频框 |
-| `insert-html <文件>` | `insert_cowart_html_draft` | `--draft`、`--anchor`、`--file-name` |
-| `insert-text <文字>` | `insert_cowart_text` | `--x --y` 或 `--anchor` + `--placement`；`--size / --color / --font / --text-align`；多条 `--json` |
-| `frame <标题> <id>…` | `insert_cowart_frame` | 建分组框（或空框 `--x --y --w --h`） |
-| `update` | `update_cowart_shapes` | 批量移动、改尺寸、改文字 / 框标题、进出分组框（`--json`，或 `--shape` 加字段改一个） |
-| `delete <id>…` | `delete_cowart_shapes` | 删除；`--delete-children` 连框里的东西一起删；页面 Ctrl+Z 撤不回 |
-| `request <N>` / `reply <N> <状态> [话]` / `requests [--all]` | `get_cowart_request` / `reply_cowart_request` / `list_cowart_requests` | 画布请求的详情、状态（running / done / failed / skipped）、列表；「看画布」用 requests 取排队的 |
-| `feedback <原话> --title … --kind …` | `send_cowart_feedback` | 记下用户对 Cowart 本身的意见，见第 7 节 |
-| `call <工具名> --json '{…}'` | 任意 | 照工具定义直接调；`tools` 列出全部工具 |
+| 命令 | 干什么 |
+|---|---|
+| `open [页名] [--name 名字]` | 打开画布（带页名就进入 / 接管这页）；结果带网址、监听命令 |
+| `take <页名>` / `take --shown` | 换负责的页；面板跟过去 |
+| `listen`（Bash 后台跑） | 画布请求监听；连着 = 在线 |
+| `pages` | 每页一行：页名、id、几个图形、谁负责 |
+| `page [页名]` | 一页上有什么（默认你负责的页） |
+| `selection` | 本会话面板里选中的图形，判断 AI 图片框 / 锚点 |
+| `put image <图>` / `put video <视频>` / `put html <文件>` | 放东西：`--at x,y` / `--next-to <id> [--side …]` / `--replace <AI 框>` / `--size 宽,高` / `--page <页>`；html 另有 `--slide-of <Slides 框>` |
+| `put text <文字>` | 放文字：`--at` 或 `--next-to`（默认下面）、`--font-size / --color / --font / --align / --into`；多条 `--json` 数组 |
+| `group <标题> <id>…` | 建分组框（或空框 `--at --size`） |
+| `edit <id> …` | 移动、改尺寸、改文字 / 框标题、进出分组框、`--fit`；一批 `--json` 数组 |
+| `delete <id>…` | 删除；`--with-contents` 连框里的东西一起删；页面 Ctrl+Z 撤不回 |
+| `requests [--all]` / `request <N>` / `reply <N> <状态> [话]` | 画布请求的列表、详情、状态（running / done / failed / skipped）；「看画布」用 requests 取排队的 |
+| `feedback <原话> --title … --kind …` | 记下用户对 Cowart 本身的意见（工具 `send_cowart_feedback`），见第 7 节 |
+| `call <工具名> --json '{…}'` | 照工具定义直接调（请求里写的工具调用照搬）；`tools` 列出全部工具 |
 
 没有整张保存的命令，也不要手写 tldraw 记录或手改画布文件：插入和整理命令会算位置、拷素材、按 tldraw 校验、存盘。
 
@@ -166,7 +169,7 @@ node ~/.cowart/bin/cowart.mjs <命令> [参数]
 
 - 用户原话放第一个参数（`text`），不改写、不删减；`--title` 一句话（20 字左右）；`--kind`：`bug` 坏了 / 结果不对，`friction` 能用但别扭、麻烦、慢，`idea` 想要的新功能。
 - `--details` 写你知道的情况：用户当时在做什么、点了什么、实际怎样、期望怎样、怎么复现。不知道的别编；最多问一句，别为补细节反复追问。
-- 跟画布上的东西有关就传 `--shape-ids`（说的不是本会话负责或正在看的页时再传 `--page-id`）；有截图、生成结果之类的本地文件就传 `--attachments`。
+- 跟画布上的东西有关就传 `--shapes <id>,…`（说的不是本会话负责或正在看的页时再传 `--page <页名>`）；有截图、生成结果之类的本地文件就传 `--files <路径>,…`。
 - 会话名、项目、负责 / 在看的页、代码版本、最近的画布请求、服务日志由服务自己附上，不用你收集。
 - 只记录：不在当前项目里改 Cowart 的代码、配置或画布数据。记完告诉用户反馈编号。
 

@@ -2938,10 +2938,15 @@ function getAiImageGenerationPanelLayout(editor, shapeId) {
     Math.max(AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN, viewportWidth - panelWidth - AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN)
   )
   const preferredTop = bottomLeft.y + AI_IMAGE_GENERATION_PANEL_OFFSET
+  // [fork-patch] The panel stays above the bottom toolbar row: the overlay sits under it, and a
+  // panel pushed to the viewport's bottom edge had its send button covered by the toolbar
+  // (2026-10-22, a 1024×768 Browser pane).
+  const bottomRow = editor.getContainer().querySelector('.tlui-layout__bottom')?.getBoundingClientRect()
+  const panelBottom = bottomRow?.height > 0 ? Math.min(viewportHeight, bottomRow.top - containerBounds.top) : viewportHeight
   const panelTop = clampNumber(
     preferredTop,
     AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN,
-    Math.max(AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN, viewportHeight - AI_IMAGE_GENERATION_PANEL_ESTIMATED_H - AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN)
+    Math.max(AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN, panelBottom - AI_IMAGE_GENERATION_PANEL_ESTIMATED_H - AI_IMAGE_GENERATION_PANEL_VIEWPORT_MARGIN)
   )
 
   return {
