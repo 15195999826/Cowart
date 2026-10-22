@@ -33,6 +33,16 @@ const RECENT_FINAL_MS = 60_000
 const RECONNECT_MS = 1_500
 // A bridge that drops and comes back within this time (a restarted MCP server) keeps its session.
 const BRIDGE_GRACE_MS = Number(process.env.COWART_SESSION_GRACE_MS) || 5_000
+// A Claude session runs no bridge: it calls the cowart command (adapters/claude/bin/cowart.mjs)
+// and runs the listener in the background, and the listener keeps it online. It goes on being
+// online after the listener left to deliver a request (the session handles it, or waits for the
+// user's answer) until it runs the listener again, at most this long ...
+const BUSY_MS = Number(process.env.COWART_SESSION_BUSY_MS) || 12 * 60 * 60_000
+// ... and this long after a listener that went without delivering anything (the session was
+// closed, or its background task stopped) ...
+const LISTENER_GONE_MS = Number(process.env.COWART_LISTENER_GONE_MS) || 2 * 60_000
+// ... or, with no listener running, after its last command.
+const LEASE_MS = Number(process.env.COWART_SESSION_LEASE_MS) || 30 * 60_000
 // A page or listener whose session has no bridge yet (say after a service restart) waits this long.
 const SESSION_WAIT_MS = Number(process.env.COWART_SESSION_WAIT_MS) || 15_000
 // An ended session is forgotten this long after it ended, once nothing waits for it (#forgetEnded).
@@ -183,9 +193,15 @@ export class CanvasServer {
   #frontDoor = false
   #startedAt = new Date().toISOString()
   #closing = false
-  // Session id → { id, host, cwd, bridge, listener, pages, state, endedAt, lastCanvas, timer }.
+  // Session id → { id, host, cwd, bridge, listener, pages, state, endedAt, lastCanvas, timer,
+  // cli, listenerKeeps, keepUntil, releasedPage }.
   // state: waiting (no bridge yet) → online (bridge connected) → ended (bridge gone) → forgotten.
+  // A command session (cli) is online while its listener runs (listenerKeeps) and until
+  // keepUntil after; the page it held when it ended (releasedPage) is its again when it comes
+  // back, if nobody took it meanwhile.
   #sessions = new Map()
+  // Listener streams that carried a request (or a withdrawal): a --once listener leaves after it.
+  #deliveredOn = new WeakSet()
   // Page event streams: res → { session, pane, canvasDir }.
   #pageStreams = new Map()
   #paneTimers = new Map()
@@ -224,6 +240,9 @@ export class CanvasServer {
     this.presence.on('changed', (canvasDir) => this.#broadcastCanvas(canvasDir, 'page-state', this.presence.view(canvasDir)))
     ops.on('pages-deleted', ({ canvasDir, pageIds }) => {
       this.presence.releasePages(canvasDir, pageIds)
+      for (const session of this.#sessions.values()) {
+        if (session.releasedPage?.canvasDir === canvasDir && pageIds.includes(session.releasedPage.pageId)) session.releasedPage = null
+      }
       this.#broadcastCanvas(canvasDir, 'pages-deleted', { pageIds })
     })
     // Sessions that held pages when the service last ran: their bridges reconnect within
@@ -274,8 +293,9 @@ export class CanvasServer {
     return this.pageOrigin
   }
 
-  get bridgeCount() {
-    return [...this.#sessions.values()].filter((session) => session.bridge).length
+  // Sessions that use the service now (bridges, and command sessions while they are online).
+  get sessionCount() {
+    return [...this.#sessions.values()].filter((session) => session.bridge || session.state === 'online').length
   }
 
   get pageCount() {
@@ -343,6 +363,9 @@ export class CanvasServer {
         endedAt: session.state === 'ended' ? new Date(session.endedAt).toISOString() : null,
         bridge: Boolean(session.bridge),
         listener: Boolean(session.listener),
+        // A command session (no bridge): online while its listener runs, and until keptUntil after.
+        cli: session.cli,
+        keptUntil: session.cli && session.state === 'online' && !this.#held(session) && session.keepUntil ? new Date(session.keepUntil).toISOString() : null,
         pages: session.pages.size + this.#widgets.forSession(session.id).length,
         canvasDir: session.lastCanvas?.canvasDir ?? null,
         page: this.presence.pageOf(session.id)
@@ -391,10 +414,13 @@ export class CanvasServer {
     }
     if (req.method === 'GET' && url.pathname === '/api/bridge/session') return this.#openBridgeStream(req, res, url)
     if (req.method === 'POST' && url.pathname === '/api/bridge/call') {
-      const { session: id, cwd, op, args } = await readJsonBody(req)
+      const { session: id, cwd, op, args, cli, host } = await readJsonBody(req)
       if (!validId(id)) return sendJson(res, 400, { error: '缺少会话标识。' })
+      const session = this.#session(id)
+      // A cowart command: the session is online for a while after it (no bridge keeps it).
+      if (cli === true) this.#touchCommandSession(session, nonEmpty(host))
       try {
-        const result = await this.#bridgeCall(this.#session(id), { cwd, op, args: args && typeof args === 'object' ? args : {} })
+        const result = await this.#bridgeCall(session, { cwd, op, args: args && typeof args === 'object' ? args : {} })
         return sendJson(res, 200, { result })
       } catch (error) {
         return sendJson(res, 422, { error: error instanceof Error ? error.message : String(error) })
@@ -641,7 +667,22 @@ export class CanvasServer {
   #session(id) {
     let session = this.#sessions.get(id)
     if (!session) {
-      session = { id, host: null, cwd: null, bridge: null, listener: null, pages: new Set(), state: 'waiting', endedAt: null, lastCanvas: null, timer: null }
+      session = {
+        id,
+        host: null,
+        cwd: null,
+        bridge: null,
+        listener: null,
+        pages: new Set(),
+        state: 'waiting',
+        endedAt: null,
+        lastCanvas: null,
+        timer: null,
+        cli: false,
+        listenerKeeps: false,
+        keepUntil: 0,
+        releasedPage: null
+      }
       this.#sessions.set(id, session)
       this.#armEnd(session, SESSION_WAIT_MS)
     }
@@ -650,18 +691,64 @@ export class CanvasServer {
 
   #armEnd(session, ms) {
     clearTimeout(session.timer)
-    session.timer = setTimeout(() => this.#endSession(session), ms)
+    session.timer = setTimeout(() => this.#endSession(session), Math.max(0, ms))
+  }
+
+  // Connected: its bridge, or the listener of a command session.
+  #held(session) {
+    return Boolean(session.bridge) || Boolean(session.listener && session.listenerKeeps)
+  }
+
+  // A command session stays online at least ms longer (replace: exactly ms from now); with
+  // nothing holding it, it ends at keepUntil.
+  #keepFor(session, ms, { replace = false } = {}) {
+    const until = Date.now() + ms
+    session.keepUntil = replace ? until : Math.max(session.keepUntil, until)
+    if (!this.#held(session) && !this.#closing) this.#armEnd(session, session.keepUntil - Date.now())
+  }
+
+  // A command session comes online (or back): its page is its again, unless taken meanwhile.
+  #online(session) {
+    clearTimeout(session.timer)
+    session.timer = null
+    if (session.state === 'online') return
+    const resumed = session.state === 'ended'
+    session.state = 'online'
+    const page = session.releasedPage
+    session.releasedPage = null
+    if (page && !this.presence.pageOf(session.id) && !this.presence.holderOf(page.canvasDir, page.pageId)) {
+      this.presence.enter(session.id, page.canvasDir, page.pageId)
+      this.log(`session ${session.id} took its page ${page.pageId} back`)
+    }
+    this.log(`session ${session.id} ${resumed ? 'resumed' : 'connected'} (${session.host ?? 'unknown host'}, cowart command)`)
+    this.#broadcastPresence(session)
+    this.#deliverPending(session)
+    this.onActivity()
+  }
+
+  // A cowart command of the session (adapters/claude/bin/cowart.mjs, Claude Code).
+  #touchCommandSession(session, host) {
+    session.cli = true
+    session.host = host ?? session.host
+    this.#online(session)
+    if (!this.#held(session)) this.#keepFor(session, LEASE_MS)
   }
 
   // The session's pages learn it is gone, unanswered requests wait for it to come back, and
   // the page it was responsible for is free again.
   #endSession(session) {
     session.timer = null
-    if (session.bridge || session.state === 'ended' || this.#closing) return
+    if (this.#held(session) || session.state === 'ended' || this.#closing) return
+    // A command session is kept longer meanwhile (it was busy when a command came).
+    if (session.cli && session.keepUntil > Date.now()) {
+      this.#armEnd(session, session.keepUntil - Date.now())
+      return
+    }
     session.state = 'ended'
     session.endedAt = Date.now()
     this.queue.resetDelivery(session.id)
-    this.presence.release(session.id)
+    const page = this.presence.release(session.id)
+    if (session.cli) session.releasedPage = page
     if (session.listener) {
       endStream(session.listener, 'session-ended', {})
       session.listener = null
@@ -669,6 +756,7 @@ export class CanvasServer {
     this.#broadcastPresence(session)
     this.log(`session ${session.id} ended`)
     this.#forgetEnded()
+    this.onActivity()
   }
 
   // Sessions that ended ENDED_KEPT_MS ago are dropped, unless something still waits for them:
@@ -716,8 +804,10 @@ export class CanvasServer {
     this.onActivity()
   }
 
-  // One listener per session (cowart-listen.mjs, run in the background until a request comes):
-  // a newer one replaces the previous one so requests are never announced twice.
+  // One listener per session (run in the background until a request comes): a newer one
+  // replaces the previous one so requests are never announced twice. A command session's
+  // listener (presence=1: `cowart listen`) keeps it online; when it goes, the session stays
+  // online while it handles what the listener brought, and ends soon if it brought nothing.
   #openAgentStream(req, res, url) {
     const id = url.searchParams.get('session')
     if (!validId(id)) {
@@ -727,14 +817,24 @@ export class CanvasServer {
     if (session.listener) endStream(session.listener, 'replaced', {})
 
     openEventStream(req, res)
+    const keeps = url.searchParams.get('presence') === '1'
     session.listener = res
+    session.listenerKeeps = keeps
+    if (keeps) {
+      session.cli = true
+      session.host = nonEmpty(url.searchParams.get('host')) ?? session.host
+      this.#online(session)
+    }
     req.on('close', () => {
       if (session.listener !== res) return
       session.listener = null
+      if (keeps) this.#keepFor(session, this.#deliveredOn.has(res) ? BUSY_MS : LISTENER_GONE_MS, { replace: true })
       this.#broadcastPresence(session)
+      this.onActivity()
     })
     this.#broadcastPresence(session)
     this.#deliverPending(session)
+    this.onActivity()
   }
 
   #openPageStream(req, res, url) {
@@ -787,6 +887,7 @@ export class CanvasServer {
     const stream = session?.listener
     if (!stream || request.delivered) return
     sendEvent(stream, 'request', agentEventPayload(request))
+    this.#deliveredOn.add(stream)
     this.queue.markDelivered(request.id)
   }
 
@@ -799,7 +900,9 @@ export class CanvasServer {
   #deliverCancel(request) {
     if (request.executor === 'service') return
     const stream = this.#sessions.get(request.session)?.listener
-    if (stream && request.delivered) sendEvent(stream, 'cancelled', agentEventPayload(request))
+    if (!stream || !request.delivered) return
+    sendEvent(stream, 'cancelled', agentEventPayload(request))
+    this.#deliveredOn.add(stream)
   }
 
   #broadcastPresence(session) {

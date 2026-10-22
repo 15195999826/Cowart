@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { DEFAULT_CANVAS_DIR } from '../../shared/paths.mjs'
 import { domainPort } from '../lib/identity.mjs'
 import { loadOrCreateToken } from '../lib/token.mjs'
-import { finish, rawGet, serviceStatus, startBridge, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
+import { cliSession, finish, rawGet, serviceStatus, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
 
 const PORT = Number(process.env.COWART_ADDRESS_TEST_PORT) || 43387
 const FRONT_PORT = PORT + 1
@@ -54,7 +54,7 @@ function closeServer(server) {
   return closed
 }
 
-const claude = await startBridge({ cwd: root, port: PORT, session: 'address-claude', env: { COWART_DOMAIN_PORT: String(FRONT_PORT) } })
+const claude = cliSession({ cwd: root, port: PORT, session: 'address-claude', env: { COWART_DOMAIN_PORT: String(FRONT_PORT) } })
 const render = async () => new URL(ok(await claude.call('render_cowart_canvas_widget', { sessionName: '小址' })).structuredContent.url)
 let door = null
 try {

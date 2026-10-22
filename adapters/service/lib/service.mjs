@@ -1,9 +1,9 @@
 // The machine-wide canvas service process: the machine's one canvas (SHARED_CANVAS_DIR),
 // one upstream Cowart server, one request queue and one writer, shared by every session
-// bridge (FORK.md). It has the canvas (canvas-lock.mjs) from before it listens until its
-// last write, and exits after it has sat idle (no bridge connected, no canvas page open)
-// for a while. One that replaces a running service takes the canvas over first, then asks
-// that service to stop and starts once it has exited.
+// (FORK.md). It has the canvas (canvas-lock.mjs) from before it listens until its last write,
+// and exits after it has sat idle (no session online, no canvas page open) for a while. One
+// that replaces a running service takes the canvas over first, then asks that service to stop
+// and starts once it has exited.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -158,7 +158,7 @@ export async function startCanvasService({ port, replacing = null }) {
   })
 
   function updateIdle() {
-    if (server.bridgeCount > 0 || server.pageCount > 0 || jobs.running > 0) {
+    if (server.sessionCount > 0 || server.pageCount > 0 || jobs.running > 0) {
       clearTimeout(idleTimer)
       idleTimer = null
       return

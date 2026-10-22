@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-// Several Claude sessions on one canvas: one service for every bridge, session names, one
+// Several Claude sessions on one canvas: one service for every session, session names, one
 // session responsible for each page (the one that entered it last, from the session or
 // from the canvas), requests routed to that session, delta saves from panes that edit the
-// same canvas at once, model writes kept out of other sessions' pages, each session's own
-// selection, a session ending and coming back, ended sessions forgotten once nothing waits
-// for them (and still hearing their requests when they come back), a changed checkout replacing the service
-// (with more bridges starting meanwhile, all ending up on one service), another checkout's
-// older bridges coming back during a replacement staying with the newer service, an old
-// service that does not stop keeping the canvas, one service per canvas, ports that do not
-// answer yet waited for rather than skipped, idle exit, and the desktop-only switch. Bridges run over stdio like Claude Code runs them; canvas pages are
-// played by event streams and the page API, on a test port.
+// same canvas at once, model writes kept out of other sessions' pages and inserts kept on the
+// page they are for, each session's own selection, a session ending and coming back (online
+// while its listener runs, while it handles what its listener brought and for a while after a
+// command; its page back when nobody took it), ended sessions forgotten once nothing waits
+// for them (and still hearing their requests when they come back), a changed checkout replacing
+// the service (with more sessions starting meanwhile, all ending up on one service), another
+// checkout's older bridges coming back during a replacement staying with the newer service, an
+// old service that does not stop keeping the canvas, one service per canvas, ports that do not
+// answer yet waited for rather than skipped, idle exit, and the desktop-only switch. Sessions
+// run cowart commands like Claude Code runs them (Codex bridges over stdio); canvas pages and
+// listeners are played by event streams and the page API, on a test port.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
@@ -25,7 +28,7 @@ import { EXIT_CANVAS_BUSY, EXIT_REPLACED_STUCK, samePath } from '../../service/l
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { pageRecords } from '../../shared/canvas-model.mjs'
 import { ADAPTERS_DIR, REPO_ROOT } from '../../shared/paths.mjs'
-import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, cliSession, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_MULTI_PORT) || 43295
 // Ports of their own for the checks of ports that do not answer and ports another program
@@ -38,11 +41,15 @@ const CHECKOUTS_PORT = PORT + 80
 // This checkout's code, for the replacement checks: writing another salt into the file is
 // like changing the code on disk, for every bridge and service that starts afterwards.
 const SALT_FILE = join(tmpdir(), `cowart-check-build-salt-${process.pid}.txt`)
-// Short timers so the session and idle checks take seconds; bridges pass COWART_* on to
+// Short timers so the session and idle checks take seconds; sessions pass COWART_* on to
 // the service they start.
 const FAST = {
   COWART_SESSION_GRACE_MS: '300',
-  COWART_SESSION_WAIT_MS: '1500',
+  // Listeners come back after a replacement within it (their retries are 0.3 s, 0.6 s, 1.2 s …).
+  COWART_SESSION_WAIT_MS: '5000',
+  COWART_SESSION_LEASE_MS: '6000',
+  COWART_LISTENER_GONE_MS: '300',
+  COWART_SESSION_BUSY_MS: '30000',
   COWART_ENDED_SESSION_KEPT_MS: '5000',
   COWART_SERVICE_IDLE_MS: '1500',
   COWART_SERVICE_BUILD_SALT_FILE: SALT_FILE
@@ -56,13 +63,14 @@ await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.jso
 
 await stopTestService(PORT)
 const origin = `http://127.0.0.1:${PORT}`
-const bridges = []
+const sessions = []
 const streams = []
 
-async function bridgeFor(session, env = {}) {
-  const bridge = await startBridge({ cwd: projectDir, port: PORT, session, env: { ...FAST, ...env } })
-  bridges.push(bridge)
-  return bridge
+// A Claude session: cowart commands, and the listeners it runs.
+function cliFor(session, env = {}, cwd = projectDir) {
+  const cli = cliSession({ cwd, port: PORT, session, env: { ...FAST, ...env } })
+  sessions.push(cli)
+  return cli
 }
 
 function events(path, headers) {
@@ -72,19 +80,9 @@ function events(path, headers) {
 }
 // A canvas page: its event stream, with the pane id and canvas it shows.
 const pane = (session, id) => events(`/api/page-events?${new URLSearchParams({ token, session, pane: id, canvasDir })}`)
-const listener = (session) => events(`/api/agent-events?session=${session}`, { 'x-cowart-token': token })
-// The listener program the way a session runs it: in the background, with --once.
-const listenerRuns = []
-function runListener(session) {
-  const child = spawn(process.execPath, [join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-listen.mjs'), '--port', String(PORT), '--session', session, '--once'], {
-    stdio: ['ignore', 'pipe', 'ignore'],
-    windowsHide: true
-  })
-  listenerRuns.push(child)
-  let stdout = ''
-  child.stdout.on('data', (chunk) => (stdout += chunk))
-  return { child, done: new Promise((resolve) => child.on('close', (code) => resolve({ code, stdout }))) }
-}
+// A session's listener, the way `cowart listen` connects (it keeps the session online), but
+// staying connected after a request.
+const listener = (session) => events(`/api/agent-events?session=${session}&presence=1&host=claude`, { 'x-cowart-token': token })
 
 async function api(path, body, headers = {}) {
   const response = await fetch(`${origin}${path}`, {
@@ -125,8 +123,9 @@ function frame(id, parentId, x) {
   }
 }
 
-const connectedSessions = async () =>
-  (await serviceStatus(PORT))?.sessions.filter((session) => session.bridge).map((session) => session.id).sort() ?? []
+const onlineSessions = async () =>
+  (await serviceStatus(PORT))?.sessions.filter((session) => session.state === 'online').map((session) => session.id).sort() ?? []
+const hasListener = async (id) => Boolean((await sessionStatus(id))?.listener)
 
 // The canvas services for a canvas on the test's ports: the main one and those bridges move on to.
 async function servicesOn(canvas, from = PORT) {
@@ -157,7 +156,8 @@ async function runService(canvas, port) {
 }
 
 // Another checkout older than this one, the way Codex installs a release: the published files
-// (bundled bridges and service) copied elsewhere, under a lower version. Returns its Claude bridge.
+// (bundled bridges, command and service) copied elsewhere, under a lower version. Returns its
+// Codex bridge.
 async function olderCheckout(dir) {
   const manifest = JSON.parse(await readFile(join(ADAPTERS_DIR, 'generated', 'release-manifest.json'), 'utf8'))
   const files = [...Object.keys(manifest.resources), ...Object.keys(manifest.artifacts).map((name) => `adapters/generated/${name}`)]
@@ -167,7 +167,7 @@ async function olderCheckout(dir) {
   }
   const pkg = JSON.parse(await readFile(join(dir, 'adapters', 'package.json'), 'utf8'))
   await writeFile(join(dir, 'adapters', 'package.json'), JSON.stringify({ ...pkg, version: '0.0.1' }))
-  return join(dir, 'adapters', 'generated', 'cowart-claude-mcp.mjs')
+  return join(dir, 'adapters', 'generated', 'cowart-codex-mcp.mjs')
 }
 
 const listen = (server, port) => new Promise((resolve, reject) => server.once('error', reject).listen(port, '127.0.0.1', resolve))
@@ -190,15 +190,19 @@ let ROLE = ''
 let pendingForA = 0
 
 try {
-  await step('two sessions share one detached canvas service', async () => {
-    a = await bridgeFor('multi-a')
-    b = await bridgeFor('multi-b')
-    await Promise.all([a.client.listTools(), b.client.listTools()])
-    await waitFor(async () => (await connectedSessions()).join() === 'multi-a,multi-b', { what: 'both sessions' })
+  await step('two sessions share one detached canvas service; their listeners keep them online', async () => {
+    a = cliFor('multi-a')
+    b = cliFor('multi-b')
+    const [toolsA] = await Promise.all([a.listTools(), b.listTools()])
+    listenA = listener('multi-a')
+    listenB = listener('multi-b')
+    await Promise.all([listenA.ready, listenB.ready])
+    await waitFor(async () => (await onlineSessions()).join() === 'multi-a,multi-b', { what: 'both sessions' })
     const status = await serviceStatus(PORT)
     assert.equal(status.service, 'cowart-canvas')
     assert.notEqual(status.pid, process.pid)
-    assert.ok(!(await a.client.listTools()).tools.some((tool) => tool.name === 'take_over_cowart_page'))
+    assert.ok(status.sessions.every((session) => !session.bridge && session.listener && session.keptUntil === null), JSON.stringify(status.sessions))
+    assert.ok(!toolsA.tools.some((tool) => tool.name === 'take_over_cowart_page'))
 
     // A card on the first page.
     const snapshot = await readSnapshot()
@@ -261,9 +265,7 @@ try {
   await step("a page's request goes to the session responsible for it, whichever pane it was clicked in; a free page goes to the pane's session", async () => {
     paneA = pane('multi-a', 'pane-a')
     paneB = pane('multi-b', 'pane-b')
-    listenA = listener('multi-a')
-    listenB = listener('multi-b')
-    await Promise.all([paneA.ready, paneB.ready, listenA.ready, listenB.ready])
+    await Promise.all([paneA.ready, paneB.ready])
     const opening = await paneA.next((item) => item.event === 'page-state')
     assert.equal(opening.data.pages[ROLE].holder, 'multi-b')
     assert.equal(opening.data.names['multi-a'], '小川')
@@ -450,19 +452,42 @@ try {
     assert.match(JSON.stringify(await b.call('get_cowart_selection', {})), /shape:p1/)
   })
 
+  await step("an insert for a page lands on that page, whatever is selected on another page (2026-10-22)", async () => {
+    // Upstream takes the one selected shape as the anchor of an insert naming none, and puts the
+    // insert on that shape's page. A holds 角色设定; its pane has shape:r2 there selected.
+    assert.equal((await sessionStatus('multi-a')).page.pageId, ROLE)
+    const onFirst = await a.call('insert_cowart_image', { imagePath: join(FIXTURES, 'tiny.png'), pageId: firstPageId })
+    assert.ok(!onFirst.isError, text(onFirst))
+    assert.equal(onFirst.structuredContent.parentId, firstPageId)
+    assert.equal(onFirst.structuredContent.anchorShapeId, null)
+    assert.equal((await stored())[onFirst.structuredContent.shapeId].parentId, firstPageId)
+    // On its own page the selection is still the anchor.
+    const beside = await a.call('insert_cowart_image', { imagePath: join(FIXTURES, 'tiny.png'), pageId: ROLE })
+    assert.ok(!beside.isError, text(beside))
+    assert.equal(beside.structuredContent.anchorShapeId, 'shape:r2')
+    assert.equal(beside.structuredContent.parentId, ROLE)
+    // A session that selected nothing (no pane) does not get another pane's selection: shape:r2
+    // would have put its insert on A's page.
+    await pageTool('pane-a', 'save_cowart_selection_state', { selection: { selectedShapes: [{ id: 'shape:r2', type: 'frame' }] } })
+    const e = cliFor('multi-e')
+    const fromE = await e.call('insert_cowart_image', { imagePath: join(FIXTURES, 'tiny.png'), pageId: firstPageId })
+    assert.ok(!fromE.isError, text(fromE))
+    assert.equal(fromE.structuredContent.parentId, firstPageId)
+    assert.equal((await stored())[fromE.structuredContent.shapeId].parentId, firstPageId)
+  })
+
   await step('every session works on the one canvas: a session from another project, and a page whose URL names its own canvas', async () => {
     const elsewhere = await mkdtemp(join(tmpdir(), 'cowart-claude-elsewhere-'))
     try {
-      // This bridge would start a service on its project's canvas; the running one keeps its canvas.
-      const d = await startBridge({ cwd: elsewhere, port: PORT, session: 'multi-d', env: FAST })
-      bridges.push(d)
+      // This session would start a service on its project's canvas; the running one keeps its canvas.
+      const d = cliFor('multi-d', {}, elsewhere)
       const opened = await d.call('render_cowart_canvas_widget', { sessionName: '阿澈' })
       assert.ok(!opened.isError, text(opened))
       assert.equal(opened.structuredContent.canvasDir, canvasDir)
       assert.equal(opened.structuredContent.projectDir, elsewhere)
       assert.ok(opened.structuredContent.pages.some((page) => page.id === ROLE), JSON.stringify(opened.structuredContent.pages))
       assert.match(text(opened), /所有会话、所有项目共用这一张/)
-      const insert = (await d.client.listTools()).tools.find((tool) => tool.name === 'insert_cowart_image')
+      const insert = (await d.listTools()).tools.find((tool) => tool.name === 'insert_cowart_image')
       assert.ok(insert && !('projectDir' in insert.inputSchema.properties) && !('canvasDir' in insert.inputSchema.properties), 'the model is still asked for a canvas')
 
       // A page whose URL still names its project's own canvas gets the one canvas.
@@ -475,15 +500,18 @@ try {
     }
   })
 
-  await step('a session that ends releases its page, and hears its pending requests again when it comes back', async () => {
+  await step('a session whose listener goes without bringing anything ends soon and releases its page, and hears its pending requests again when it comes back', async () => {
     // A holds 角色设定 and has one unanswered request (from the first page, earlier).
     assert.equal((await sessionStatus('multi-a')).page.pageId, ROLE)
     paneA.clear()
     paneB.clear()
-    await a.close()
+    // The session is closed: its background listener (a new one, which brought nothing) is gone.
+    const last = listener('multi-a')
+    await last.ready
+    await listenA.next((item) => item.event === 'replaced')
+    last.close()
     await paneA.next((item) => item.event === 'presence' && item.data.session === 'ended')
     await paneB.next(holderIs(ROLE, null))
-    await listenA.next((item) => item.event === 'session-ended')
     assert.equal((await sessionStatus('multi-a')).state, 'ended')
     assert.equal((await sessionStatus('multi-a')).page, null)
 
@@ -496,8 +524,8 @@ try {
     assert.equal(taken.body.request.session, 'multi-b')
     await listenB.next((item) => item.event === 'request' && item.data.id === taken.body.request.id)
 
-    a = await bridgeFor('multi-a')
-    await a.client.listTools()
+    // A command: the session is back, and hears its request again once its listener runs.
+    await a.listTools()
     await paneA.next((item) => item.event === 'presence' && item.data.session === 'online')
     const resumed = listener('multi-a')
     await resumed.ready
@@ -505,14 +533,52 @@ try {
     const pending = await a.call('list_cowart_requests', {})
     assert.ok(pending.structuredContent.requests.some((entry) => entry.id === pendingForA), text(pending))
     assert.ok(!pending.structuredContent.requests.some((entry) => entry.session === 'multi-b'))
-    assert.equal((await sessionStatus('multi-a')).page, null, 'an ended session does not get its page back by itself')
+    assert.equal((await sessionStatus('multi-a')).page, null, 'the page B took meanwhile went back to A')
+    resumed.close()
+  })
+
+  await step('a session stays online while it handles what its listener brought, and gets its page back when it comes back and nobody took it', async () => {
+    const opened = await a.call('render_cowart_canvas_widget', { page: '分镜' })
+    const storyboard = opened.structuredContent.pages.find((page) => page.name === '分镜').id
+    assert.equal(opened.structuredContent.myPage, '分镜')
+    // The listener brings a request and leaves: the session handles it, longer than a listener
+    // that went for good would keep it.
+    const run = a.listen()
+    await waitFor(() => hasListener('multi-a'), { what: "A's listener" })
+    const sent = await message('multi-a', 'pane-a', storyboard, '分镜', '按标注修改\n\nPrompt:\n给 A 的')
+    const woken = await run.done
+    assert.equal(woken.code, 0, woken.stdout)
+    assert.match(woken.stdout, new RegExp(`^Cowart 画布请求 #${sent.body.request.id}「`, 'm'))
+    await delay(1500)
+    let status = await sessionStatus('multi-a')
+    assert.equal(status.state, 'online', 'the session ended while it handled the request')
+    assert.equal(status.page.pageId, storyboard)
+    assert.ok(Date.parse(status.keptUntil) > Date.now() + 20_000, `kept until ${status.keptUntil}`)
+    assert.ok(!(await a.call('reply_cowart_request', { id: sent.body.request.id, status: 'skipped' })).isError)
+
+    // Its next listener goes without bringing anything (the session was closed): it ends soon.
+    const next = a.listen()
+    await waitFor(() => hasListener('multi-a'), { what: "A's next listener" })
+    next.kill()
+    await waitFor(async () => (await sessionStatus('multi-a')).state === 'ended', { what: 'A to end' })
+    assert.equal((await sessionStatus('multi-a')).page, null)
+    // Back with a command: 分镜 is its again.
+    await a.listTools()
+    status = await sessionStatus('multi-a')
+    assert.equal(status.state, 'online')
+    assert.equal(status.page?.pageId, storyboard, 'the page nobody took did not come back')
+    // With no listener it stays online for a while after a command.
+    assert.ok(Date.parse(status.keptUntil) > Date.now(), JSON.stringify(status))
+    listenA = listener('multi-a')
+    await listenA.ready
+    assert.equal((await sessionStatus('multi-b')).page.pageId, ROLE)
   })
 
   await step('ended sessions nothing waits for are forgotten after a while; one with a request waiting stays, and hears it when it comes back', async () => {
     // Like Codex, where every task is a session of its own: many come and go.
     const gone = Array.from({ length: 12 }, (_, index) => `multi-gone-${index}`)
-    const comers = await Promise.all(gone.map((session) => bridgeFor(session)))
-    await Promise.all(comers.map((bridge) => bridge.client.listTools()))
+    const comers = gone.map((session) => cliFor(session))
+    await Promise.all(comers.map((session) => session.listTools()))
     // One of them picked something on its canvas page.
     const picker = pane('multi-gone-0', 'pane-gone-0')
     await picker.ready
@@ -521,8 +587,8 @@ try {
     await pageTool('pane-b', 'save_cowart_selection_state', { selection: { selectedShapes: [{ id: 'shape:p1', type: 'frame' }] } })
     picker.close()
     // Another one has a request from its page waiting when it ends.
-    const waiter = await bridgeFor('multi-waiter')
-    await waiter.client.listTools()
+    const waiter = cliFor('multi-waiter')
+    await waiter.listTools()
     const waiterPane = pane('multi-waiter', 'pane-waiter')
     await waiterPane.ready
     await showPage('pane-waiter', firstPageId, 'Page 1')
@@ -530,11 +596,11 @@ try {
     assert.equal(waiting.body.request?.session, 'multi-waiter', JSON.stringify(waiting.body))
     waiterPane.close()
 
-    await Promise.all([...comers, waiter].map((bridge) => bridge.close()))
+    // No listener: they end a while after their last command.
     const ended = await waitFor(async () => {
       const sessions = (await serviceStatus(PORT)).sessions.filter((session) => [...gone, 'multi-waiter'].includes(session.id))
       return sessions.length === gone.length + 1 && sessions.every((session) => session.state === 'ended') && sessions
-    }, { what: 'the sessions to end (and still be listed)' })
+    }, { timeoutMs: 20_000, what: 'the sessions to end (and still be listed)' })
     assert.ok(ended.every((session) => session.endedAt && session.page === null), JSON.stringify(ended))
 
     // COWART_ENDED_SESSION_KEPT_MS later the ones nothing waits for are gone; the one with a request stays.
@@ -542,51 +608,47 @@ try {
     assert.equal((await sessionStatus('multi-waiter'))?.state, 'ended', 'a session with a request waiting for it was forgotten')
 
     // A forgotten session that comes back is a new one: online again, without its old selection.
-    const returner = await bridgeFor('multi-gone-0')
-    try {
-      await returner.client.listTools()
-      assert.equal((await sessionStatus('multi-gone-0')).state, 'online')
-      assert.doesNotMatch(JSON.stringify(await returner.call('get_cowart_selection', {})), /shape:gone-pick/, 'a forgotten session kept its selection')
-    } finally {
-      await returner.close()
-    }
+    const returner = comers[0]
+    await returner.listTools()
+    assert.equal((await sessionStatus('multi-gone-0')).state, 'online')
+    assert.doesNotMatch(JSON.stringify(await returner.call('get_cowart_selection', {})), /shape:gone-pick/, 'a forgotten session kept its selection')
 
     // The one kept for its request comes back and hears it; answered, it is forgotten in turn.
-    const back = await bridgeFor('multi-waiter')
-    try {
-      await back.client.listTools()
-      const heard = listener('multi-waiter')
-      await heard.ready
-      await heard.next((item) => item.event === 'request' && item.data.id === waiting.body.request.id)
-      const skipped = await back.call('reply_cowart_request', { id: waiting.body.request.id, status: 'skipped' })
-      assert.ok(!skipped.isError, text(skipped))
-      heard.close()
-    } finally {
-      await back.close()
-    }
-    await waitFor(async () => !(await sessionStatus('multi-waiter')), { timeoutMs: 15_000, what: 'the answered session to be forgotten' })
+    await waiter.listTools()
+    const heard = listener('multi-waiter')
+    await heard.ready
+    await heard.next((item) => item.event === 'request' && item.data.id === waiting.body.request.id)
+    const skipped = await waiter.call('reply_cowart_request', { id: waiting.body.request.id, status: 'skipped' })
+    assert.ok(!skipped.isError, text(skipped))
+    // Its listener goes before it brought anything else (the session was closed).
+    const quiet = listener('multi-waiter')
+    await quiet.ready
+    quiet.close()
+    await waitFor(async () => !(await sessionStatus('multi-waiter')), { timeoutMs: 20_000, what: 'the answered session to be forgotten' })
   })
 
-  await step('changed code in this checkout replaces the service; responsibilities survive, bridges follow without replacing it back', async () => {
+  await step('changed code in this checkout replaces the service; responsibilities survive, listeners follow without replacing it back', async () => {
     const before = await serviceStatus(PORT)
     assert.equal(before.sessions.find((session) => session.id === 'multi-b').page.pageId, ROLE)
     // A request waiting in the queue outlives the service, number and all.
     const kept = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换了版本也还在')
     assert.equal(kept.status, 200, JSON.stringify(kept.body))
-    // A listener run waiting in the background outlives the replacement, so the session is not
-    // woken for it; the next request still reaches it.
-    const waiting = runListener('multi-b')
+    // Listener runs waiting in the background outlive the replacement, so the sessions are not
+    // woken for it (and stay online); the next request still reaches them.
+    const waiting = b.listen()
     await listenB.next((item) => item.event === 'replaced')
-    // The code changes: the session that starts next replaces the service.
+    const waitingA = a.listen()
+    await listenA.next((item) => item.event === 'replaced')
+    // The code changes: the session that runs a command next replaces the service.
     await writeFile(SALT_FILE, 'changed-code')
-    const c = await bridgeFor('multi-c')
-    await c.client.listTools()
+    const c = cliFor('multi-c')
+    await c.listTools()
     const after = await waitFor(async () => {
       const status = await serviceStatus(PORT)
       return status && status.pid !== before.pid && status
     }, { timeoutMs: 20_000, what: 'the replacement service' })
     assert.notEqual(after.build, before.build)
-    await waitFor(async () => (await connectedSessions()).join() === 'multi-a,multi-b,multi-c', { timeoutMs: 15_000, what: 'bridges to reconnect' })
+    await waitFor(async () => (await onlineSessions()).join() === 'multi-a,multi-b,multi-c', { timeoutMs: 15_000, what: 'listeners to reconnect' })
     assert.equal((await sessionStatus('multi-b')).page.pageId, ROLE, 'the restarted service forgot who is responsible')
     const listed = await b.call('list_cowart_requests', {})
     assert.ok(!listed.isError, text(listed))
@@ -595,6 +657,7 @@ try {
     assert.equal(again.structuredContent.requestKey, kept.body.request.requestKey)
     assert.equal(again.structuredContent.status, 'pending')
     assert.equal(waiting.child.exitCode, null, 'the replacement ended the listener run')
+    assert.equal(waitingA.child.exitCode, null, "the replacement ended A's listener run")
     const next = await message('multi-b', 'pane-b', ROLE, '角色设定', '按标注修改\n\nPrompt:\n换版本后的第一条')
     assert.ok(next.body.request.id > kept.body.request.id, 'the replacement service numbered requests from 1 again')
     const woken = await Promise.race([waiting.done, delay(15_000).then(() => ({ code: 'still waiting', stdout: '' }))])
@@ -604,25 +667,28 @@ try {
       const skipped = await b.call('reply_cowart_request', { id, status: 'skipped' })
       assert.ok(!skipped.isError, text(skipped))
     }
+    // B runs its listener again, as a session does after handling a request.
+    b.listen()
+    await waitFor(() => hasListener('multi-b'), { what: "B's listener" })
     await delay(1500)
-    assert.equal((await serviceStatus(PORT)).pid, after.pid, 'an older bridge replaced the service back')
+    assert.equal((await serviceStatus(PORT)).pid, after.pid, 'an older session replaced the service back')
   })
 
-  await step('bridges that start while the service is being replaced all end up on one service', async () => {
+  await step('sessions that run commands while the service is being replaced all end up on one service', async () => {
     const before = await serviceStatus(PORT)
-    // The code changes again and several sessions start at once: each one replaces the
-    // service at the same moment, while the connected bridges come back to whichever runs.
+    // The code changes again and several sessions run a command at once: each one replaces the
+    // service at the same moment, while the running listeners come back to whichever runs.
     await writeFile(SALT_FILE, 'changed-again')
     const herd = Array.from({ length: 6 }, (_, index) => `multi-herd-${index}`)
-    const started = await Promise.all(herd.map((session) => bridgeFor(session)))
-    await Promise.all(started.map((bridge) => bridge.client.listTools()))
-    const everyone = ['multi-a', 'multi-b', 'multi-c', ...herd].sort().join()
+    const started = herd.map((session) => cliFor(session))
+    await Promise.all(started.map((session) => session.listTools()))
+    const everyone = ['multi-a', 'multi-b', ...herd]
     const after = await waitFor(async () => {
       const status = await serviceStatus(PORT)
-      const connected = status?.sessions.filter((session) => session.bridge).map((session) => session.id).sort().join()
-      return status && status.pid !== before.pid && connected === everyone && status
-    }, { timeoutMs: 30_000, what: 'every bridge on one replacement service' }).catch(async (error) => {
-      const services = (await servicesOn(canvasDir)).map((status) => `${status.port} (pid ${status.pid}): ${status.sessions.filter((session) => session.bridge).map((session) => session.id).join(', ')}`)
+      const online = new Set(status?.sessions.filter((session) => session.state === 'online').map((session) => session.id))
+      return status && status.pid !== before.pid && everyone.every((id) => online.has(id)) && status
+    }, { timeoutMs: 30_000, what: 'every session on one replacement service' }).catch(async (error) => {
+      const services = (await servicesOn(canvasDir)).map((status) => `${status.port} (pid ${status.pid}): ${status.sessions.filter((session) => session.state === 'online').map((session) => session.id).join(', ')}`)
       throw new Error(`${error.message}; services on the canvas: ${services.join(' | ')}`)
     })
     assert.notEqual(after.build, before.build, 'the service does not run the changed code')
@@ -641,7 +707,7 @@ try {
     const canvas = join(project, 'canvas')
     await mkdir(join(canvas, 'pages', 'page'), { recursive: true })
     await copyFile(EMPTY_CANVAS, join(canvas, 'pages', 'page', 'cowart-canvas.json'))
-    const connected = (status) => status?.sessions.filter((session) => session.bridge).length ?? 0
+    const connected = (status) => status?.sessions.filter((session) => session.bridge || session.state === 'online').length ?? 0
     const olders = []
     let newer = null
     try {
@@ -661,12 +727,12 @@ try {
       // (2.3 s against 0.4 s): unbundled modules, a busy machine.
       const slowStart = join(project, 'slow-start.mjs')
       await writeFile(slowStart, 'await new Promise((resolve) => setTimeout(resolve, 1500))\n')
-      newer = await startBridge({ cwd: project, port: CHECKOUTS_PORT, session: 'multi-newer', env: { ...FAST, NODE_OPTIONS: `--import=${pathToFileURL(slowStart).href}` } })
-      await newer.client.listTools()
+      newer = cliSession({ cwd: project, port: CHECKOUTS_PORT, session: 'multi-newer', env: { ...FAST, NODE_OPTIONS: `--import=${pathToFileURL(slowStart).href}` } })
+      await newer.listTools()
       const after = await waitFor(async () => {
         const status = await serviceStatus(CHECKOUTS_PORT)
         return status && status.pid !== before.pid && connected(status) === olders.length + 1 && status
-      }, { timeoutMs: 30_000, what: 'every bridge on a service after the replacement' })
+      }, { timeoutMs: 30_000, what: 'every session on a service after the replacement' })
       assert.ok(samePath(after.root, REPO_ROOT), `the older checkout's service (${after.version}, ${after.root}) came back instead of this one`)
       await delay(1500)
       assert.equal((await serviceStatus(CHECKOUTS_PORT)).pid, after.pid, 'the service was replaced again')
@@ -753,20 +819,17 @@ try {
     await Promise.all([listen(dropping, QUIET_PORT), listen(other, BUSY_PORT)])
     const projects = await Promise.all(['quiet', 'busy'].map((name) => mkdtemp(join(tmpdir(), `cowart-claude-${name}-`))))
     try {
-      const waiting = await startBridge({ cwd: projects[0], port: QUIET_PORT, session: 'multi-quiet', env: FAST })
-      const skipping = await startBridge({ cwd: projects[1], port: BUSY_PORT, session: 'multi-busy', env: FAST })
-      bridges.push(waiting, skipping)
-      const listed = Promise.all([waiting.client.listTools(), skipping.client.listTools()])
+      const waiting = cliSession({ cwd: projects[0], port: QUIET_PORT, session: 'multi-quiet', env: FAST })
+      const skipping = cliSession({ cwd: projects[1], port: BUSY_PORT, session: 'multi-busy', env: FAST })
+      const listed = Promise.all([waiting.listTools(), skipping.listTools()])
       await delay(1500)
       await closeServer(dropping)
       await listed
       const quiet = await serviceStatus(QUIET_PORT)
-      assert.ok(quiet?.sessions.some((session) => session.id === 'multi-quiet' && session.bridge), 'the bridge did not wait for the port')
-      assert.equal(await serviceStatus(QUIET_PORT + 1), null, 'the bridge moved on and started a service on the next port')
+      assert.ok(quiet?.sessions.some((session) => session.id === 'multi-quiet' && session.state === 'online'), 'the command did not wait for the port')
+      assert.equal(await serviceStatus(QUIET_PORT + 1), null, 'the command moved on and started a service on the next port')
       const past = await serviceStatus(BUSY_PORT + 1)
-      assert.ok(past?.sessions.some((session) => session.id === 'multi-busy' && session.bridge), 'the bridge did not move past the other program')
-      await waiting.close()
-      await skipping.close()
+      assert.ok(past?.sessions.some((session) => session.id === 'multi-busy' && session.state === 'online'), 'the command did not move past the other program')
     } finally {
       await closeServer(dropping)
       await closeServer(other)
@@ -776,7 +839,7 @@ try {
   })
 
   await step('a page entered by name goes after the last page, also past the 35th (\'aZ\' < \'aa\')', async () => {
-    const pager = await bridgeFor('multi-pages')
+    const pager = cliFor('multi-pages')
     const before = pageRecords(await readSnapshot()).length
     const names = Array.from({ length: 40 }, (_, i) => `顺序 ${String(i + 1).padStart(2, '0')}`)
     for (const name of names) {
@@ -787,42 +850,37 @@ try {
     assert.equal(pages.length, before + names.length)
     assert.equal(new Set(pages.map((page) => page.index)).size, pages.length, 'two pages share an index')
     assert.deepEqual(pages.slice(-names.length).map((page) => page.name), names)
-    await pager.close()
   })
 
   await step('the service exits once no session and no page is left', async () => {
     for (const stream of streams) stream.close()
-    for (const bridge of bridges) await bridge.close()
-    await waitFor(async () => !(await serviceStatus(PORT)), { timeoutMs: 15_000, what: 'the idle service to exit' })
+    for (const session of sessions) await session.close()
+    await waitFor(async () => !(await serviceStatus(PORT)), { timeoutMs: 30_000, what: 'the idle service to exit' })
   })
 
-  await step('outside the desktop app the bridge offers no tools and starts nothing', async () => {
-    const cli = await bridgeFor('multi-cli', { CLAUDE_CODE_ENTRYPOINT: 'cli' })
-    assert.deepEqual((await cli.client.listTools()).tools, [])
-    assert.match(cli.client.getInstructions() ?? '', /只在 Claude Code 桌面版/)
+  await step('outside the desktop app the command does nothing and starts nothing; without a session id it says where to run it', async () => {
+    const outside = await cliFor('multi-cli', { CLAUDE_CODE_ENTRYPOINT: 'cli' }).run(['open'])
+    assert.equal(outside.code, 2)
+    assert.match(outside.stderr, /只在 Claude Code 桌面版里用.+入口是 cli/)
+    const nameless = await cliFor('multi-nameless', { COWART_SESSION_ID: '', CLAUDE_CODE_HOST_SESSION_ID: '', CLAUDE_CODE_SESSION_ID: '' }).run(['state'])
+    assert.equal(nameless.code, 2)
+    assert.match(nameless.stderr, /找不到这个会话的标识/)
     await delay(500)
     assert.equal(await serviceStatus(PORT), null)
-    await cli.close()
 
-    const allowed = await bridgeFor('multi-cli-allowed', { CLAUDE_CODE_ENTRYPOINT: 'cli', COWART_ALLOW_CLI: '1' })
-    assert.ok((await allowed.client.listTools()).tools.some((tool) => tool.name === 'render_cowart_canvas_widget'))
-    await allowed.close()
+    const allowed = cliFor('multi-cli-allowed', { CLAUDE_CODE_ENTRYPOINT: 'cli', COWART_ALLOW_CLI: '1' })
+    assert.ok((await allowed.listTools()).tools.some((tool) => tool.name === 'render_cowart_canvas_widget'))
   })
 
   await step('the relay desktop build (claude-desktop-3p) counts as the desktop', async () => {
-    const relay = await bridgeFor('multi-relay-desktop', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop-3p' })
-    assert.ok((await relay.client.listTools()).tools.some((tool) => tool.name === 'render_cowart_canvas_widget'))
-    assert.doesNotMatch(relay.client.getInstructions() ?? '', /所以没有 cowart 工具/)
-    await relay.close()
-
-    const lookalike = await bridgeFor('multi-desktop-lookalike', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktopish' })
-    assert.deepEqual((await lookalike.client.listTools()).tools, [])
-    await lookalike.close()
+    const relay = cliFor('multi-relay-desktop', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop-3p' })
+    assert.ok((await relay.listTools()).tools.some((tool) => tool.name === 'render_cowart_canvas_widget'))
+    const lookalike = await cliFor('multi-desktop-lookalike', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktopish' }).run(['open'])
+    assert.equal(lookalike.code, 2)
   })
 } finally {
-  for (const child of listenerRuns) child.kill()
   for (const stream of streams) stream.close()
-  for (const bridge of bridges) await bridge.close()
+  for (const session of sessions) await session.close()
   for (const status of await servicesOn(canvasDir)) await stopTestService(status.port)
   for (const port of HAND_PORTS) await stopTestService(port)
   await stopTestService(PORT)

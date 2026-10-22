@@ -16,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { INSTRUCTIONS, INSTRUCTIONS_LIMIT } from '../lib/bridge.mjs'
-import { EMPTY_CANVAS, FIXTURES, delay, finish, serviceStatus, startBridge, step, stopTestService, text, waitFor } from '../../claude/scripts/test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, cliSession, delay, finish, serviceStatus, step, stopTestService, text, waitFor } from '../../claude/scripts/test-kit.mjs'
 
 const PORT = Number(process.env.COWART_ZCODE_SMOKE_PORT) || 43291
 const SESSION = 'zsmoke'
@@ -137,13 +137,14 @@ try {
   })
 
   await step('a Claude Code session on the same service keeps the Claude wording', async () => {
-    const claude = await startBridge({ cwd: projectDir, port: PORT, session: CLAUDE_SESSION })
+    const claude = cliSession({ cwd: projectDir, port: PORT, session: CLAUDE_SESSION })
     try {
+      await claude.listTools()
       const entry = await waitFor(
         async () => (await serviceStatus(PORT)).sessions.find((item) => item.id === CLAUDE_SESSION && item.host === 'claude'),
         { what: 'the claude session to register' }
       )
-      assert.ok(entry.bridge)
+      assert.ok(entry.cli)
       const page = await fetch(`${origin}/?${new URLSearchParams({ session: CLAUDE_SESSION, projectDir, canvasDir })}`)
       const html = await page.text()
       assert.ok(!html.includes('"hostLabel":"ZCode"'), 'claude page carries the zcode label')

@@ -1,5 +1,5 @@
-// ZCode side of the Cowart canvas: a thin MCP server per session, the ZCode sibling of
-// adapters/claude/lib/bridge.mjs. The canvas itself runs in the machine-wide canvas service
+// ZCode side of the Cowart canvas: a thin MCP server per session, written after Claude Code's
+// former bridge (Claude Code runs the cowart command now, adapters/claude/lib/cli.mjs). The canvas itself runs in the machine-wide canvas service
 // (adapters/service), which serves it on localhost for any browser, makes one session at a
 // time responsible for each page and routes a page's requests to that session; this bridge
 // describes the tools to ZCode and forwards them to the service.

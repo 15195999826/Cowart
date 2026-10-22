@@ -20,7 +20,7 @@ const root = await mkdtemp(join(tmpdir(), 'cowart-stop-check-'))
 // Before token.mjs loads: the check's bridges, services and command lines share this token.
 process.env.COWART_RUNTIME_DIR = join(root, 'runtime')
 const { PORT_ATTEMPTS, probeService } = await import('../client.mjs')
-const { finish, serviceStatus, startBridge, step, stopTestService, waitFor } = await import('../../claude/scripts/test-kit.mjs')
+const { cliSession, finish, serviceStatus, step, stopTestService, waitFor } = await import('../../claude/scripts/test-kit.mjs')
 const { loadOrCreateToken } = await import('../lib/token.mjs')
 
 // Within the ports --stop looks through without a port (43240 and the 19 after it), past the
@@ -46,16 +46,20 @@ async function cli(args, env = {}) {
   }
 }
 
-const bridges = []
-// A session's dev host: its bridge starts a service on the port, with a canvas of its own.
+const sessions = []
+// A session's dev host: its command starts a service on the port, with a canvas of its own, and
+// its listener runs.
 async function devHost(name, port) {
   const cwd = join(root, name)
   await mkdir(cwd)
-  bridges.push(await startBridge({ cwd, port, session: `stop-${name}`, env: { COWART_SERVICE_IDLE_MS: '30000' } }))
+  const session = cliSession({ cwd, port, session: `stop-${name}`, env: { COWART_SERVICE_IDLE_MS: '30000' } })
+  sessions.push(session)
+  await session.listTools()
+  session.listen()
   return { status: await waitFor(() => serviceStatus(port), { timeoutMs: 20_000, what: `the service on ${port}` }) }
 }
 
-// The session of a stopped service starts it again, as bridges do: the new one.
+// The session of a stopped service starts it again, as its listener does: the new one.
 const restarted = (port, pid) =>
   waitFor(async () => {
     const status = await serviceStatus(port)
@@ -125,7 +129,7 @@ try {
     assert.equal((await serviceStatus(PORT_A))?.pid, a.status.pid)
   })
 } finally {
-  for (const bridge of bridges) await bridge.close()
+  for (const session of sessions) await session.close()
   // The check's token reaches the check's services and no others.
   for (const port of [PORT_A, PORT_B]) await stopTestService(port)
   await rm(root, { recursive: true, force: true }).catch(() => {})

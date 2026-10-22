@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { loadOrCreateToken } from '../lib/token.mjs'
-import { EMPTY_CANVAS, FIXTURES, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
+import { CODEX_BRIDGE, EMPTY_CANVAS, FIXTURES, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 const PORT = Number(process.env.COWART_EDIT_TEST_PORT) || 43385
@@ -23,9 +23,9 @@ await mkdir(join(canvasDir, 'pages', 'page'), { recursive: true })
 await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.json'))
 
 await stopTestService(PORT)
-const claude = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-claude' })
-const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-zcode', entry: join(ADAPTERS_DIR, 'zcode', 'bin', 'cowart-zcode-mcp.mjs') })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-codex', entry: join(ADAPTERS_DIR, 'codex', 'bin', 'cowart-codex-mcp.mjs') })
+const claude = cliSession({ cwd: projectDir, port: PORT, session: 'edit-claude' })
+const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-zcode', entry: ZCODE_BRIDGE })
+const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-codex', entry: CODEX_BRIDGE })
 
 function ok(result) {
   assert.ok(!result.isError, text(result))
@@ -56,7 +56,7 @@ const bindingId = 'binding:editnote'
 try {
   await step('every host lists the layout tools, and the insert tools take x, y and placement above', async () => {
     for (const [host, bridge] of [['Claude Code', claude], ['ZCode', zcode], ['Codex', codex]]) {
-      const tools = new Map((await bridge.client.listTools()).tools.map((tool) => [tool.name, tool]))
+      const tools = new Map((await bridge.listTools()).tools.map((tool) => [tool.name, tool]))
       for (const name of LAYOUT_TOOLS) assert.ok(tools.has(name), `${host} does not list ${name}`)
       for (const name of ['insert_cowart_image', 'insert_cowart_html_draft', 'insert_cowart_video']) {
         const properties = tools.get(name).inputSchema.properties

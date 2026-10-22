@@ -110,7 +110,7 @@ try {
     '',
     `提交 \`${full.slice(0, 7)}\`（${committedAt.toISOString()}），build \`${manifest.serviceBuild}\`，发布清单 sha256 \`${manifestSha}\`。`,
     '',
-    '图书馆《cowart》的安装说明用它：解压到 `~/.cowart/releases/`，再把 MCP 指到里面的 `adapters/generated/cowart-claude-mcp.mjs`。只有运行件（发布清单里的文件），不含源码，不用 npm install。',
+    '图书馆《cowart》的安装说明用它：解压到 `~/.cowart/releases/`，再跑里面的 `adapters/generated/cowart.mjs install` 装 cowart 命令（`~/.cowart/bin/cowart.mjs`）。只有运行件（发布清单里的文件），不含源码，不用 npm install。',
     ''
   ].join('\n'))
 

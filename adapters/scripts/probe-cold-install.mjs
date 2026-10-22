@@ -2,6 +2,7 @@
 // Exercise exactly the published files from a directory outside this checkout:
 // no node_modules, source modules, npm, existing service, or real user canvas.
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import http from 'node:http'
@@ -23,6 +24,7 @@ const sentinelDir = join(sandbox, 'bin')
 const sentinelFile = join(sandbox, 'npm-was-called')
 const manifest = JSON.parse(await readFile(join(ADAPTERS_DIR, 'generated/release-manifest.json'), 'utf8'))
 const clients = []
+const children = []
 const logs = []
 let servicePort
 let token
@@ -104,17 +106,39 @@ try {
   assert.ok(widgetContents.some((item) => item.text?.includes('Cowart')), 'The published widget reads its installed runtime resources')
   console.log('PASS  Native MCP Apps widget loads from the cold install.')
 
-  const claude = await connect('claude')
-  const openedClaude = payload(await claude.callTool({ name: 'render_cowart_canvas_widget', arguments: { page: '冷安装共享页', sessionName: '小暖' } }))
+  // The Claude Code command, the way a session runs it from its Bash tool: a process per
+  // command, through the file `install` writes.
+  const commandLink = join(homeDir, '.cowart', 'bin', 'cowart.mjs')
+  const claudeEnv = { ...env, COWART_SESSION_ID: 'cold-claude', COWART_COMMAND_LINK: commandLink }
+  const runNode = (script, args, input = '') => new Promise((done) => {
+    const child = spawn(process.execPath, [script, ...args], { cwd: pluginDir, env: claudeEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    children.push(child)
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.stdin.end(input)
+    child.on('close', (code) => done({ code, stdout, stderr, child }))
+  })
+  const installed = await runNode(join(pluginDir, 'adapters/generated/cowart.mjs'), ['install'])
+  assert.equal(installed.code, 0, installed.stderr)
+  assert.ok((await readFile(commandLink, 'utf8')).includes('/adapters/generated/cowart.mjs"'), 'The command leads to the installed bundle')
+  const opening = await runNode(commandLink, ['call', 'render_cowart_canvas_widget', '--json', '-', '--out', 'json'], JSON.stringify({ page: '冷安装共享页', sessionName: '小暖' }))
+  const openedClaude = payload(JSON.parse(opening.stdout || '{}'))
   assert.equal((await serviceStatus()).pid, started.pid, 'Both bundled hosts must reuse one service')
   assert.equal(openedClaude.pageCreated, false, 'Claude sees the page Codex already created')
-  assert.ok(openedClaude.listenCommand?.includes('/generated/cowart-listen.mjs'), 'Claude points to the installed listener bundle')
+  assert.equal(openedClaude.listenCommand, `node ${commandLink.replaceAll('\\', '/')} listen`, 'Claude is told to run the installed command')
   const html = await fetch(openedClaude.url).then((response) => {
     assert.equal(response.status, 200)
     return response.text()
   })
   for (const marker of ['cowartClaudeBridge', 'cowartShared-ai-video', 'cowartShared-web-reference']) assert.ok(html.includes(marker), `Claude page includes ${marker}`)
-  console.log('PASS  Cold Claude MCP bundle reuses the same service and page with all extensions.')
+  // Its listener keeps the session online.
+  const listening = runNode(commandLink, ['listen'])
+  await waitUntil(async () => (await serviceStatus()).sessions.some((session) => session.id === 'cold-claude' && session.listener), 10000)
+  children.at(-1).kill()
+  await listening
+  console.log('PASS  Cold Claude command bundle reuses the same service and page with all extensions, and listens.')
 
   // Puppeteer is bundled too: exercising a real screenshot catches dependency or
   // browser-side source serialization failures that importing the service cannot.
@@ -148,6 +172,7 @@ try {
   throw error
 } finally {
   await Promise.all(clients.map((client) => client.close().catch(() => {})))
+  for (const child of children) child.kill()
   if (servicePort) {
     token ||= (await readFile(join(runtimeDir, 'token'), 'utf8').catch(() => '')).trim()
     if (token) await fetch(`http://127.0.0.1:${servicePort}/api/service/shutdown`, {

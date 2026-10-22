@@ -6,7 +6,7 @@
 
 - 上游文件尽量不改。新功能、宿主差异都写在 `adapters/` 下。
 - 适配层做不到的，才在上游文件里打「补丁点」：改动最小，代码里用 `[fork-patch]` 注释标出，并登记到文末清单。通用的扩展接口优先提 PR 给上游。
-- 各宿主真正不同的只有三处：画布怎么显示、画布怎么给 AI 发消息、用什么生图。
+- 各宿主真正不同的只有四处：会话怎么接进来（Codex、ZCode 是 MCP 薄桥，Claude Code 是 skill + `cowart` 命令）、画布怎么显示、画布怎么给 AI 发消息、用什么生图。
 
 ## 目录
 
@@ -28,7 +28,7 @@ adapters/
                 画布整理（canvas-edit-test.mjs：三个宿主都列出整理工具，放文字 / 建框 / 移动 / 删除、别人负责的页被拒、无效记录）、
                 右键菜单（context-menu-test.mjs：三个宿主都拷得到索引，截帧存进页素材、写的卡片过 tldraw 校验）、
                 网址（address-test.mjs：门房把 cowart.localhost 转到服务时网址不带端口，没有门房、门房口是别的程序时带服务端口，别的主机名被拒）
-    client.mjs  给各宿主的桥用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接 / 调用
+    client.mjs  给各宿主的桥和 Claude 的 cowart 命令用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接（命令不连，见「会话」）/ 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
                 图片 / 视频模型清单（image-models.mjs / video-models.mjs）、
                 把面板选项变成请求文本的 prepare_cowart_generation_request（generation-requests.mjs）
@@ -36,15 +36,18 @@ adapters/
     web/        各端共用的画布页面脚本：service-bridge.js（差异保存、页同步、负责状态、生成与队列）、
                 kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、右键「截取当前帧」「拷贝索引」「在资源管理器中显示」、样式面板按需显示）、
                 AI 视频、接管后的 AI 图片、网页参考、视频播放
-  claude/       Claude Code 适配（说明见 adapters/claude/README.md）
-    bin/        MCP 入口 cowart-claude-mcp.mjs（每个会话一个薄桥）、画布请求监听 cowart-listen.mjs（Claude Code、ZCode 都用 Bash 后台跑 --once，见「宿主差异」）
-    lib/        薄桥 bridge.mjs：工具定义、给 Claude 的说明、请求的宿主说明，工具都转给画布服务
+  claude/       Claude Code 适配（说明见 adapters/claude/README.md）：没有 MCP，skill + cowart 命令（见「Claude Code 改走 skill + 命令」）
+    bin/        cowart 命令 cowart.mjs（会话用 Bash 跑，一条命令一个进程；`listen` 是后台跑的画布请求监听，连着 = 会话在线）、
+                ZCode 的画布请求监听 cowart-listen.mjs（Bash 后台跑 --once，见「宿主差异」）
+    lib/        cowart 命令 cli.mjs（子命令、参数、给 Claude 读的结果和请求的宿主说明，都转给画布服务）、工具定义 tools.mjs（Codex 桥也用）、
+                监听的循环 listen.mjs、请求那一行怎么写 request-notice.mjs（ZCode 也用）
     web/        Claude 网页的 HTTP / SSE 传输（bridge.js），画布行为使用 shared/web/service-bridge.js
-    skills/     Claude 版 skill cowart：打开画布、画布请求怎么处理、结果放哪一页、标注怎么读（install:skill 链接进 ~/.claude/skills）
-    scripts/    冒烟测试、多会话测试、上游接口检查、手动联调宿主、安装 skill（install-skill.mjs）
+    skills/     Claude 版 skill cowart：cowart 命令怎么用、打开画布、画布请求怎么处理、结果放哪一页、标注怎么读
+    scripts/    冒烟测试、多会话测试、上游接口检查、手动联调宿主、安装（install-skill.mjs，install:claude：skill 链接进 ~/.claude/skills，
+                写 ~/.cowart/bin/cowart.mjs 指向本仓库的 cowart 命令）
     beast-library/  公司猛兽「图书馆」里《cowart》这本书的安装说明 INSTALL.md：同事二选一，省心版（取件柜的运行包，不能改）/ 开发版
                 （clone 本仓库、reset 到发版提交、去掉 origin，从此脱钩自己管），一台电脑只留一种；{{VERSION}} / {{COMMIT}} 由 publish-beast-library.mjs 填
-  zcode/        ZCode 适配（说明见 adapters/zcode/README.md）：桥是 Claude 桥的姊妹版（同样的工具和转发），
+  zcode/        ZCode 适配（说明见 adapters/zcode/README.md）：桥是 Claude 以前那个 MCP 薄桥的姊妹版（同样的工具和转发），
     bin/ lib/   差别只在怎么打开画布（网址给用户在浏览器开）和怎么收到画布请求（--once 后台任务退出唤醒）
     skills/     ZCode 版 skill cowart
     scripts/    install.mjs（注册 MCP + 链接 skill，install:zcode）、冒烟测试（test:zcode）
@@ -62,7 +65,7 @@ adapters/
                 publish-beast-library.mjs（给同事发 Claude Code 版：从提交的发布副本打 cowart-<版本>.zip 投猛兽取件柜 cowart 栏，
                 再把 claude/skills/cowart 加上 version、配上 beast-library/INSTALL.md 上架猛兽图书馆；--dry-run 只在临时目录里打包不上传）；
                 这几个只在开发机上跑，不进发布产物
-  generated/    已打包的宿主桥、画布服务、监听入口和发布清单；安装后不用 npm install
+  generated/    已打包的 Codex 桥、Claude 的 cowart 命令、画布服务和发布清单；安装后不用 npm install
 FORK.md         本文件
 ```
 
@@ -70,7 +73,7 @@ FORK.md         本文件
 
 - 只有 `main` 一个分支，直接在上面开发、提交，不开 `feat/*` 之类的开发分支。Codex 和 Claude Code 都从这里装；Codex 从 GitHub marketplace 安装插件并**自动跟随远程 `main`**，所以没验证过的提交先留在本地。开发完成并通过本地验证后直接推送，无需再次确认；推送前先 `git fetch origin`、`git rebase origin/main`，rebase 若改变代码或产物，补做受影响的验证再推送。
 - `upstream` remote 指向原作者仓库。同步：`git fetch upstream && git merge upstream/main`。`mcp/generated/` 下的发布产物有冲突时不手工合并，重新 `npm run build:artifacts` 生成。
-- 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成和反馈测试），都过了再推送。
+- 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成、反馈、整理、右键菜单、手动停服务、网址测试；Claude 会话一律跑 cowart 命令），都过了再推送。
 - 有补丁点以后，改了 `src/` 就要在仓库根目录 `npm ci && npm run build:artifacts` 重新生成 `mcp/generated/`，并和源码一起提交；`npm run check:artifacts` 能核对两者是否一致。
 - 改动适配层后运行 `npm --prefix adapters run build:artifacts` 和 `check:artifacts`，提交 `adapters/generated/`；`npm --prefix adapters run probe:cold` 用临时目录中的发布文件验证不依赖 `node_modules`、既有服务和真实用户画布。原生 Codex widget 的视频、外链和完整交互仍需宿主验收，协议测试不能替代。
 - **Git marketplace 发布也要更新外层插件版本**：只有 `adapters/package.json` 版本或 `main` 提交变了，已安装的 Codex 仍可能复用 `.codex/plugins/cache/<marketplace>/cowart/<插件版本>`。发布先跑 `node adapters/scripts/bump-release.mjs [<适配层版本>]`（不给版本就把适配层的补丁号加一，`--dry-run` 只列要改的、不写）：给 `.codex-plugin/plugin.json` 换一个新的 `+codex.<UTC YYYYMMDDHHMMSS>` 后缀并同步根 `package.json`、`package-lock.json` 和 `plugin.json`，同时升 `adapters/package.json`、`adapters/package-lock.json` 的版本（版本大的服务才换得掉正在跑的旧服务，见「画布服务」的版本替换）；每处版本按出现次数核对，有一处对不上就一个文件都不写；只换版本串，换行照 git 里的原样（都是 LF，只有上游提交的 `.codex-plugin/plugin.json` 是 CRLF），工作区换行跟 git 不一致（CRLF 检出）时拒绝。再先根目录、后适配层构建两套产物（适配层的发布清单记着 `mcp/generated` 的哈希，那里也带插件版本），检查并推送。（原先用 plugin-creator 的 `update_plugin_cachebuster.py`，2026-10-08 Codex 更新后本机已没有这个 skill。）此后通过 `codex plugin marketplace upgrade cowart-github` / `codex plugin add cowart@cowart-github` 更新安装时，必须核对实际缓存中的适配层版本、build 与启动入口，不能只看 marketplace 指向 `main`：`node adapters/scripts/verify-release.mjs <缓存目录>` 核这些和发布清单的哈希，再用临时的令牌目录和画布起一次它的桥。
@@ -90,15 +93,15 @@ FORK.md         本文件
    都没设置时跟上游完全一样。
 5. 共用面板先用 `prepare_cowart_generation_request` 保存上传素材、拼请求；猛兽 AI 图片 / AI 视频交画布服务直接执行，其余请求进同一队列并按页路由。Claude / ZCode 由后台跑的监听唤醒（来了请求才退出）；Codex 由负责会话自己的 widget 领取，再用 `ui/message` 通知请求编号，模型通过 `get_cowart_request` 读取原文与状态。
 6. 页面的存取调用都带上 `toolOutput` 里的 `projectDir` / `canvasDir`（`src/cowartClient.js` 的 `serverToolArgs`），上游工具也都接受 `canvasDir`。→ 一个上游子进程能服务任何画布目录；画布服务在入口把它们统一换成全机那一张（见「画布服务」的一张画布）。
-7. Claude Code 桌面版给它起的 MCP 服务进程传 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`、`CLAUDE_CODE_HOST_SESSION_ID`（桌面版会话 id）和 `CLAUDE_CODE_SESSION_ID`，进程工作目录是会话的项目目录（2026-09-12 读正在跑的 MCP 进程的环境核实）。命令行版和桌面版读同一份 MCP 配置，只能靠入口变量区分。公司中转版桌面版（`%LOCALAPPDATA%\Claude-3p`）传的是 `claude-desktop-3p`，同样有 Browser 面板（2026-10-21 在 company2 的会话记录里核实）。→ 桥用会话 id 当会话标识，按入口决定提不提供工具：`claude-desktop` 和 `claude-desktop-<后缀>` 都算桌面版。
+7. Claude Code 桌面版给它起的 MCP 服务进程传 `CLAUDE_CODE_ENTRYPOINT=claude-desktop`、`CLAUDE_CODE_HOST_SESSION_ID`（桌面版会话 id）和 `CLAUDE_CODE_SESSION_ID`，进程工作目录是会话的项目目录（2026-09-12 读正在跑的 MCP 进程的环境核实）。命令行版和桌面版读同一份 MCP 配置，只能靠入口变量区分。公司中转版桌面版（`%LOCALAPPDATA%\Claude-3p`）传的是 `claude-desktop-3p`，同样有 Browser 面板（2026-10-21 在 company2 的会话记录里核实）。→ 桥用会话 id 当会话标识，按入口决定提不提供工具：`claude-desktop` 和 `claude-desktop-<后缀>` 都算桌面版。会话的 Bash 工具起的子进程也带着这几个变量（2026-10-22 在桌面版的 Bash 里读到 `CLAUDE_CODE_HOST_SESSION_ID=local_…`、`CLAUDE_CODE_ENTRYPOINT=claude-desktop`），所以 Claude 改用命令后照样这样认会话、认入口。
 8. 页面的同步模型（`src/App.jsx` 的 `loadRemoteCanvasSnapshot` / `saveCanvas`）：每 1.6 秒拉一次整张快照（适配层让版本没变的轮询只回「没变」，见「画布服务」的轮询带版本），本地有未保存改动时跳过不应用；保存是整张快照（`getStoreSnapshot()`），远端同步只增改、只删 shape / binding，从不删页、也不删 asset 记录（见补丁点）；上游存盘时会把保存里缺的页整个目录删掉（`mcp/lib/canvas-storage.mjs` 的 `saveStoredCanvasSnapshot`）。→ 适配层在保存请求上多带一份差异（`cowartDelta`），服务按差异合并（见「画布服务」），上游文件不用改。
 
 ## 宿主差异
 
 | | Codex | Claude Code 桌面版 | ZCode |
 |---|---|---|---|
-| 画布显示 | 原生 MCP Apps widget；每个会话一个薄桥，同 Claude 共用全机画布服务、page、素材和差异保存 | 全机一个画布服务在本地提供网页，在 Browser 面板打开；每个会话只跑一个薄桥 | 同一张本地网页，ZCode 没有 Browser 面板也没有 MCP Apps widget（2026-09-14 核实：主程序包无 `ui://` 资源、无 `openai.toolOutput`），网址交给用户在任意浏览器打开；页面按打开它的会话的宿主换文案（`service.mjs` 注入 hostLabel，只改措辞不改行为） |
-| 画布 → AI 消息 | 猛兽生成由共享服务直接执行；其它请求先按页路由，再由负责会话自己的 widget 轮询领取，经 MCP Apps `ui/message` 通知编号；模型 get 原文、回 running / done / failed；目标 widget 未开时留队列，可 list 补读 | AI 图片 / AI 视频由画布服务直接生成，不经过会话、不用确认；其它请求进画布服务的队列，发给负责那一页的会话：监听命令（`cowart-listen.mjs --once`）用 Bash 后台运行，平时一直等着、不唤醒会话，真来了请求才退出，后台任务的完成通知唤醒会话 → 对话里确认后处理，处理完再启动一次；监听没在跑时请求排队，用户说「看画布」时 `list_cowart_requests` 取走（算送达，之后的监听不再为它唤醒） | 生成、队列和监听同 Claude（同一条监听命令）：收到一批事件（首事件后约 750ms 静默）才退出；服务在监听重连时补发（`server.mjs` 的 deliverPending），不漏 |
+| 画布显示 | 原生 MCP Apps widget；每个会话一个薄桥，同 Claude 共用全机画布服务、page、素材和差异保存 | 全机一个画布服务在本地提供网页，在 Browser 面板打开；会话不跑 MCP，用 Bash 跑 `cowart` 命令（全局 skill 讲怎么用） | 同一张本地网页，ZCode 没有 Browser 面板也没有 MCP Apps widget（2026-09-14 核实：主程序包无 `ui://` 资源、无 `openai.toolOutput`），网址交给用户在任意浏览器打开；页面按打开它的会话的宿主换文案（`service.mjs` 注入 hostLabel，只改措辞不改行为） |
+| 画布 → AI 消息 | 猛兽生成由共享服务直接执行；其它请求先按页路由，再由负责会话自己的 widget 轮询领取，经 MCP Apps `ui/message` 通知编号；模型 get 原文、回 running / done / failed；目标 widget 未开时留队列，可 list 补读 | AI 图片 / AI 视频由画布服务直接生成，不经过会话、不用确认；其它请求进画布服务的队列，发给负责那一页的会话：监听（`cowart listen`）用 Bash 后台运行，平时一直等着、不唤醒会话，真来了请求才退出，后台任务的完成通知唤醒会话 → 对话里确认后处理，处理完再启动一次；监听连着也表示会话在线（见「画布服务」的会话）；监听没在跑时请求排队，用户说「看画布」时 `cowart requests` 取走（算送达，之后的监听不再为它唤醒） | 生成、队列和监听同 Claude（监听是同一套循环，入口是 `cowart-listen.mjs --once`，不管在线）：收到一批事件（首事件后约 750ms 静默）才退出；服务在监听重连时补发（`server.mjs` 的 deliverPending），不漏 |
 | 生图 | 同一 AI 图片面板与猛兽生成服务；额外提供 Codex imagegen，按页路由给负责会话用内置生图完成，结果回原 pageId | AI 图片面板按 beast-gen 模板选模型，点发送由画布服务直接调猛兽生成（面板上标着花不花钱）；上游其它按 Codex 写的生图提示词改用 beast-gen | 同 Claude（beast-gen 模板 + 直接生成）；ZCode 没装 beast-gen skill 时 `install:zcode` 会从 `~/.claude/skills` 链接一份 |
 | 视频 | 共用 AI 视频工具、生成面板、insert_cowart_video 和播放控制；widget 经 MCP 工具读取本地素材，实际解码与播放需 Codex 宿主验收 | 底部工具栏「AI 视频」（占位框 + 同款输入面板，生成后替换占位框，默认本地免费的 H3）+ `insert_cowart_video`，点发送由画布服务直接调猛兽生成；视频直接用本地服务的素材地址流式播放（服务按 Range 分段给，点开就出画面，不在页面里整段读成 Blob），画布上自动静音循环播放 | 同 Claude |
 
@@ -109,18 +112,32 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
 - Claude Code 桌面版的 Code 标签页不渲染 MCP Apps：实测 `render_cowart_canvas_widget` 只返回 JSON，另见 [modelcontextprotocol/ext-apps#671](https://github.com/modelcontextprotocol/ext-apps/issues/671)。
 - Claude Code 的 channels 能让 MCP 服务往会话里推消息，但目前只有 CLI 能开（自建通道要加 `--dangerously-load-development-channels`），桌面版不能传启动参数。
 - 后台通知（Monitor 事件、后台任务的完成通知）不算用户输入，所以画布发给会话的请求每条都要在对话里确认后才执行；AI 图片 / AI 视频因此改由画布服务直接生成、不经过会话（见「画布服务」的画布直接生成）。
+- （2026-10-22）Claude Code 改走 skill + 命令，见「Claude Code 改走 skill + 命令」。
 - （2026-09-15）画布请求怎么叫醒会话：会话挂着时不能有定时唤醒——每次唤醒都是一轮完整的模型调用，要把整段对话再读一遍，挂一晚上就是十几轮。调研结果：Monitor 每次最多 30 分钟，到点必定通知一次（没有常驻参数），不能拿来空等；桌面版的 `send_message` 只有会话里的模型能调，画布服务没有往会话里投递消息的入口；channels 只有命令行版能开。Bash / PowerShell 工具的后台任务（`run_in_background`）只在进程退出时通知一次，通知只带输出文件路径、命令描述和退出码（stdout、stderr 都写进那个文件，所以监听平时不往 stderr 写），实测跑了 30 分钟以上不被杀、期间零通知；TaskStop 会连 node 子进程一起结束，不留孤儿。所以监听改用 Bash 后台跑、只在来了请求时退出（`cowart-listen.mjs --once`；不带 --once 的旧 Monitor 命令只打一行新用法就退出）；没在跑时请求在服务里排队，用户说「看画布」时 `list_cowart_requests` 取走并记为已送达。
+
+## Claude Code 改走 skill + 命令（2026-10-22）
+
+Claude Code 这边原来也是 MCP 薄桥（`cowart-claude-mcp.mjs`），要在每个项目里 `claude mcp add cowart -s local`：只注册过四个项目，2026-10-22 在没注册的 hy-lab 里只能绕道写脚本直连桥，桥进程一退出页就丢了，插入落进了别人的页。选 MCP 是从上游继承的，Claude 这边的画布显示（Browser 面板里的本地网页）和请求监听（Bash 后台）本来就不走 MCP，MCP 只剩「工具入口 + 常驻在线」两件事。用户拍板 Claude 改走 skill + 命令，Codex（画布是 MCP Apps 小部件，离不开 MCP）和 ZCode（桥照旧）不动。
+
+- **命令**：`adapters/claude/bin/cowart.mjs`（打包成 `adapters/generated/cowart.mjs`，不依赖 `node_modules`），子命令一一对应原来的工具：`open` / `state` / `selection` / `insert-image` / `insert-video` / `insert-html` / `insert-text` / `frame` / `update` / `delete` / `request` / `reply` / `requests` / `feedback`，另有 `call <工具名>`（照工具定义直接调）、`tools`、`help`、`listen`、`install` / `uninstall`。参数照工具定义写成 `--kebab-case`（按工具的 schema 转类型，不认识的参数直接拒、列出能用的），也能整个给 `--json` / `--json-file`；结果先是原来工具返回的文字，插入、整理这类命令再跟一行 `结构化结果：{…}`。每条命令照桥的规矩找服务、拉起、按版本替换（`client.mjs` 的 `command: true`：不开会话事件流），调用时带 `cli: true`。
+- **固定入口**：`install` 写 `~/.cowart/bin/cowart.mjs`，几行代码 import 这一份 Cowart 的 cowart 命令；skill 和所有给模型看的文字都写 `node ~/.cowart/bin/cowart.mjs …`，开发版、省心版、仓库挪了位置都一样。入口指向的不是本份时，文字里写本份的完整路径。
+- **在线**：见「画布服务」的会话（命令会话）。监听是 `cowart listen`：找到服务（服务换了版本、换了端口照样找回来）、带 `presence=1` 连 `/api/agent-events`，来了请求才退出。
+- **门禁、会话标识**跟桥一样，从会话 Bash 的环境变量读（见接缝 7）。
+- **去掉的**：Claude 的 MCP 桥（`cowart-claude-mcp.mjs`、`lib/bridge.mjs`）、发布产物里的 `cowart-claude-mcp.mjs` 和 `cowart-listen.mjs`（ZCode 跑源码里的那份）；`~/.claude.json` 里各项目的 `mcpServers.cowart` 也删掉。工具定义挪到 `lib/tools.mjs`，Codex 桥接着用。
+- 检查：`test:claude` 里 Claude 会话全换成 cowart 命令（`test-kit.mjs` 的 `cliSession`：一条命令一个进程，结果按 `--out json` 读回）；多会话测试另查监听在线、送完请求在线、没送就断了结束、回来拿回页、插入不被别的页的选区带走；冒烟测试查参数解析、结构化结果和 `install`；`probe:cold` 从发布产物跑 `install`、经入口 `open` 和 `listen`。
 
 ## 画布服务（2026-09-12）
 
-以前每个 Claude Code 会话各起一套（适配层 + 上游子进程 + 网页服务，空闲约 76 MB、用过画布 130–170 MB），同一画布在两个会话里开着会两边各写一份文件。现在拆成全机一个画布服务 + 每个会话一个薄桥：
+以前每个 Claude Code 会话各起一套（适配层 + 上游子进程 + 网页服务，空闲约 76 MB、用过画布 130–170 MB），同一画布在两个会话里开着会两边各写一份文件。现在拆成全机一个画布服务 + 每个会话一个薄桥（Codex、ZCode；Claude Code 是一条条 cowart 命令，2026-10-22 起）：
 
 - **全机一个**：端口（默认 43240，`COWART_CLAUDE_PORT` 可改）就是互斥锁。桥先带令牌 `GET /api/service` 做身份检查：是画布服务就复用；确认是别的程序（回了不是画布服务状态的 HTTP，或者根本不是 HTTP；包括还没重启的旧版每会话适配层）才往后换端口；端口被占着却没回话（连接被重置、被关掉、超时）就在这个端口上接着问，最多 10 秒，还没回话就报错、不换端口：正在退出或启动的画布服务、别的桥正在试这个端口（绑一下就放）时都是这样，2026-09-15 一次替换里就有桥把它当成别的程序，在 43241 上给同一张画布又起了一个服务。端口空着就在后台拉起一个（`detached`，环境里去掉会话的 Claude 变量和凭据，日志写 `~/.cowart-claude/service.log`），等它起来时只连不绑，免得抢了它的端口。几个桥同时拉起时，只有一个服务绑得上端口。手动停（`cowart-service.mjs --stop`）不给端口时照桥的找法找，只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停；给了端口（`--port` / `COWART_CLAUDE_PORT`）就只停那一个端口上的、不往后找：往后找曾把另一个会话的联调服务停掉（2026-09-15）。停就等到它的进程退出。
 - **一个写入方**：服务里只有一个上游子进程、一个请求队列、一套写入排队与旧快照保护，同一画布在几个会话里开着也不会两边各写一份。
 - **一张画布一个服务**（`canvas-lock.mjs`）：端口只拦得住同一个端口上的第二个服务。服务开始监听前先拿画布目录里的锁文件（`.cowart-service.lock`：pid、端口、启动时间），这张画布还归另一个服务（进程在，并且在它的端口上回话，或者 30 秒内刚起、正在退出）就不起，退出码 4（端口被占是 3）；拉起它的桥看退出码：画布的服务在同一个端口上正在退出就等它退完再拉，在别的端口就去用那个。服务退出时先在锁上记下正在退出，上游子进程关掉（最后一笔写完）才放锁；进程已经没了、或 pid 换了主（锁是早先的、它的端口上没有画布服务回话）的锁直接接过来。替换时新服务在旧服务还跑着时就把锁接过来（见下面的「版本替换」）。
 - **一张画布**：画布是服务的，不属于哪个项目，全机只有一张：`~/.cowart/canvas`（`COWART_CANVAS_DIR` 可改，只管它拉起的服务；测试和联调宿主靠它另用临时画布）。Codex、Claude Code、ZCode 的所有会话和项目都在这张画布上按页分工；页面网址和工具调用里带的 `canvasDir` 一律换成它（旧网址照样能用），`projectDir` 只说明会话在哪个项目，模型的工具不再列这两个参数。Codex 插件已改走薄桥和共享服务；旧上游插件仍按 `<项目>/canvas` 整张保存，不能直接指向共享画布，否则会删掉它没见过的页目录。以前各项目画布上的页用 `cowart-service.mjs --import <画布目录> …` 搬进来：整个页目录原样拷过去（素材地址按页目录走），排在已有的页后面，已有的页跳过，原目录不动；正在跑的新版服务会先停下（会话马上会重新拉起），旧版服务不管这张画布，可以边跑边搬。
-- **会话**：Claude 桥用 Claude 的会话 id，Codex 桥优先用 `CODEX_THREAD_ID`（测试可设 `COWART_SESSION_ID`，缺少宿主 id 时为桥进程生成唯一 id）；桥连着一条事件流表示在线。Browser 面板或原生 widget 属于打开它的会话，`get / reply / list` 只看路由到本会话的请求。桥断开 5 秒没回来算会话结束：它负责的页放掉，页面提示重新打开，没处理的请求留着，同一个会话恢复后自动接上并补发。结束满 1 小时（`COWART_ENDED_SESSION_KEPT_MS` 可改）、又没有东西等着它（路由给它的请求没处理完、负责着页、它的画布页面或监听还连着）的会话从服务里删掉，它在服务里记的选区一起删（2026-10-05）：Codex 每个任务一个会话，以前服务跑几天 `--status` 就列着几百条已结束的（lomo 跑 8 天 200 多条）。删掉的会话再回来就按新会话连上，请求照样补发（队列按会话 id 存）；会话名字另记在 `session-names.json`，照旧留 7 天。
-- **分页负责制**：一张画布大家共用，谁都能看、能改，权限只在页上。每页同一时间由一个会话负责、每个会话最多负责一页；只有在会话里说「打开 Cowart 画布 X」「接管 X」（`render_cowart_canvas_widget` 的 `page`，没有这页就由服务建；「接管这页」是 `shownPage`）或点画布顶部的「X来负责」按钮才换人，在画布上翻页只是看。某页的 AI 请求发给负责它的会话，不管在哪个面板里点的；没人负责的页，点它的那个面板所属的会话顺手负责。模型不带 `pageId` 的插入放进它负责的页，没负责页时放进它面板正看的页；别人负责的页拒绝写入，例外是它正在处理的请求（被接管前发出的）结果照样放回。会话名字和谁负责哪页记在 `~/.cowart-claude/session-names.json`，服务重启不丢（以前记在各项目画布上的，读进来算在这张画布上）；页被用户删掉时负责关系一起解除。
+- **会话**：Claude 的 cowart 命令用 Claude 的会话 id（`CLAUDE_CODE_HOST_SESSION_ID`），Codex 桥优先用 `CODEX_THREAD_ID`（测试可设 `COWART_SESSION_ID`，缺少宿主 id 时为桥进程生成唯一 id）。Browser 面板或原生 widget 属于打开它的会话，`get / reply / list` 只看路由到本会话的请求。
+  - 有桥的会话（Codex、ZCode）：桥连着一条事件流表示在线；桥断开 5 秒没回来算会话结束：它负责的页放掉，页面提示重新打开，没处理的请求留着，同一个会话恢复后自动接上并补发。
+  - 命令会话（Claude Code，`server.mjs` 里 `cli`）：命令一条一个进程，不连事件流，所以负责权跟连接脱钩（2026-10-22 用户拍板），看监听：带 `presence=1` 的监听（`cowart listen`）连着就在线。监听送完请求才退出（这条流上发过请求或撤销）＝会话在处理、在等用户回答，照样在线，直到它重跑监听或下一条命令，最多 12 小时（`COWART_SESSION_BUSY_MS`）；监听没送东西就断了＝会话被关、后台任务被停，2 分钟后结束（`COWART_LISTENER_GONE_MS`）；从没起过监听、只跑命令的，最后一条命令后 30 分钟结束（`COWART_SESSION_LEASE_MS`）。结束时一样放页、请求留着；之后同一个会话再跑命令或起监听就回来了，补发请求，结束时放掉的那页没被别人接走的话还给它（有桥的会话不这样）。以前它也是一个 MCP 薄桥，桥一退出页就丢了（2026-10-22 hy-lab 会话绕道写脚本直连桥，下一批插入落进了别人的页）。结束满 1 小时（`COWART_ENDED_SESSION_KEPT_MS` 可改）、又没有东西等着它（路由给它的请求没处理完、负责着页、它的画布页面或监听还连着）的会话从服务里删掉，它在服务里记的选区一起删（2026-10-05）：Codex 每个任务一个会话，以前服务跑几天 `--status` 就列着几百条已结束的（lomo 跑 8 天 200 多条）。删掉的会话再回来就按新会话连上，请求照样补发（队列按会话 id 存）；会话名字另记在 `session-names.json`，照旧留 7 天。
+- **分页负责制**：一张画布大家共用，谁都能看、能改，权限只在页上。每页同一时间由一个会话负责、每个会话最多负责一页；只有在会话里说「打开 Cowart 画布 X」「接管 X」（`render_cowart_canvas_widget` 的 `page`，Claude 是 `cowart open --page`，没有这页就由服务建；「接管这页」是 `shownPage`）或点画布顶部的「X来负责」按钮才换人，在画布上翻页只是看。某页的 AI 请求发给负责它的会话，不管在哪个面板里点的；没人负责的页，点它的那个面板所属的会话顺手负责。模型不带 `pageId` 的插入放进它负责的页，没负责页时放进它面板正看的页；别人负责的页拒绝写入，例外是它正在处理的请求（被接管前发出的）结果照样放回。上游的插入没给锚点时拿选中的那一个图形当锚点、放到那个图形的页上，不管 `pageId`（2026-10-22：一张给 A 页的图落进了面板正看着的页）：服务只让本会话自己的选区、而且是插入那一页上的图形当锚点，别的一律当没选中（`canvas-ops.mjs` 的 `#anchorSelection`）。会话名字和谁负责哪页记在 `~/.cowart-claude/session-names.json`，服务重启不丢（以前记在各项目画布上的，读进来算在这张画布上）；页被用户删掉时负责关系一起解除。
 - **差异保存**：上游页面每次保存整张画布、有未保存改动时不应用远端，两个页面同时改会互相覆盖，缺的页还会被删目录。各端共用的页面桥（`adapters/shared/web/service-bridge.js`）记住每条记录磁盘上次认可的版本，保存时在请求上多带 `cowartDelta`（改动 / 新增的记录 + 删掉的 id），服务（`delta-merge.mjs`）在写锁里把差异合到磁盘副本再交上游存盘：晚同步的页面冲不掉别人的东西，没见过的页和记录删不掉；同一时刻改同一条记录，后一个盖前一个。磁盘上没有的记录不算认可过，页面手里还留着它时下次保存重新送上去（撤销删图后留在页面里的 asset 就是这样写回磁盘的）。页面与磁盘的 tldraw schema 不一致（升级过 tldraw）或页面没带差异（旧页面）时，退回上游的整张保存。删页也是差异：服务广播 `pages-deleted`，其它页面跟着撤掉（tldraw 远端同步从不删页）。
 - **页面看不见时**（2026-09-16）：tldraw 在动画帧上才把攒下的改动交给 store listener，页面隐藏（浏览器标签页切走、Browser 面板收起）就没有动画帧：上游的自动保存听不到改动，远端同步却靠定时器照跑，一轮（1.6 秒）就把磁盘版本盖回来，隐藏期间的改动、切走前最后一帧还没交出去的改动都会丢（实测隐藏页里新建的图形 8 秒内 0 次保存、1.6 秒后被抹掉）。页面桥（三个宿主共用）补了三处：隐藏时每 400ms 调一次 `editor.store.listen(空函数)()`，这个公开 API 先把攒下的改动交给已注册的 listener，上游的自动保存就照常跑；变成隐藏的那一刻和 `pagehide` 时立刻存一笔差异（上游听到改动后还要等 500ms，关标签页等不到；这笔保存把差异里删掉的 id 当作确认过的删图，否则删了图马上切走会被服务按「图片没确认删除」拒存）；服务页的 `isActive()` 在隐藏时为 false，上游已有的补丁点就跳过远端同步，回到可见的下一轮再同步（Codex widget 本来就这样）。`kit.saveCanvasNow` 用的也是这笔保存。
 - **打开时进哪一页**：页面先去它的会话负责的页（服务渲染时写进 `heldPageId`），其次网址里的 `pageId`，再次上游存的视图。上游在第一帧动画时恢复存下的视图（每张画布只有一份，谁最后存算谁的），隐藏的 Browser 面板要等被显示才跑这一帧，会把已经打开的页拽回别的页；所以网址指定了页、而存下的视图不是这一页时，页面丢掉这份视图。会话在面板开着时进了别的页，服务给它的面板发 `goto-page`，面板跟过去。只带端口的网址（面板卡片只记了地址）重定向到最后一次打开的画布网址。
@@ -131,8 +148,8 @@ ZCode 还有一处结构性差异：它不给 MCP 进程传会话标识（`ZCODE
   - **先接锁、再停旧的**（2026-10-10）：替换不是「停掉旧服务、再拉起自己的」。桥带着旧服务的 pid 拉起自己的服务（`cowart-service.mjs --port <端口> --replace <pid>`），新服务先把画布锁接过来（锁上还是那个 pid 就直接改写成自己的；旧服务退出时看锁不是自己的，不会删它），再请旧服务退出（旧服务日志：`stopping (replaced by <版本>, pid <新服务>)`），等它的进程没了（最后一笔写完）才开始读画布、监听端口（端口被别的桥测试时占一下，就在 3 秒内重试，不放锁）。这样旧服务一退，连着它的桥都来重连、各自拉起自己代码的服务时，锁已经是新服务的：它们拉起的服务看见锁就退出（退出码 4），桥等锁上那个服务起来、连上它。锁的这条规矩从有锁那天起没变，已经装好的旧版桥（比如 Codex 的发布副本）也照着办，所以不用等它们升级。几个新桥同时替换时，只有一个新服务接得到锁，其余的退出码 4、它们的桥等那一个。旧服务 15 秒（`REPLACE_WAIT_MS`）内没退出：新服务把锁还给它（记成正在退出，按原来的 30 秒规矩处理），退出码 5，桥报「旧的画布服务没有按时退出」。
   - 以前是先停再拉，2026-10-10 本机因此来回替换：现役是 Codex 发布副本 0.2.10，每开一个 Claude 会话（仓库 0.2.11，版本大）就停掉它，但几十个 Codex 桥重连时抢先拉起 0.2.10（打包的单文件启动快，停后约 0.4 秒就拿到锁；仓库源码的服务那次 2.3 秒后才去拿锁），Claude 桥替换的机会已经用掉，只好沿用 0.2.10。新代码一直上不去，每开一个 Claude 会话所有画布页面断一下（视频请求中断）。
   - 检查：`COWART_SERVICE_BUILD_SALT_FILE` 模拟改了代码（写了它之后启动的桥和服务都算新代码）；`multi-session-test` 另把发布产物拷到临时目录、版本号改成 0.0.1 当「别的代码目录」，10 个它的桥连着它的服务，再起一个本仓库的桥（`NODE_OPTIONS=--import` 让它的进程晚 1.5 秒起，照那天的情形）：先停再拉时每次都是 0.0.1 抢回来，现在都是本仓库的服务留下、11 个桥都连着它。
-- **空闲退出**：没有会话连着、也没有打开的画布页面，10 分钟后退出（`COWART_SERVICE_IDLE_MS` 可改）。
-- **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop`、也不是 `claude-desktop-<后缀>`（中转版 `claude-desktop-3p`）时，桥不提供工具、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
+- **空闲退出**：没有会话在线（桥连着，或命令会话还没结束）、也没有打开的画布页面，10 分钟后退出（`COWART_SERVICE_IDLE_MS` 可改）。
+- **只给桌面版**：`CLAUDE_CODE_ENTRYPOINT` 不是 `claude-desktop`、也不是 `claude-desktop-<后缀>`（中转版 `claude-desktop-3p`）时，cowart 命令只说入口不对、不拉起服务；没设这个变量（测试、联调宿主）照常；`COWART_ALLOW_CLI=1` 放开。
 - Claude / ZCode 网页和 Codex 原生 MCP Apps widget 使用相同的页面功能与差异保存脚本；宿主传输分别是 HTTP / SSE 和 MCP Apps 工具调用 / 轮询。共享服务保存相同的 page 与素材，切换宿主不用转换画布。
 - **在资源管理器中显示**（右键菜单）：选中一张背后有画布文件的卡片（图片、网页卡片、视频、AI HTML）右键，「复制为 / 导出为 / 下载原图」下面多这一项（Mac 上叫「在访达中显示」）。页面脚本（`canvas-chrome.js`）只把卡片的素材地址交给页面工具 `reveal_cowart_file`，画布服务（`reveal-file.mjs`）只认画布目录里的文件，在本机打开：Windows 由一段隐藏的 PowerShell 复用已经开着这个文件夹的资源管理器窗口（没有才新开）、用 Shell COM 选中文件，再借前台线程的输入把窗口提到最前（后台进程开的窗口会被 Windows 压在用户点的程序后面；服务直接起的 `explorer /select` 也没选中文件）；Mac 用 `open -R`，Linux 只开文件夹。服务就在本机，所以 Claude Code、ZCode、Codex 都能用。检查用 `COWART_REVEAL_DRY_RUN=1` 只核对路径、不开窗口。
 - **素材加载**（2026-10-10）：Claude / ZCode 的页面由画布服务直接提供，图片、视频都直接用服务的 `/page-assets/` 地址（页面桥的 `directAssetUrl`），HTML 草稿和 Slides 里的图片也是；服务给素材带 `ETag` / `Last-Modified`、`cache-control: no-cache`，浏览器每次用前问一句，没变回 304（切回看过的页每张图只传几百字节），带 `If-Range` 而文件改过时回整个新文件，不把新旧两份拼起来。原来图片经 `read_cowart_page_asset` 转成 base64 再在页面里解码成 Blob，一张 2 MB 的图要传约 2.7 MB 文字，Blob 一直留在页面内存里。Codex 原生 widget 连不到服务，照旧经 MCP 读。
@@ -198,7 +215,7 @@ lomo 上一个 ZCode 会话要「给每张图编号、分组」，模型这边�
 - 标注绑定在数据层（见补丁点清单）：「标注」「注释」工具画的箭头（`meta.cowartAnnotationArrow`，注释另有 `meta.cowartAnnotationNote`）用 tldraw 的箭头绑定（`binding`，`props.terminal: 'end'`）挂在它指着的卡片上，随画布保存。上游的按标注修改、适配层的「照这个做 HTML」、给模型看的画布摘要（「标注（修改要求）/ 注释（常驻说明）→ 卡片 id」）都按绑定取，不再按距离和颜色猜。
 - 模型清单（`adapters/shared/*-models.mjs`）照 `beast gen templates` 手抄，网关模板改了要跟着改；画布直接生成按清单里的模板和参数名提交。
 - 画布直接生成每次写提示词都跑一次 `claude -p`（默认 haiku，约 5 秒），用本机 Claude Code 的登录额度；产物落在猛兽上、记在 beast 配置里的用户（`~/.beast/config.json` 的 client）名下。
-- Claude Code 只把 MCP 服务 `instructions` 的前 2048 个字符放进上下文（2026-09-14 实测，后面直接截断）。桥的说明（`bridge.mjs` 的 `INSTRUCTIONS`）只讲画布是什么、怎么打开、请求先问再做，冒烟测试盯着长度；请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻怎么换成 beast-gen 写在 `adapters/claude/skills/cowart/SKILL.md`，`npm --prefix adapters run install:skill` 把它链接成全局 skill（Windows 用目录 junction），桥的说明和每条请求的宿主说明都让 Claude 先加载它。仓库根目录的 `skills/` 保留上游给 Codex 的版本；本 fork 插件改用 `adapters/codex/skills/`，三份原有 skill 的适配版和通用 `cowart` skill 统一按共享服务、请求原页与卡片绑定标注操作，不再要求项目目录或整张保存。
+- Claude Code 这边给模型的说明全在 `adapters/claude/skills/cowart/SKILL.md`（以前 MCP 服务的 `instructions` 只有前 2048 个字符进得了上下文，2026-09-14 实测，所以说明本来就挪进了 skill）：cowart 命令怎么写、请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻怎么换成 beast-gen。`npm --prefix adapters run install:claude` 把它链接成全局 skill（Windows 用目录 junction），并写 `~/.cowart/bin/cowart.mjs`；每条请求的宿主说明都让 Claude 先加载它。仓库根目录的 `skills/` 保留上游给 Codex 的版本；本 fork 插件改用 `adapters/codex/skills/`，三份原有 skill 的适配版和通用 `cowart` skill 统一按共享服务、请求原页与卡片绑定标注操作，不再要求项目目录或整张保存。
 
 ## 补丁点清单
 

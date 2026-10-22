@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { loadOrCreateToken } from '../lib/token.mjs'
-import { EMPTY_CANVAS, FIXTURES, finish, startBridge, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
+import { CODEX_BRIDGE, EMPTY_CANVAS, FIXTURES, cliSession, finish, startBridge, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 const PORT = Number(process.env.COWART_MENU_TEST_PORT) || 43386
@@ -25,8 +25,8 @@ await mkdir(join(canvasDir, 'pages', 'page'), { recursive: true })
 await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.json'))
 
 await stopTestService(PORT)
-const claude = await startBridge({ cwd: projectDir, port: PORT, session: 'menu-claude' })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'menu-codex', entry: join(ADAPTERS_DIR, 'codex', 'bin', 'cowart-codex-mcp.mjs') })
+const claude = cliSession({ cwd: projectDir, port: PORT, session: 'menu-claude' })
+const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'menu-codex', entry: CODEX_BRIDGE })
 
 function ok(result) {
   assert.ok(!result.isError, text(result))

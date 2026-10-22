@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { hostNotes as claudeHostNotes } from '../../claude/lib/bridge.mjs'
+import { hostNotes as claudeHostNotes } from '../../claude/lib/cli.mjs'
 import { requestNotice } from '../../claude/lib/request-notice.mjs'
 import { requestText as codexRequestText } from '../../codex/lib/bridge.mjs'
 import { UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
@@ -119,15 +119,16 @@ test('host notes say what to do with either choice, on all three hosts', () => {
   const edit = queued(annotationEditText(REMARKS))
   const html = queued(`${MENTION} 生成 AI HTML\n\nPrompt:\n一个登录页`)
   const image = queued(`${MENTION} 按标注生图\n\nIncluded annotation shapes: 1`)
-  for (const hostNotes of [claudeHostNotes, zcodeHostNotes]) {
+  // Claude Code runs the cowart command (insert-html), ZCode the MCP tool.
+  for (const [hostNotes, insertHtml] of [[claudeHostNotes, /insert-html/], [zcodeHostNotes, /insert_cowart_html_draft/]]) {
     const editNotes = hostNotes(edit).join('\n')
     assert.match(editNotes, /选项（推荐的放第一个）：照标注处理（答疑、改当前项目，不生图）/)
     assert.match(editNotes, /用户选「照标注处理」时：.*不生图、不往画布放图/)
     assert.match(editNotes, /用户选「按标注出新图」时：.*beast-gen/)
     const htmlNotes = hostNotes(html).join('\n')
     assert.match(htmlNotes, /选项给「执行」「跳过」/)
-    assert.match(htmlNotes, /insert_cowart_html_draft/)
-    assert.doesNotMatch(htmlNotes, /免费本地模型|insert_cowart_image/)
+    assert.match(htmlNotes, insertHtml)
+    assert.doesNotMatch(htmlNotes, /免费本地模型|insert_cowart_image|insert-image/)
     assert.match(hostNotes(image).join('\n'), /「执行（免费本地模型）」「执行（云端模型，消耗团队额度）」「跳过」/)
   }
   assert.match(codexRequestText(edit), /先读标注：是对图里界面、功能、设计的意见或问题.*不生图、不往画布放图/)

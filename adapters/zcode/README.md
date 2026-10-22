@@ -3,9 +3,9 @@
 让上游 Cowart 画布在 **ZCode**（智谱 ZCode 桌面版 / CLI）里可用。和 Claude Code 适配层共用同一个全机画布服务、同一张画布、同一套页面脚本——ZCode 会话和 Claude Code 会话在画布上按页分工，互相看得到对方负责的页。
 
 ```
-ZCode 会话 ──stdio MCP──▶ 薄桥 cowart-zcode-mcp.mjs ──┐
-Claude Code 会话 ──stdio MCP──▶ 薄桥 cowart-claude-mcp.mjs ──┤ HTTP 127.0.0.1:43240（令牌）
-                                                        ▼
+ZCode 会话 ──stdio MCP──▶ 薄桥 cowart-zcode-mcp.mjs ──────────┐
+Claude Code 会话 ──Bash──▶ cowart 命令（adapters/claude，没有 MCP）──┤ HTTP 127.0.0.1:43240（令牌）
+                                                                 ▼
               画布服务 adapters/service（全机一个，后台进程，空闲 10 分钟退出）
                 ├─ 上游 Cowart 服务（黑盒子进程）+ 请求队列（按页路由）+ 画布直接生成
                 └─ 网页画布 ──▶ 任何浏览器打开（网址带会话标识；ZCode 没有 Browser 面板）
@@ -18,7 +18,7 @@ Claude Code 会话 ──stdio MCP──▶ 薄桥 cowart-claude-mcp.mjs ──�
 | 画布显示 | Browser 面板 | 没有内置面板，也没有 MCP Apps widget（2026-09-14 在主程序包里核实：无 `ui://` 资源、无 `openai.toolOutput` 宿主桥）。画布网址交给用户在任意浏览器打开；装了 browser-use 插件时也可以自己打开 |
 | 会话标识 | `CLAUDE_CODE_HOST_SESSION_ID` | ZCode 不给 MCP 进程传会话标识（核实过 `ZCODE_*` / `ZAI_*` 环境变量），一个桥进程就是一个画布会话。同一个 ZCode 会话里桥重启（重开对话）会算新会话，原来负责的页要重新「接管」 |
 
-画布请求的送达两边一样：监听命令（`cowart-listen.mjs --once`）用 Bash 工具后台运行，一直等着、不耗 token；收到一批画布事件（首事件后约 750ms 静默）才退出，**退出本身唤醒会话**（后台任务的完成通知），会话处理完再后台启动一次。服务端在监听重连时补发没送达的请求（`server.mjs` 的 deliverPending），所以不会漏；监听没在跑时请求在服务里排队，用户说「看画布」时取走。
+画布请求的送达两边一样：监听命令（ZCode 是 `cowart-listen.mjs --once`，Claude Code 是 `cowart listen`，同一套循环）用 Bash 工具后台运行，一直等着、不耗 token；收到一批画布事件（首事件后约 750ms 静默）才退出，**退出本身唤醒会话**（后台任务的完成通知），会话处理完再后台启动一次。服务端在监听重连时补发没送达的请求（`server.mjs` 的 deliverPending），所以不会漏；监听没在跑时请求在服务里排队，用户说「看画布」时取走。
 
 其余也全部共用：分页负责制、差异保存、AI 图片 / AI 视频面板（beast-gen 模板、画布直接生成）、网页参考、标注绑定、视频播放。画布页面按打开它的会话的宿主显示文案（服务端注入 `hostLabel: "ZCode"`，只改措辞不改行为）。
 
@@ -56,7 +56,7 @@ npm --prefix adapters run test:zcode    # 端到端：桥、宿主注册、页�
 npm --prefix adapters run test:claude   # 共用部分（画布服务、页面、请求队列）的完整回归
 ```
 
-`adapters/zcode/lib/bridge.mjs` 是 `adapters/claude/lib/bridge.mjs` 的 ZCode 姊妹版：工具定义、转发逻辑、请求的宿主说明都一样，差别只在「怎么打开画布」和「怎么收到画布请求」两段说明（INSTRUCTIONS、renderResult、hostNotes）。
+`adapters/zcode/lib/bridge.mjs` 照 Claude 以前那个 MCP 薄桥写的（Claude 2026-10-22 改走 skill + `cowart` 命令，见 FORK.md「Claude Code 改走 skill + 命令」）：工具定义、转发逻辑、请求的宿主说明跟 Claude 的 cowart 命令（`adapters/claude/lib/cli.mjs`）一样，差别在「怎么打开画布」「怎么收到画布请求」两段说明（INSTRUCTIONS、renderResult、hostNotes），以及会话在线看桥连着（Claude 看监听）。
 
 ## 已知限制（ZCode 特有）
 

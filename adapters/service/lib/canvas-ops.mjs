@@ -308,9 +308,24 @@ export class CanvasOps extends EventEmitter {
   async replaySelection(name, args, session) {
     if (!SELECTION_READERS.has(name) || !session) return
     const { projectDir, canvasDir } = resolveCowartPaths(args)
-    const selection = this.#selections.get(`${canvasDir}\n${session}`)
+    let selection = this.#selections.get(`${canvasDir}\n${session}`)
+    if (MODEL_INSERT_TOOLS.has(name) && !ANCHOR_ARGS.some((key) => nonEmpty(args[key]))) selection = await this.#anchorSelection(selection, args)
     if (selection === undefined) return
     await this.#callLocked('save_cowart_selection_state', { projectDir, canvasDir, selection })
+  }
+
+  // An insert that names no anchor gets the one selected shape as its anchor (upstream), and
+  // lands on that shape's page whatever pageId says: on 2026-10-22 an image for page A went to
+  // the page the session's pane showed. So it only gets this session's own selection, and only
+  // a shape on the page the insert is for; otherwise none.
+  async #anchorSelection(selection, args) {
+    const none = { selectedShapes: [] }
+    const shapes = selection?.selectedShapes
+    if (!Array.isArray(shapes)) return none
+    if (shapes.length !== 1 || !nonEmpty(args.pageId)) return selection
+    const store = (await this.#storedSnapshot(args))?.store ?? {}
+    const shape = store[shapes[0]?.id]
+    return shape?.typeName === 'shape' && pageIdOfShape(store, shape) === args.pageId.trim() ? selection : none
   }
 
   // A session the canvas service forgot (server.mjs #forgetEnded): its selection goes with it.

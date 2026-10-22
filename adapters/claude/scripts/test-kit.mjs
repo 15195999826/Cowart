@@ -1,6 +1,9 @@
-// Helpers for the Claude adapter's end-to-end checks: session bridges run the way Claude
-// Code runs them (MCP over stdio), a small SSE reader, and cleanup of test services.
+// Helpers for the adapters' end-to-end checks: Claude sessions run cowart commands the way
+// Claude Code runs them (a process per command, from its Bash tool), ZCode's and Codex's session
+// bridges run over stdio the way their hosts run them (MCP), a small SSE reader, and cleanup of
+// test services.
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import http from 'node:http'
@@ -18,10 +21,14 @@ import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 export const FIXTURES = join(ADAPTERS_DIR, 'claude', 'test', 'fixtures')
 // The canvas the service starts a never-opened canvas from; the checks start from it too.
 export const EMPTY_CANVAS = join(ADAPTERS_DIR, 'shared', 'empty-canvas.json')
-const BRIDGE_ENTRY = join(ADAPTERS_DIR, 'claude', 'bin', 'cowart-claude-mcp.mjs')
+export const CLI_ENTRY = join(ADAPTERS_DIR, 'claude', 'bin', 'cowart.mjs')
+export const ZCODE_BRIDGE = join(ADAPTERS_DIR, 'zcode', 'bin', 'cowart-zcode-mcp.mjs')
+export const CODEX_BRIDGE = join(ADAPTERS_DIR, 'codex', 'bin', 'cowart-codex-mcp.mjs')
 // Session names the checks give out stay out of the user's own list (~/.cowart-claude),
 // and each run starts from an empty list.
 const NAMES_FILE = join(tmpdir(), `cowart-check-session-names-${process.pid}.json`)
+// The cowart command `install` writes: the checks' own, never the user's ~/.cowart/bin.
+export const COMMAND_LINK = join(tmpdir(), `cowart-check-command-${process.pid}.mjs`)
 
 let failures = 0
 export async function step(name, run) {
@@ -36,6 +43,7 @@ export async function step(name, run) {
 
 export function finish() {
   rmSync(NAMES_FILE, { force: true })
+  rmSync(COMMAND_LINK, { force: true })
   console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) failed.`)
   process.exit(failures === 0 ? 0 : 1)
 }
@@ -169,25 +177,94 @@ export function rawGet(port, path, headers) {
   })
 }
 
-// A session bridge the way Claude Code runs it: MCP over stdio, with its own session id.
-// entry runs another host's bridge (ZCode, Codex) the same way.
-export async function startBridge({ cwd, port, session, env = {}, entry = BRIDGE_ENTRY }) {
+// The environment a check's session runs with: its own session id, and a service it starts keeps
+// the check's canvas, never the machine's. Checks run the same from any host; the desktop-only
+// switch is tested on purpose.
+function sessionEnv({ cwd, port, session, env }) {
   const inherited = { ...process.env }
-  // Checks run the same from any host; the desktop-only switch is tested on purpose.
   delete inherited.CLAUDE_CODE_ENTRYPOINT
+  return {
+    ...inherited,
+    COWART_CLAUDE_PORT: String(port),
+    COWART_SESSION_ID: session,
+    COWART_SESSION_NAMES_FILE: NAMES_FILE,
+    COWART_CANVAS_DIR: join(cwd, 'canvas'),
+    COWART_COMMAND_LINK: COMMAND_LINK,
+    ...env
+  }
+}
+
+// A Claude session the way Claude Code runs it: cowart commands from its Bash tool, a process
+// each, with the session id the desktop gives them. call() runs a tool as the model would and
+// gives its result as the MCP tools gave theirs ({ content, structuredContent, isError }).
+// entry runs another checkout's command.
+export function cliSession({ cwd, port, session, env = {}, entry = CLI_ENTRY }) {
+  const fullEnv = sessionEnv({ cwd, port, session, env })
+  const start = (argv) => spawn(process.execPath, [entry, ...argv], { cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  const children = new Set()
+  function run(argv, { input = '' } = {}) {
+    const child = start(argv)
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.stdin.end(input)
+    return new Promise((resolve) => child.on('close', (code) => resolve({ code, stdout, stderr })))
+  }
+  return {
+    session,
+    run,
+    async call(name, args = {}) {
+      const { code, stdout, stderr } = await run(['call', name, '--json', '-', '--out', 'json'], { input: JSON.stringify(args) })
+      try {
+        return JSON.parse(stdout)
+      } catch {
+        throw new Error(`cowart call ${name} exited ${code}: ${stderr || stdout}`)
+      }
+    },
+    async listTools() {
+      const { code, stdout, stderr } = await run(['tools', '--out', 'json'])
+      if (code !== 0) throw new Error(`cowart tools exited ${code}: ${stderr || stdout}`)
+      return JSON.parse(stdout)
+    },
+    // `cowart listen` the way the session runs it in the background: what it printed so far,
+    // and done once it exits.
+    listen() {
+      const child = start(['listen'])
+      child.stdin.end()
+      children.add(child)
+      const output = { stdout: '', stderr: '' }
+      child.stdout.on('data', (chunk) => (output.stdout += chunk))
+      child.stderr.on('data', (chunk) => (output.stderr += chunk))
+      const done = new Promise((resolve) => child.on('close', (code) => {
+        children.delete(child)
+        resolve({ code, ...output })
+      }))
+      return { child, output, done, kill: () => child.kill() }
+    },
+    // Nothing of a command session stays running but its listeners.
+    async close() {
+      for (const child of children) child.kill()
+    }
+  }
+}
+
+// A session bridge the way ZCode or Codex runs it (entry): MCP over stdio, with its own session id.
+export async function startBridge({ cwd, port, session, env = {}, entry }) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [entry],
     cwd,
-    // A service a check starts keeps the check's canvas, never the machine's.
-    env: { ...inherited, COWART_CLAUDE_PORT: String(port), COWART_SESSION_ID: session, COWART_SESSION_NAMES_FILE: NAMES_FILE, COWART_CANVAS_DIR: join(cwd, 'canvas'), ...env },
+    env: sessionEnv({ cwd, port, session, env }),
     stderr: 'pipe'
   })
   const client = new Client({ name: `cowart-check-${session}`, version: '0.0.0' })
   await client.connect(transport)
   return {
     client,
+    session,
     call: (name, args = {}) => client.callTool({ name, arguments: args }, undefined, { timeout: 120_000 }),
+    listTools: () => client.listTools(),
     close: () => client.close().catch(() => {})
   }
 }

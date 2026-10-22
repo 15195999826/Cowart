@@ -1,6 +1,8 @@
 // Bridge side of the canvas service. It finds the machine-wide service on 127.0.0.1 (the
 // port is the lock), starts it in the background when nobody runs one, replaces it when
-// it runs older code (identity.mjs), keeps the session connected and calls it.
+// it runs older code (identity.mjs), keeps the session connected and calls it. A command
+// (the cowart CLI, command: true) only finds the service and calls it: its calls and its
+// listener keep the session online (server.mjs).
 import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, renameSync, statSync } from 'node:fs'
 import net from 'node:net'
@@ -189,17 +191,27 @@ export class CanvasServiceClient {
   #closed = false
   #replaced = false
 
-  constructor({ host, session, cwd, port = DEFAULT_PORT, entry = SERVICE_ENTRY, log }) {
+  constructor({ host, session, cwd, port = DEFAULT_PORT, entry = SERVICE_ENTRY, log, command = false }) {
     this.host = host
     this.session = session
     this.cwd = cwd
     this.basePort = port
     this.entry = entry
     this.log = log ?? (() => {})
+    this.command = command
   }
 
   get port() {
     return this.#port
+  }
+
+  get token() {
+    return this.#token
+  }
+
+  // Finds the service again (it went away), without replacing the one that runs now.
+  async reconnect() {
+    await this.#connect({ allowReplace: false })
   }
 
   get origin() {
@@ -226,7 +238,7 @@ export class CanvasServiceClient {
         response = await fetch(`${this.origin}/api/bridge/call`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-cowart-token': this.#token },
-          body: JSON.stringify({ session: this.session, cwd: this.cwd, op, args }),
+          body: JSON.stringify({ session: this.session, cwd: this.cwd, op, args, ...(this.command ? { cli: true, host: this.host } : {}) }),
           signal: AbortSignal.timeout(timeoutMs)
         })
       } catch (error) {
@@ -247,6 +259,7 @@ export class CanvasServiceClient {
       this.#token ??= await loadOrCreateToken()
       for (let attempt = 0; ; attempt += 1) {
         this.#port = await this.#locate({ allowReplace: allowReplace && attempt === 0 })
+        if (this.command) return
         try {
           return await this.#openSessionStream()
         } catch (error) {

@@ -11,7 +11,7 @@ import { join } from 'node:path'
 
 import { fallbackPrompt } from '../../service/lib/prompt-writer.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
-import { EMPTY_CANVAS, FIXTURES, delay, finish, openEvents, startBridge, step, stopTestService, text } from './test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, cliSession, delay, finish, openEvents, step, stopTestService, text } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_GENERATION_PORT) || 43290
 const FALLBACK_PORT = PORT + 3
@@ -95,7 +95,7 @@ let referenceId = ''
 
 try {
   await step('the canvas service generates with the stand-in gateway and prompt writer', async () => {
-    bridge = await startBridge({ cwd: projectDir, port: PORT, session: SESSION, env: ENV })
+    bridge = cliSession({ cwd: projectDir, port: PORT, session: SESSION, env: ENV })
     const opened = await bridge.call('render_cowart_canvas_widget', { projectDir, sessionName: '小生' })
     assert.ok(!opened.isError, text(opened))
     origin = `http://127.0.0.1:${opened.structuredContent.port}`
@@ -260,7 +260,7 @@ try {
 
   await step('without a beast command line the panel is told to send the request to Claude', async () => {
     // A service of its own, so a canvas of its own: the canvas above keeps its one service.
-    const other = await startBridge({
+    const other = cliSession({
       cwd: projectDir,
       port: FALLBACK_PORT,
       session: 'gen-fallback',

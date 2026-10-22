@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// send_cowart_feedback end to end: a Claude Code, a ZCode and a Codex session bridge share one
-// test service and each records feedback into a throwaway inbox; then the inbox command
+// send_cowart_feedback end to end: a Claude Code session (cowart commands), a ZCode and a Codex
+// session bridge share one test service and each records feedback into a throwaway inbox; then the inbox command
 // (service/bin/cowart-feedback.mjs) lists, shows and closes the items.
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -9,8 +9,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { INSTRUCTIONS as CLAUDE_INSTRUCTIONS } from '../../claude/lib/bridge.mjs'
-import { EMPTY_CANVAS, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
+import { CODEX_BRIDGE, EMPTY_CANVAS, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
 import { INSTRUCTIONS as CODEX_INSTRUCTIONS } from '../../codex/lib/bridge.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { INSTRUCTIONS as ZCODE_INSTRUCTIONS } from '../../zcode/lib/bridge.mjs'
@@ -36,9 +35,11 @@ async function itemDir(id) {
 const record = async (id) => JSON.parse(await readFile(join(await itemDir(id), 'feedback.json'), 'utf8'))
 
 await stopTestService(PORT)
-const claude = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-claude', env })
-const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-zcode', env, entry: join(ADAPTERS_DIR, 'zcode', 'bin', 'cowart-zcode-mcp.mjs') })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-codex', env, entry: join(ADAPTERS_DIR, 'codex', 'bin', 'cowart-codex-mcp.mjs') })
+const claude = cliSession({ cwd: projectDir, port: PORT, session: 'fb-claude', env })
+const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-zcode', env, entry: ZCODE_BRIDGE })
+const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-codex', env, entry: CODEX_BRIDGE })
+// Claude Code reads when to record feedback in the cowart skill.
+const CLAUDE_INSTRUCTIONS = await readFile(join(ADAPTERS_DIR, 'claude', 'skills', 'cowart', 'SKILL.md'), 'utf8')
 
 try {
   await step('every host lists send_cowart_feedback, and its instructions say when to use it', async () => {
@@ -47,7 +48,7 @@ try {
       ['ZCode', zcode, ZCODE_INSTRUCTIONS],
       ['Codex', codex, CODEX_INSTRUCTIONS]
     ]) {
-      const tool = (await bridge.client.listTools()).tools.find((entry) => entry.name === 'send_cowart_feedback')
+      const tool = (await bridge.listTools()).tools.find((entry) => entry.name === 'send_cowart_feedback')
       assert.ok(tool, `the ${host} bridge does not list send_cowart_feedback`)
       assert.deepEqual(tool.inputSchema.required, ['text'])
       assert.match(instructions, /send_cowart_feedback/, `the ${host} instructions do not mention send_cowart_feedback`)
