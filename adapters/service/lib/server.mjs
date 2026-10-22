@@ -9,7 +9,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import http from 'node:http'
-import { extname, isAbsolute, relative, resolve } from 'node:path'
+import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { resolveCowartPaths } from '../../../mcp/lib/canvas-storage.mjs'
 import { formatCanvasSummary, localPathForAssetSrc } from '../../shared/canvas-model.mjs'
@@ -17,6 +17,8 @@ import { readFileHead, sniffMediaType } from '../../shared/video.mjs'
 import { EDIT_TOOL_DEFINITIONS, EDIT_TOOLS } from './canvas-edit.mjs'
 import { INSERT_VIDEO_TOOL, PAGE_WRITE_TOOLS, textResult } from './canvas-ops.mjs'
 import { FEEDBACK_TOOL, FEEDBACK_TOOL_DEFINITION, FeedbackStore } from './feedback.mjs'
+import { PAGE_ACTIVITY_FILE_NAME, PageActivity } from './page-activity.mjs'
+import { MOVE_PAGES_TOOL, MOVE_PAGES_TOOL_DEFINITION } from './page-folders.mjs'
 import { Presence } from './presence.mjs'
 import { PAGE_HOSTNAME } from './identity.mjs'
 import { FINAL_STATUSES, publicRequest } from './requests.mjs'
@@ -49,6 +51,8 @@ const SESSION_WAIT_MS = Number(process.env.COWART_SESSION_WAIT_MS) || 15_000
 const ENDED_KEPT_MS = Number(process.env.COWART_ENDED_SESSION_KEPT_MS) || 60 * 60_000
 // A page that reconnects within this time keeps its place.
 const PANE_GRACE_MS = 5_000
+// Pages hear when pages last changed (page-activity.mjs) at most this often.
+const ACTIVITY_ANNOUNCE_MS = 3_000
 const MESSAGE_KINDS = new Set(['canvas', 'image', 'video', 'web'])
 // Model writes that put something new on a page: the session's own canvas panes bring it into
 // view (#revealPut).
@@ -218,7 +222,7 @@ export class CanvasServer {
   #lastOpenedUrl = null
 
   // canvasDir: the machine's one canvas (SHARED_CANVAS_DIR), the only one this serves.
-  constructor({ token, identity, canvasDir, queue, ops, jobs, renderPage, log, onActivity, onShutdownRequest, presence, feedback }) {
+  constructor({ token, identity, canvasDir, queue, ops, jobs, renderPage, log, onActivity, onShutdownRequest, presence, feedback, activity }) {
     this.token = token
     this.identity = identity
     this.canvasDir = canvasDir
@@ -231,6 +235,7 @@ export class CanvasServer {
     this.onShutdownRequest = onShutdownRequest ?? (() => {})
     this.presence = presence ?? new Presence({ canvasDir })
     this.feedback = feedback ?? new FeedbackStore()
+    this.activity = activity ?? new PageActivity({ file: canvasDir ? join(canvasDir, PAGE_ACTIVITY_FILE_NAME) : null })
     this.#widgets = new WidgetPanes({ leaseMs: WIDGET_LEASE_MS, onExpired: (pane) => this.#expireWidget(pane) })
 
     queue.on('created', (request) => this.#deliver(request))
@@ -240,9 +245,14 @@ export class CanvasServer {
       this.#broadcastCanvas(request.canvasDir, 'request', publicRequest(request))
     })
     queue.on('cancelled', (request) => this.#deliverCancel(request))
-    this.presence.on('changed', (canvasDir) => this.#broadcastCanvas(canvasDir, 'page-state', this.presence.view(canvasDir)))
+    this.presence.on('changed', (canvasDir) => this.#broadcastCanvas(canvasDir, 'page-state', this.#pageState(canvasDir)))
+    ops.on('pages-changed', ({ canvasDir, pageIds }) => {
+      if (canvasDir === this.canvasDir) this.activity.touch(pageIds)
+    })
+    this.activity.on('changed', () => this.#announceActivity())
     ops.on('pages-deleted', ({ canvasDir, pageIds }) => {
       this.presence.releasePages(canvasDir, pageIds)
+      if (canvasDir === this.canvasDir) this.activity.forget(pageIds)
       for (const session of this.#sessions.values()) {
         if (session.releasedPage?.canvasDir === canvasDir && pageIds.includes(session.releasedPage.pageId)) session.releasedPage = null
       }
@@ -338,6 +348,8 @@ export class CanvasServer {
     }
     for (const timer of this.#paneTimers.values()) clearTimeout(timer)
     for (const id of this.#deliveryClaims.keys()) this.#clearDeliveryClaim(id)
+    clearTimeout(this.#activityTimer)
+    this.activity.save()
     this.#widgets.close()
     for (const res of streams) endStream(res, 'stopping', { reason })
     if (!this.#server) return
@@ -631,8 +643,23 @@ export class CanvasServer {
       { event: 'hello', data: { protocol: this.identity.protocol, build: this.identity.build, startedAt: this.#startedAt } },
       { event: 'presence', data: this.#presence(session) },
       { event: 'requests', data: { requests: this.#recentRequests(canvasDir) } },
-      { event: 'page-state', data: this.presence.view(canvasDir) }
+      { event: 'page-state', data: this.#pageState(canvasDir) }
     ]
+  }
+
+  // Who is responsible for which page, and when each page last changed (page-activity.mjs).
+  #pageState(canvasDir) {
+    return { ...this.presence.view(canvasDir), changedAt: canvasDir === this.canvasDir ? this.activity.view() : {} }
+  }
+
+  #activityTimer = null
+  #announceActivity() {
+    if (this.#activityTimer || this.#closing) return
+    this.#activityTimer = setTimeout(() => {
+      this.#activityTimer = null
+      this.#broadcastCanvas(this.canvasDir, 'page-state', this.#pageState(this.canvasDir))
+    }, ACTIVITY_ANNOUNCE_MS)
+    this.#activityTimer.unref?.()
   }
 
   // A request from a page goes to the session responsible for that page. A page nobody is
@@ -974,13 +1001,14 @@ export class CanvasServer {
         })
       }
       case 'model-tools': {
-        // Upstream's tools, the service's layout tools (canvas-edit.mjs) and its feedback tool,
-        // which stays listed when upstream is down: that is worth feedback too.
+        // Upstream's tools, the service's layout tools (canvas-edit.mjs), page folders
+        // (page-folders.mjs) and its feedback tool, which stays listed when upstream is down:
+        // that is worth feedback too.
         const upstreamTools = await this.ops.modelTools().catch((error) => {
           this.log(`upstream tools unavailable: ${error.message}`)
           return []
         })
-        return { tools: [...upstreamTools, ...(upstreamTools.length > 0 ? EDIT_TOOL_DEFINITIONS : []), FEEDBACK_TOOL_DEFINITION] }
+        return { tools: [...upstreamTools, ...(upstreamTools.length > 0 ? [...EDIT_TOOL_DEFINITIONS, MOVE_PAGES_TOOL_DEFINITION] : []), FEEDBACK_TOOL_DEFINITION] }
       }
       case 'open-canvas':
         return this.#openCanvas(session, args)
@@ -993,6 +1021,8 @@ export class CanvasServer {
       case 'tool': {
         const name = String(args.name || '')
         if (name === FEEDBACK_TOOL) return this.#recordFeedback(session, args.arguments ?? {})
+        // Folders are no page's content: any session sorts any page (page-folders.mjs).
+        if (name === MOVE_PAGES_TOOL) return this.ops.movePages(this.#withDefaults(session, args.arguments ?? {}))
         let toolArgs = this.#withDefaults(session, args.arguments ?? {})
         if (PAGE_WRITE_TOOLS.has(name)) toolArgs = await this.#pageWrite(session, name, toolArgs)
         if (EDIT_TOOLS.has(name)) {
@@ -1045,7 +1075,7 @@ export class CanvasServer {
     const paneOpen = [...this.#pageStreams.values()].some((stream) => stream.session === session.id && stream.canvasDir === target.canvasDir)
       || this.#widgets.forSession(session.id).some((pane) => pane.canvasDir === target.canvasDir)
     if (wanted) {
-      entered = await this.ops.ensurePage(target, wanted)
+      entered = await this.ops.ensurePage(target, wanted, { folder: args.folder })
     } else if (args.shownPage === true) {
       const pane = this.presence.panesOf(session.id, target.canvasDir)[0]
       if (!pane) throw new Error('这个会话还没在 Browser 面板里打开这张画布，不知道是哪一页：说「打开 Cowart 画布 <页名>」，或先打开画布。')
@@ -1086,6 +1116,8 @@ export class CanvasServer {
       projectDir: target.projectDir,
       canvasDir: target.canvasDir,
       page: entered ? entered.name : null,
+      pageFolder: entered ? entered.folder ?? '' : null,
+      pageMovedFrom: entered?.movedFrom ?? null,
       pageCreated: Boolean(entered?.created),
       takenFrom: previous && previous !== session.id ? this.#nameOf(previous) : null,
       alreadyHeld: Boolean(entered) && previous === session.id,

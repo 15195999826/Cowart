@@ -338,6 +338,20 @@
       if (editor && Array.isArray(next.allPageIds)) removePages(editor.getPages().map((page) => page.id).filter((id) => !next.allPageIds.includes(id)))
       state = next
       applyRole()
+      announceHolders()
+    }
+
+    // Who is responsible for which page, for the page menu (page-tree.js): { [pageId]: { name, mine } }.
+    function announceHolders() {
+      const known = names()
+      const holders = {}
+      for (const [pageId, page] of Object.entries((state && state.pages) || {})) {
+        if (page && page.holder) holders[pageId] = { name: known[page.holder] || '另一个会话', mine: page.holder === config.session }
+      }
+      window.__cowartPageHolders = holders
+      // When each page last changed (the service's page-activity.mjs), for the 最近改过 order.
+      window.__cowartPageChangedAt = (state && state.changedAt) || {}
+      window.dispatchEvent(new CustomEvent('cowart:page-holders', { detail: holders }))
     }
 
     // Pages the user deleted in another pane.

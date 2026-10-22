@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path'
 
 import { CanvasServiceClient } from '../../service/client.mjs'
 import { DEFAULT_PORT, VERSION, samePath } from '../../service/lib/identity.mjs'
+import { MOVE_PAGES_TOOL, folderWords, newPageFolderHint, normalizeFolder, pageTreeLines } from '../../service/lib/page-folders.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { listenForRequests } from './listen.mjs'
@@ -128,6 +129,14 @@ const displaySizeFlag = {
     target.matchAnchor ??= false
   }
 }
+// open / take: the page into a folder of the page menu (page-folders.mjs).
+const FOLDER_FLAG = {
+  kind: 'text',
+  arg: '<文件夹>',
+  about: '这一页放进页菜单的这个文件夹（一层层用 / 隔开：数码宝贝/参考；/ 是顶层），新建的页、已有的页都行；用户说了文件夹才给',
+  covers: ['folder'],
+  set: (target, value) => (target.folder = value)
+}
 // Where put image / video / html go.
 const PLACE = {
   at: atFlag('放在页面上这个位置（左上角）'),
@@ -144,9 +153,9 @@ const COMMANDS = [
     group: '会话',
     tool: RENDER_TOOL,
     positional: ['page'],
-    usage: 'open [页名] [--name <你的名字>]',
+    usage: 'open [页名] [--name <你的名字>] [--folder <文件夹>]',
     about: '打开画布：给网址、你的名字、负责哪页、下一步；带页名 = 进入 / 接管这一页（没有就建）',
-    flags: { name: { kind: 'text', arg: '<名字>', about: '你在画布上的名字（第一次打开时起一个，之后不换）', covers: ['sessionName'], set: (target, value) => (target.sessionName = value) } },
+    flags: { name: { kind: 'text', arg: '<名字>', about: '你在画布上的名字（第一次打开时起一个，之后不换）', covers: ['sessionName'], set: (target, value) => (target.sessionName = value) }, folder: FOLDER_FLAG },
     hidden: ['shownPage', 'title'],
     result: 'open'
   },
@@ -155,14 +164,15 @@ const COMMANDS = [
     group: '会话',
     tool: RENDER_TOOL,
     positional: ['page'],
-    usage: 'take <页名> | take --shown',
+    usage: 'take <页名> [--folder <文件夹>] | take --shown',
     about: '换你负责的页：进入 / 接管这一页（没有就建），--shown 接管面板正看着的页；面板跟过去',
-    flags: { shown: { kind: 'switch', about: '接管你的画布面板正看着的那一页（「接管这页」）', covers: ['shownPage'], set: (target, value) => (target.shownPage = value) } },
+    flags: { shown: { kind: 'switch', about: '接管你的画布面板正看着的那一页（「接管这页」）', covers: ['shownPage'], set: (target, value) => (target.shownPage = value) }, folder: FOLDER_FLAG },
     hidden: ['sessionName', 'title'],
     result: 'take'
   },
   // 看
-  { name: 'pages', group: '看', usage: 'pages', about: '画布上所有的页：页名、谁负责、几个图形', run: 'pages' },
+  // 页：the canvas's pages and the page menu's folders.
+  { name: 'pages', group: '页', usage: 'pages [文件夹]', about: '画布上的页，按页菜单的文件夹排：页名、谁负责、几个图形；给了文件夹就只列它里面的', run: 'pages' },
   { name: 'page', group: '看', usage: 'page [页名]', about: '一页上有什么：图形、位置尺寸、素材本地路径、标注指向；默认看你负责的页', run: 'page' },
   { name: 'selection', group: '看', tool: 'get_cowart_selection', usage: 'selection', about: '用户在本会话画布面板里选中的东西：位置尺寸、所在的分组框、素材本地路径', result: 'selection' },
   // 放
@@ -275,6 +285,18 @@ const COMMANDS = [
       fit: { kind: 'switch', into: 'item', about: '分组框贴合里面的东西（放进、挪动之后框太大或太小时）', covers: ['fit'], set: (target, value) => (target.fit = value) },
       padding: { kind: 'number', arg: '<像素>', into: 'item', about: '--fit 时内容到框边的距离（默认 40）', covers: ['padding'], set: (target, value) => (target.padding = value) },
       page: pageFlag('改的是这一页（一般不用给）')
+    },
+    needs: true
+  },
+  {
+    name: 'folder',
+    group: '页',
+    tool: MOVE_PAGES_TOOL,
+    positional: ['folder', '...pages'],
+    usage: 'folder <文件夹> <页名>… | folder <新文件夹> --from <旧文件夹>',
+    about: '把页放进页菜单的文件夹（一层层用 / 隔开：数码宝贝/参考；/ 是顶层），--from 把整个文件夹挪过去、改名；用户要你归类时才用',
+    flags: {
+      from: { kind: 'text', arg: '<文件夹>', about: '挪这个文件夹（连同里面的页和子文件夹）到 <新文件夹>：改名、换位置；<新文件夹> 是 / 就拆掉它', covers: ['fromFolder'], set: (target, value) => (target.fromFolder = value) }
     },
     needs: true
   },
@@ -774,9 +796,9 @@ export function hostNotes(request, cli = cowartCommand()) {
 }
 
 function dutyLine(opened) {
-  if (opened.page && opened.alreadyHeld) return `「${opened.page}」这一页本来就是你负责`
+  if (opened.page && opened.alreadyHeld) return `「${opened.page}」这一页本来就是你负责${folderWords(opened)}`
   return opened.page
-    ? `你现在负责「${opened.page}」这一页${opened.pageCreated ? '（新建的）' : ''}${opened.takenFrom ? `，从「${opened.takenFrom}」那里接了过来` : ''}`
+    ? `你现在负责「${opened.page}」这一页${opened.pageCreated ? '（新建的）' : ''}${folderWords(opened)}${opened.takenFrom ? `，从「${opened.takenFrom}」那里接了过来` : ''}`
     : opened.myPage
       ? `你负责的还是「${opened.myPage}」这一页`
       : '你没负责任何页（用户说「打开 Cowart 画布 <页名>」或「接管 <页名>」时再进入）'
@@ -798,7 +820,8 @@ function openResult(opened, cli) {
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
       : `2. 用 Bash 工具后台启动画布请求监听（run_in_background: true，description: "Cowart 画布请求"），命令：\n   ${command}\n   它一直等着、不耗 token，画布上真来了请求才退出，退出的通知会叫醒你（通知里只有输出文件路径：先 Read 它，照里面那行用 AskUserQuestion 问用户）；处理完再这样启动一次接下一条。它连着就表示这个会话在线，你负责的页一直归你。别用 Monitor 跑它：Monitor 最多 30 分钟，到点就会叫醒会话。`,
     `画布里点 AI 按钮时就是这样叫醒你的：「Cowart 画布请求 #N」→ 先问用户，用户选了要做再 ${cli} request <N> 看详情照做。监听没在跑时请求在服务里排队，用户说「看画布」时用 ${cli} requests 取。`,
-    `有哪些页：${cli} pages；你这页上有什么：${cli} page。不带 --page 的 put 放进你负责的页，没负责页时放进你的画布面板正看着的页。`
+    `有哪些页：${cli} pages；你这页上有什么：${cli} page。不带 --page 的 put 放进你负责的页，没负责页时放进你的画布面板正看着的页。`,
+    ...[newPageFolderHint(opened, `${cli} folder <文件夹> "${opened.page}"`)].filter(Boolean)
   ]
   return textResult(lines.join('\n'), { ...opened, listenCommand: command })
 }
@@ -808,7 +831,8 @@ function takeResult(opened, cli) {
   const lines = [
     `${dutyLine(opened)}。`,
     opened.paneOpen ? '你的画布面板会自己跳到这一页。' : `这个会话还没开画布面板：要看就 ${cli} open 拿网址。`,
-    opened.listenerConnected ? '' : `画布请求监听没在跑：用 Bash 工具后台运行 ${cli} listen（run_in_background: true）。`
+    opened.listenerConnected ? '' : `画布请求监听没在跑：用 Bash 工具后台运行 ${cli} listen（run_in_background: true）。`,
+    newPageFolderHint(opened, `${cli} folder <文件夹> "${opened.page}"`)
   ].filter(Boolean)
   return textResult(lines.join('\n'), { ...opened, listenCommand: `${cli} listen` })
 }
@@ -827,18 +851,37 @@ function requestDetails(request, cli) {
   return textResult(text, { ...request, hostNotes: notes })
 }
 
-function pagesResult({ pages, myPageId, shownPageId }, cli) {
-  const nameOf = (id) => pages.find((page) => page.id === id)?.name
+// pages [文件夹]: the whole canvas, or one folder with its subfolders (50 pages on 2026-10-22,
+// most of them none of the session's business).
+function pagesResult({ pages: all, myPageId, shownPageId }, cli, wantedFolder = null) {
+  const nameOf = (id) => all.find((page) => page.id === id)?.name
+  const folder = wantedFolder === null ? '' : normalizeFolder(wantedFolder)
+  const pages = folder ? all.filter((page) => page.folder === folder || page.folder.startsWith(`${folder}/`)) : all
+  if (folder && pages.length === 0) {
+    const folders = [...new Set(all.map((page) => page.folder.split('/')[0]).filter(Boolean))]
+    throw new UsageError(`没有叫「${folder}」的文件夹${folders.length > 0 ? `（顶层的文件夹：${folders.join('、')}）` : '（画布上还没有文件夹）'}；看一页上有什么用 ${cli} page <页名>。`)
+  }
   const head = [
-    `这张画布有 ${pages.length} 页`,
+    folder ? `文件夹「${folder}」里有 ${pages.length} 页（整张画布 ${all.length} 页）` : `这张画布有 ${pages.length} 页`,
     myPageId ? `你负责「${nameOf(myPageId)}」` : '你没负责任何页',
     ...(shownPageId && shownPageId !== myPageId ? [`你的画布面板正看着「${nameOf(shownPageId)}」`] : [])
   ].join('，')
-  const lines = pages.map((page) => {
+  // Folders as the page menu shows them: «数码宝贝/（25 页）», their pages indented under them.
+  const lines = pageTreeLines(pages, (page) => {
     const who = page.mine ? '你负责' : page.holder ? `${page.holder}负责` : '没人负责'
-    return `- 「${page.name}」 ${page.id} · ${page.shapes} 个图形 · ${who}${page.shown ? ' · 面板正看着' : ''}`
+    return `「${page.name}」 ${page.id} · ${page.shapes} 个图形 · ${who}${page.shown ? ' · 面板正看着' : ''}`
   })
-  return textResult([`${head}：`, ...lines, '', `看一页上有什么：${cli} page <页名>（不给页名就是你负责的页）。`].join('\n'), { pages, myPageId, shownPageId })
+  const foldered = all.some((page) => page.folder)
+  return textResult(
+    [
+      `${head}：`,
+      ...lines,
+      '',
+      `看一页上有什么：${cli} page <页名>（不给页名就是你负责的页）。`,
+      `${foldered && !folder ? `页多时 ${cli} pages <文件夹> 只列一个文件夹；` : ''}用户要你给页归类时：${cli} folder <文件夹> <页名>…`
+    ].join('\n'),
+    { pages, myPageId, shownPageId }
+  )
 }
 
 const detailsCommand = (cli) => (id) => `运行 ${cli} request ${id}`
@@ -977,7 +1020,7 @@ export function formatResult(result, { command, out }) {
 
 function usage(cli) {
   const entry = (name, about) => `  ${name}\n      ${about}`
-  const groups = ['会话', '看', '放', '整理', '请求', '其它']
+  const groups = ['会话', '页', '看', '放', '整理', '请求', '其它']
   const lines = [
     `cowart ${VERSION}：Claude Code 桌面版里的 Cowart 画布（用 Bash 工具运行；做画布上的事之前先加载 cowart skill）。`,
     `用法：${cli} <命令> [参数]`
@@ -1117,8 +1160,8 @@ export async function main(argv = process.argv.slice(2)) {
     if (name === 'pages' || name === 'page') {
       const { flags, positionals, out } = tokenize(rest, () => true)
       if (flags.length > 0) throw new UsageError(`${name} 没有参数${flags[0].name === 'help' ? '' : `（不认识 --${flags[0].name}）`}：${commandNamed(name).usage}`)
-      if (name === 'pages' && positionals.length > 0) throw new UsageError(`pages 不带参数；看一页用 ${cli} page <页名>。`)
-      const result = name === 'pages' ? pagesResult(await client.call('pages'), cli) : await pageSummary(client, positionals.join(' ') || null, cli)
+      const wanted = positionals.join(' ') || null
+      const result = name === 'pages' ? pagesResult(await client.call('pages'), cli, wanted) : await pageSummary(client, wanted, cli)
       return exit(result.isError ? 1 : 0, formatResult(result, { command: commandNamed(name), out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
     }
 

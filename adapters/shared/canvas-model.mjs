@@ -379,6 +379,8 @@ export function summarizeCanvas({ snapshot, viewState, canvasDir, storage, inval
     return {
       id: page.id,
       name: page.name,
+      // Its folder in the page menu (the service's page-folders.mjs).
+      ...(typeof page.meta?.cowartFolder === 'string' && page.meta.cowartFolder ? { folder: page.meta.cowartFolder } : {}),
       shapeCount: shapes.length,
       ...(broken.length > 0 ? { invalid: broken } : {}),
       shapes: shapes.slice(0, MAX_SHAPES_PER_PAGE).map((shape) => {
@@ -440,7 +442,7 @@ export function formatCanvasSummary(summary, { onePage = false } = {}) {
   ]
   if (summary.pages.length === 0) lines.push('画布还是空的。')
   for (const page of summary.pages) {
-    lines.push('', `页面「${page.name}」(${page.id})：${page.shapeCount} 个图形`)
+    lines.push('', `页面「${page.name}」(${page.id})：${page.shapeCount} 个图形${page.folder ? `，在文件夹「${page.folder}」里` : ''}`)
     for (const shape of page.shapes) {
       let line = `- ${shape.id} ${shape.type} (${shape.x}, ${shape.y}) ${shape.w}×${shape.h}`
       if (shape.name) line += ` 标题「${shape.name.replace(/\s+/g, ' ')}」`

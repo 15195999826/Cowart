@@ -51,7 +51,12 @@ const WIDGET_MARKERS = [
   // registry, and the fact that its context menu is registered under this name.
   'clearOpenMenus',
   'deleteOpenMenu',
-  'context menu'
+  'context menu',
+  // The page menu button opens the folder tree instead of tldraw's list (page-tree.js), which
+  // does what that list did through the editor's page API.
+  'tlui-page-menu__trigger',
+  'duplicatePage',
+  'renamePage'
 ]
 
 // Records upstream's server writes that the canvas service reads: an image upstream put into

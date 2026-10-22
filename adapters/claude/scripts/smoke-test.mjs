@@ -222,7 +222,7 @@ try {
     assert.ok(html.includes('window.__COWART_CLAUDE__='))
     assert.ok(html.includes(`"session":"${SESSION}"`))
     assert.ok(html.includes('window.__cowartHostConfig='))
-    for (const script of ['kit', 'canvas-chrome', 'video-playback', 'ai-video', 'ai-image', 'web-reference']) {
+    for (const script of ['kit', 'canvas-chrome', 'page-tree', 'video-playback', 'ai-video', 'ai-image', 'web-reference']) {
       assert.ok(html.includes(`id="cowartShared-${script}"`), `missing ${script}`)
     }
     assert.ok(!html.includes('"codex-imagegen"'), 'Codex-only model offered on Claude')

@@ -131,7 +131,7 @@ try {
     assert.ok(html.includes('id="cowartClaudeBridge"'), 'host bridge missing')
     assert.ok(html.includes('"hostLabel":"ZCode"'), 'page config does not name the host')
     assert.ok(html.includes('"hostName":"ZCode"'), 'shared kit does not name the host')
-    for (const script of ['kit', 'canvas-chrome', 'video-playback', 'ai-video', 'ai-image', 'web-reference']) {
+    for (const script of ['kit', 'canvas-chrome', 'page-tree', 'video-playback', 'ai-video', 'ai-image', 'web-reference']) {
       assert.ok(html.includes(`id="cowartShared-${script}"`), `missing ${script}`)
     }
   })

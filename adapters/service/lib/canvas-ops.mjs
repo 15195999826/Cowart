@@ -19,9 +19,10 @@ import { structuredOrThrow } from '../../shared/upstream.mjs'
 import { planVideoInHolder, planVideoPlacement, probeVideoFile, videoRecords } from '../../shared/video.mjs'
 import { CAPTURE_WEB_TOOL, captureWebReference } from '../../shared/web-capture.mjs'
 import { DELETE_TOOL, EDIT_TOOLS, UPDATE_TOOL, planCanvasEdit, referencedShapeIds } from './canvas-edit.mjs'
-import { applyDelta, readDelta, stableStringify } from './delta-merge.mjs'
+import { applyDelta, changedPages, pageOfRecord, readDelta, stableStringify } from './delta-merge.mjs'
 import { COPY_REFERENCE_TOOL, copyCanvasReference } from './copy-reference.mjs'
 import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
+import { describeMoves, folderOf, normalizeFolder, planPageMoves, withFolder } from './page-folders.mjs'
 import { readMediaAsset } from './media-assets.mjs'
 
 // A canvas nobody has opened yet gets its first page from this (the schema of the bundled
@@ -244,9 +245,9 @@ export class CanvasOps extends EventEmitter {
     return state.snapshot ?? null
   }
 
-  // The canvas's pages in their tldraw order: [{ id, name }].
+  // The canvas's pages in their tldraw order: [{ id, name, folder }] (folder "" at the top level).
   async canvasPages(args) {
-    return pageRecords(await this.#storedSnapshot(args)).map((page) => ({ id: page.id, name: page.name }))
+    return pageRecords(await this.#storedSnapshot(args)).map((page) => ({ id: page.id, name: page.name, folder: folderOf(page) }))
   }
 
   // A record of the stored canvas (null when it is not there).
@@ -256,37 +257,79 @@ export class CanvasOps extends EventEmitter {
 
   // The page of that name, created after the last page when the canvas has none (a canvas
   // nobody opened yet starts from the empty template). Open pages pick it up on their next
-  // sync. Returns { id, name, created }.
-  async ensurePage(args, name) {
+  // sync. With folder (page-folders.mjs), the page goes into that folder, a page already there
+  // as well. Returns { id, name, folder, created, movedFrom }.
+  async ensurePage(args, name, { folder } = {}) {
     const wanted = nonEmpty(name)
     if (!wanted) throw new Error('页名不能为空。')
+    const wantedFolder = folder === undefined || folder === null ? null : normalizeFolder(folder)
     const { projectDir, canvasDir } = resolveCowartPaths(args)
     return this.#guard.withLock(writeLockKey('save_cowart_canvas_state', canvasDir), async () => {
       const stored = await this.#storedSnapshot({ projectDir, canvasDir })
       const snapshot = stored?.store ? stored : JSON.parse(await readFile(EMPTY_CANVAS_TEMPLATE, 'utf8'))
       const pages = pageRecords(snapshot)
       const existing = pages.find((page) => page.name === wanted)
-      if (existing) return { id: existing.id, name: existing.name, created: false }
-      const page = {
-        id: `page:${randomId()}`,
-        typeName: 'page',
-        name: wanted,
-        index: generateKeyBetween(pages.at(-1)?.index ?? null, null),
-        meta: {}
+      const save = async (store, what) => {
+        const saved = structuredOrThrow(
+          await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store } }),
+          'save_cowart_canvas_state'
+        )
+        if (!saved.ok) throw new Error(saved.message || what)
+        return saved
       }
+      if (existing) {
+        const was = folderOf(existing)
+        if (wantedFolder === null || wantedFolder === was) return { id: existing.id, name: existing.name, folder: was, created: false, movedFrom: null }
+        await save({ ...snapshot.store, [existing.id]: withFolder(existing, wantedFolder) }, `没能把「${wanted}」放进文件夹「${wantedFolder}」。`)
+        return { id: existing.id, name: existing.name, folder: wantedFolder, created: false, movedFrom: was }
+      }
+      const page = withFolder(
+        {
+          id: `page:${randomId()}`,
+          typeName: 'page',
+          name: wanted,
+          index: generateKeyBetween(pages.at(-1)?.index ?? null, null),
+          meta: {}
+        },
+        wantedFolder ?? ''
+      )
       // A fresh canvas keeps only the page asked for, not the template's «Page 1».
       const store = stored?.store
         ? { ...snapshot.store }
         : Object.fromEntries(Object.entries(snapshot.store).filter(([, record]) => record?.typeName !== 'page'))
       store[page.id] = page
-      const saved = structuredOrThrow(
-        await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store } }),
-        'save_cowart_canvas_state'
-      )
-      if (!saved.ok) throw new Error(saved.message || `建不了「${wanted}」这一页。`)
+      const saved = await save(store, `建不了「${wanted}」这一页。`)
       if ((saved.skippedRecords ?? []).some((record) => record.id === page.id)) throw new Error(`「${wanted}」这一页没通过 tldraw 校验。`)
       this.#guard.trackInsertedRecords(canvasDir, [page])
-      return { id: page.id, name: wanted, created: true }
+      this.#pagesChanged(canvasDir, [page.id])
+      return { id: page.id, name: wanted, folder: wantedFolder ?? '', created: true, movedFrom: null }
+    })
+  }
+
+  // Pages a write changed, for the page menu's 最近改过 order (page-activity.mjs).
+  #pagesChanged(canvasDir, pageIds) {
+    const ids = [...new Set(pageIds.filter(Boolean))]
+    if (ids.length > 0) this.emit('pages-changed', { canvasDir, pageIds: ids })
+  }
+
+  // move_cowart_pages: pages into a folder, or a folder with what is in it to another path
+  // (page-folders.mjs). Only the page records change; open pages pick them up on their next sync.
+  async movePages(args) {
+    const { projectDir, canvasDir } = resolveCowartPaths(args)
+    return this.#guard.withLock(writeLockKey('save_cowart_canvas_state', canvasDir), async () => {
+      const snapshot = await this.#storedSnapshot({ projectDir, canvasDir })
+      if (!snapshot?.store) throw new Error('画布上还没有页。')
+      const plan = planPageMoves(pageRecords(snapshot), args)
+      if (plan.changed.length > 0) {
+        const store = { ...snapshot.store, ...Object.fromEntries(plan.changed.map((page) => [page.id, page])) }
+        const saved = structuredOrThrow(
+          await this.#callWithRetry('save_cowart_canvas_state', { projectDir, canvasDir, snapshot: { ...snapshot, store } }),
+          'save_cowart_canvas_state'
+        )
+        if (!saved.ok) throw new Error(saved.message || '没能挪这些页。')
+      }
+      const { changed: _records, ...result } = plan
+      return textResult(describeMoves(plan), result)
     })
   }
 
@@ -437,12 +480,14 @@ export class CanvasOps extends EventEmitter {
       let snapshot = saveArgs.snapshot
       let deletedPages = []
       let merged = false
+      let touched = []
       if (delta && snapshot?.store) {
         const disk = await this.#storedSnapshot({ projectDir, canvasDir })
         if (disk?.store && stableStringify(disk.schema) === stableStringify(snapshot.schema)) {
           const applied = applyDelta({ disk, incoming: snapshot, delta })
           snapshot = applied.snapshot
           deletedPages = applied.deletedPages
+          touched = changedPages({ disk, merged: applied.snapshot, delta })
           merged = true
         }
       }
@@ -451,8 +496,9 @@ export class CanvasOps extends EventEmitter {
         this.#log(`stale page save: kept ${guarded.restored.length} inserted record(s), dropped ${guarded.dropped.length} replaced holder(s)`)
       }
       const result = await this.#callWithRetry('save_cowart_canvas_state', { ...saveArgs, projectDir, canvasDir, snapshot: guarded.snapshot })
-      if (deletedPages.length > 0 && !result?.isError && result?.structuredContent?.ok !== false) {
-        this.emit('pages-deleted', { canvasDir, pageIds: deletedPages })
+      if (!result?.isError && result?.structuredContent?.ok !== false) {
+        if (deletedPages.length > 0) this.emit('pages-deleted', { canvasDir, pageIds: deletedPages })
+        this.#pagesChanged(canvasDir, touched)
       }
       return result
     })
@@ -484,10 +530,16 @@ export class CanvasOps extends EventEmitter {
       if (name === 'insert_cowart_image') result = await this.#fitInsertedImage(upstreamArgs, result)
       result = await this.#placeInserted(upstreamArgs, result, place)
       const after = (await this.#storedSnapshot(args))?.store ?? {}
-      this.#guard.trackInsertedRecords(canvasDir, Object.values(after).filter((record) => !before[record.id]))
+      const inserted = Object.values(after).filter((record) => !before[record.id])
+      this.#guard.trackInsertedRecords(canvasDir, inserted)
+      const removed = []
       for (const [id, record] of Object.entries(before)) {
-        if (record?.typeName === 'shape' && !after[id]) this.#guard.trackRemovedShape(canvasDir, id)
+        if (record?.typeName === 'shape' && !after[id]) {
+          this.#guard.trackRemovedShape(canvasDir, id)
+          removed.push(record)
+        }
       }
+      this.#pagesChanged(canvasDir, [...inserted.map((record) => pageOfRecord(after, record)), ...removed.map((record) => pageOfRecord(before, record))])
       return result
     })
   }
@@ -647,6 +699,7 @@ export class CanvasOps extends EventEmitter {
       if (skipped.length > 0) this.#log(`${name}: saved without ${skipped.map((record) => record.id).join(', ')}`)
       this.#guard.trackInsertedRecords(canvasDir, plan.created.map((id) => plan.store[id]))
       for (const id of plan.removed) if (snapshot.store[id]?.typeName === 'shape') this.#guard.trackRemovedShape(canvasDir, id)
+      this.#pagesChanged(canvasDir, [pageId])
 
       let text = plan.text
       const files = (plan.result.deleted ?? []).map((entry) => (entry.assetSrc ? localPathForAssetSrc(canvasDir, entry.assetSrc) : null)).filter(Boolean)
@@ -708,7 +761,7 @@ export class CanvasOps extends EventEmitter {
   // Every page in order, with how many shapes it has (no validation, no shape details).
   async pageList(args) {
     const snapshot = await this.#storedSnapshot(args)
-    return pageRecords(snapshot).map((page) => ({ id: page.id, name: page.name, shapes: shapesOnPage(snapshot, page.id).length }))
+    return pageRecords(snapshot).map((page) => ({ id: page.id, name: page.name, folder: folderOf(page), shapes: shapesOnPage(snapshot, page.id).length }))
   }
 
   async insertVideo(args) {
@@ -791,6 +844,7 @@ export class CanvasOps extends EventEmitter {
       }
       this.#guard.trackInsertedVideo(canvasDir, { shape, asset })
       if (removeHolder) this.#guard.trackRemovedShape(canvasDir, holderShapeId)
+      this.#pagesChanged(canvasDir, [plan.pageId])
 
       return textResult(
         `已插入视频 ${shape.id}：${plan.w}×${plan.h}，位于 ${plan.pageId} 的 (${plan.x}, ${plan.y})${removeHolder ? `，替换了 AI 视频框 ${holderShapeId}` : ''}；文件 ${filePath}`,

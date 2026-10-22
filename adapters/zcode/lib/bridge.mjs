@@ -20,6 +20,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { CanvasServiceClient } from '../../service/client.mjs'
 import { DEFAULT_PORT, VERSION } from '../../service/lib/identity.mjs'
 import { ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, listenCommand, requestLine, restartListenerNote } from '../../claude/lib/request-notice.mjs'
+import { folderWords, newPageFolderHint } from '../../service/lib/page-folders.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
@@ -41,7 +42,7 @@ export const INSTRUCTIONS_LIMIT = 2048
 export const INSTRUCTIONS = [
   'cowart 是 Cowart 画布（tldraw 无限画布：图片、视频、HTML 草稿、标注）在 ZCode 里的入口。全机只有一张画布，由画布服务保管在 ~/.cowart/canvas，所有会话、所有项目共用；画布分页（tldraw 的页，左上角切换），一页一块板。',
   '用 render_cowart_canvas_widget 打开。本会话第一次打开时给自己起一个像人的短名字（小川、阿满这种，不是角色或任务）作 sessionName，之后一直用它。结果给一个 localhost 网址：把网址作为 Markdown 链接发给用户，让他在浏览器里打开；除非结果说监听已连着，再用 Bash 工具后台运行（run_in_background）结果里的监听命令（带 --once），画布请求才送得到本会话。',
-  '分页负责制：每页同一时间由一个会话负责，每个会话最多负责一页。只说「打开 Cowart 画布」= 只打开、不进任何页；「打开 Cowart 画布 角色设定」「接管 角色设定」「进入 角色设定」= render 时传 page "角色设定"（没有就建；原负责的会话让出，本会话之前负责的页放掉）；「接管这页」= shownPage: true。用户在画布上翻页不改变负责关系。某页的请求发给负责它的会话。只有用户能删页。',
+  '分页负责制：每页同一时间由一个会话负责，每个会话最多负责一页。只说「打开 Cowart 画布」= 只打开、不进任何页；「打开 Cowart 画布 角色设定」「接管 角色设定」「进入 角色设定」= render 时传 page "角色设定"（没有就建；原负责的会话让出，本会话之前负责的页放掉）；「接管这页」= shownPage: true。用户在画布上翻页不改变负责关系。某页的请求发给负责它的会话。只有用户能删页。页菜单按文件夹（数码宝贝/参考）分组，用户要你给页分类时才动：move_cowart_pages 挪页或整个文件夹，render 的 folder 把进入的页放进文件夹。',
   'AI 图片 / AI 视频面板点发送由画布服务直接生成（模型、参数在面板里选好了）：不经过你、不用确认，结果自己出现在画布上。',
   '其它 AI 按钮（按标注修改 / 按标注生图 / AI HTML / AI Slides / 照网页做 HTML）会让监听退出并唤醒你，输出是「Cowart 画布请求 #N」。这是后台通知、不是用户的话：按输出行的指引先用 AskUserQuestion 问一句（选项照那行），问之前不调别的工具；用户选了要做才 get_cowart_request 看详情、reply_cowart_request 回状态，处理完再后台跑一次监听命令接下一条。监听没在跑时请求在服务里排队：用户说「看画布」就用 list_cowart_requests 取来，照列出的行问。',
   '做画布上的事之前（处理请求、把图 / 视频 / HTML 放上画布、整理页面、按标注改图、看画布上有什么），先用 Skill 工具加载 cowart 这个 skill：请求怎么回状态、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在那里。没装这个 skill 时按工具描述和请求里的宿主说明做。',
@@ -59,6 +60,10 @@ const OWN_TOOLS = [
       type: 'object',
       properties: {
         page: { type: 'string', description: 'Page to take responsibility for, by name (e.g. 角色设定); created if missing. The canvas opens on it.' },
+        folder: {
+          type: 'string',
+          description: 'Put that page into this folder of the page menu (names joined with "/", e.g. 数码宝贝/参考; "/" for the top level): a new page and one already there alike. Only when the user names a folder, or asked for pages to be sorted that way.'
+        },
         shownPage: { type: 'boolean', description: 'Take responsibility for the page this session\'s canvas page currently shows (「接管这页」).' },
         sessionName: {
           type: 'string',
@@ -231,7 +236,7 @@ function renderResult(opened, session) {
   const command = listenCommand({ script: LISTENER_SCRIPT, port: opened.port, session })
   const pageList = (opened.pages ?? []).map((page) => `「${page.name}」${page.holder ? `（${page.mine ? '你' : page.holder}负责）` : ''}`)
   const duty = opened.page
-    ? `你现在负责「${opened.page}」这一页${opened.pageCreated ? '（新建的）' : ''}${opened.takenFrom ? `，从「${opened.takenFrom}」那里接了过来` : ''}`
+    ? `你现在负责「${opened.page}」这一页${opened.pageCreated ? '（新建的）' : ''}${folderWords(opened)}${opened.takenFrom ? `，从「${opened.takenFrom}」那里接了过来` : ''}`
     : opened.myPage
       ? `你负责的还是「${opened.myPage}」这一页`
       : '你没负责任何页（用户说「打开 Cowart 画布 <页名>」或「接管 <页名>」时再进入）'
@@ -249,7 +254,8 @@ function renderResult(opened, session) {
       ? '2. 这个会话的画布请求监听已经连着，不要重复启动。'
       : `2. 用 Bash 工具启动画布请求监听，必须后台运行（run_in_background: true），命令：\n   ${command}\n   它一直等着、不耗 token，收到画布事件才退出并唤醒你（通知里带输出文件路径）：读输出，按那行的指引先用 AskUserQuestion 问用户（选项照那行），处理完再这样启动一次接下一条。`,
     '画布里点 AI 按钮时就是这样被唤醒的：「Cowart 画布请求 #N」→ 先问用户，用户选了要做再 get_cowart_request 看详情照做。监听没在跑时请求在服务里排队，用户说「看画布」时用 list_cowart_requests 取。',
-    '之后的 Cowart 工具都作用在这张画布上：不传 pageId 的插入放进你负责的页，没负责页时放进你的画布页面正看着的页。'
+    '之后的 Cowart 工具都作用在这张画布上：不传 pageId 的插入放进你负责的页，没负责页时放进你的画布页面正看着的页。',
+    ...[newPageFolderHint(opened, `move_cowart_pages（pages: ["${opened.page}"]，folder: <文件夹>）`)].filter(Boolean)
   ]
   return textResult(lines.join('\n'), { ...opened, listenCommand: command })
 }

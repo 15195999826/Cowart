@@ -20,6 +20,10 @@ export const OWN_TOOLS = [
       type: 'object',
       properties: {
         page: { type: 'string', description: 'Page to take responsibility for, by name (e.g. 角色设定); created if missing. The canvas pane opens on it.' },
+        folder: {
+          type: 'string',
+          description: 'Put that page into this folder of the page menu (names joined with "/", e.g. 数码宝贝/参考; "/" for the top level): a new page and one already there alike. Only when the user names a folder, or asked for pages to be sorted that way.'
+        },
         shownPage: { type: 'boolean', description: 'Take responsibility for the page this session\'s canvas pane currently shows (「接管这页」).' },
         sessionName: {
           type: 'string',

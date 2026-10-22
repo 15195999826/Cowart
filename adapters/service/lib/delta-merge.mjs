@@ -5,6 +5,8 @@
 // record it has not seen. Upstream's own saves replace the whole canvas (and delete every
 // page missing from it); they are still used when a page sends no delta.
 
+import { pageIdOfShape } from '../../shared/canvas-model.mjs'
+
 // JSON with object keys in a fixed order, so two copies of a record compare equal no
 // matter which host serialized them.
 export function stableStringify(value) {
@@ -16,6 +18,37 @@ export function stableStringify(value) {
       .join(',')}}`
   }
   return JSON.stringify(value) ?? 'null'
+}
+
+// The page a record is on: a page itself, a shape, a binding (by the shape it starts from).
+export function pageOfRecord(store, record) {
+  if (record?.typeName === 'page') return record.id
+  if (record?.typeName === 'shape') return pageIdOfShape(store, record)
+  if (record?.typeName === 'binding') return store[record.fromId] ? pageIdOfShape(store, store[record.fromId]) : null
+  return null
+}
+
+// The pages a delta really changed (page-activity.mjs): shapes and bindings that differ from
+// disk or went away, and pages renamed or new. Sorting a page into a folder is no change of it.
+export function changedPages({ disk, merged, delta }) {
+  const pages = new Set()
+  for (const record of delta.put) {
+    const before = disk.store[record.id]
+    if (record.typeName === 'page') {
+      if (!before || before.name !== record.name) pages.add(record.id)
+      continue
+    }
+    if (record.typeName !== 'shape' && record.typeName !== 'binding') continue
+    if (before && stableStringify(before) === stableStringify(record)) continue
+    pages.add(pageOfRecord(merged.store, record) ?? pageOfRecord(disk.store, before))
+  }
+  for (const id of delta.remove) {
+    const before = disk.store[id]
+    if (before?.typeName === 'shape' || before?.typeName === 'binding') pages.add(pageOfRecord(disk.store, before))
+  }
+  pages.delete(null)
+  for (const id of [...pages]) if (!merged.store[id]) pages.delete(id)
+  return [...pages]
 }
 
 export function readDelta(value) {

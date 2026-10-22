@@ -22,11 +22,14 @@ adapters/
                 画布直接生成（generation-jobs.mjs；猛兽命令行 beast-cli.mjs，写提示词 prompt-writer.mjs）、旧画布搬页（canvas-import.mjs）、
                 用户反馈（feedback.mjs：send_cowart_feedback 工具和本机反馈目录）、右键「在资源管理器中显示」（reveal-file.mjs）、
                 右键「拷贝索引」（copy-reference.mjs：引用文本和系统剪贴板）、
-                画布整理工具（canvas-edit.mjs：放文字、分组框、移动 / 改尺寸 / 删除，写前按 tldraw 校验）
+                画布整理工具（canvas-edit.mjs：放文字、分组框、移动 / 改尺寸 / 删除，写前按 tldraw 校验）、
+                页的文件夹（page-folders.mjs：move_cowart_pages 工具、页记录上的 meta.cowartFolder、给模型看的文件夹树；
+                page-activity.mjs：每页最后改动的时间，给页菜单的「最近改过」）
     test/       服务层的检查：widget 传输、反馈（feedback-test.mjs：三个宿主的桥各记一条，再用收件箱处理）、
                 手动查看 / 停止（stop-test.mjs：两个联调服务各占一个测试端口、各用一张画布，给了端口的 --stop 只停那一个）、
                 画布整理（canvas-edit-test.mjs：三个宿主都列出整理工具，放文字 / 建框 / 移动 / 删除、别人负责的页被拒、无效记录）、
                 右键菜单（context-menu-test.mjs：三个宿主都拷得到索引，截帧存进页素材、写的卡片过 tldraw 校验）、
+                页的文件夹（page-folders-test.mjs：三个宿主都列出工具、能带 folder 进页，folder 命令挪页 / 挪整个文件夹、pages 按文件夹缩进、哪些改动记进页的改动时间）、
                 网址（address-test.mjs：门房把 cowart.localhost 转到服务时网址不带端口，没有门房、门房口是别的程序时带服务端口，别的主机名被拒）
     client.mjs  给各宿主的桥和 Claude 的 cowart 命令用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接（命令不连，见「会话」）/ 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
@@ -35,6 +38,7 @@ adapters/
                 网页截图 web-capture.mjs（puppeteer-core 驱动本机 Chrome / Edge）
     web/        各端共用的画布页面脚本：service-bridge.js（差异保存、页同步、负责状态、生成与队列）、
                 kit.js（卡片行为、面板骨架、发送流程）、canvas-chrome.js（菜单精简、右键「截取当前帧」「拷贝索引」「在资源管理器中显示」、样式面板按需显示、AI HTML / Slides 框放空地）、
+                page-tree.js（左上角页菜单换成文件夹树 + 搜索，见「页的文件夹」）、
                 AI 视频、接管后的 AI 图片、网页参考、视频播放
   claude/       Claude Code 适配（说明见 adapters/claude/README.md）：没有 MCP，skill + cowart 命令（见「Claude Code 改走 skill + 命令」）
     bin/        cowart 命令 cowart.mjs（会话用 Bash 跑，一条命令一个进程；`listen` 是后台跑的画布请求监听，连着 = 会话在线）、
@@ -73,7 +77,7 @@ FORK.md         本文件
 
 - 只有 `main` 一个分支，直接在上面开发、提交，不开 `feat/*` 之类的开发分支。Codex 和 Claude Code 都从这里装；Codex 从 GitHub marketplace 安装插件并**自动跟随远程 `main`**，所以没验证过的提交先留在本地。开发完成并通过本地验证后直接推送，无需再次确认；推送前先 `git fetch origin`、`git rebase origin/main`，rebase 若改变代码或产物，补做受影响的验证再推送。
 - `upstream` remote 指向原作者仓库。同步：`git fetch upstream && git merge upstream/main`。`mcp/generated/` 下的发布产物有冲突时不手工合并，重新 `npm run build:artifacts` 生成。
-- 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成、反馈、整理、右键菜单、手动停服务、网址测试；Claude 会话一律跑 cowart 命令），都过了再推送。
+- 同步上游后先跑 `npm --prefix adapters run check:contract`（宿主桥接口、工具名和入参是否还在，补丁点有没有丢）和 `npm --prefix adapters run test:claude`（端到端冒烟、多会话、直接生成、反馈、整理、右键菜单、页的文件夹、手动停服务、网址测试；Claude 会话一律跑 cowart 命令），都过了再推送。
 - 有补丁点以后，改了 `src/` 就要在仓库根目录 `npm ci && npm run build:artifacts` 重新生成 `mcp/generated/`，并和源码一起提交；`npm run check:artifacts` 能核对两者是否一致。
 - 改动适配层后运行 `npm --prefix adapters run build:artifacts` 和 `check:artifacts`，提交 `adapters/generated/`；`npm --prefix adapters run probe:cold` 用临时目录中的发布文件验证不依赖 `node_modules`、既有服务和真实用户画布。原生 Codex widget 的视频、外链和完整交互仍需宿主验收，协议测试不能替代。
 - **Git marketplace 发布也要更新外层插件版本**：只有 `adapters/package.json` 版本或 `main` 提交变了，已安装的 Codex 仍可能复用 `.codex/plugins/cache/<marketplace>/cowart/<插件版本>`。发布先跑 `node adapters/scripts/bump-release.mjs [<适配层版本>]`（不给版本就把适配层的补丁号加一，`--dry-run` 只列要改的、不写）：给 `.codex-plugin/plugin.json` 换一个新的 `+codex.<UTC YYYYMMDDHHMMSS>` 后缀并同步根 `package.json`、`package-lock.json` 和 `plugin.json`，同时升 `adapters/package.json`、`adapters/package-lock.json` 的版本（版本大的服务才换得掉正在跑的旧服务，见「画布服务」的版本替换）；每处版本按出现次数核对，有一处对不上就一个文件都不写；只换版本串，换行照 git 里的原样（都是 LF，只有上游提交的 `.codex-plugin/plugin.json` 是 CRLF），工作区换行跟 git 不一致（CRLF 检出）时拒绝。再先根目录、后适配层构建两套产物（适配层的发布清单记着 `mcp/generated` 的哈希，那里也带插件版本），检查并推送。（原先用 plugin-creator 的 `update_plugin_cachebuster.py`，2026-10-08 Codex 更新后本机已没有这个 skill。）此后通过 `codex plugin marketplace upgrade cowart-github` / `codex plugin add cowart@cowart-github` 更新安装时，必须核对实际缓存中的适配层版本、build 与启动入口，不能只看 marketplace 指向 `main`：`node adapters/scripts/verify-release.mjs <缓存目录>` 核这些和发布清单的哈希，再用临时的令牌目录和画布起一次它的桥。
@@ -205,6 +209,17 @@ lomo 上一个 ZCode 会话要「给每张图编号、分组」，模型这边�
 - **拷贝索引**（`service/lib/copy-reference.mjs`）：选中任何图形都能用。画布上每个图形本来就有 tldraw 的 id（`shape:…`），画布摘要给模型看的就是它，所以不另起编号。页面只报 shape id（报之前先存一笔，刚画的东西才在盘上），服务按摘要的口径拼出引用——页名、shape id、这是什么（网页卡片、视频截帧、标注、注释、各种占位框按 meta 认，其余按 tldraw 类型给中文名）、素材名和**素材在本机的路径**——再写进系统剪贴板（Windows 用 PowerShell 5.1 的 `Set-Clipboard`，文本经环境变量传；Mac `pbcopy`；Linux 先 `wl-copy` 后 `xclip`）。剪贴板由服务写而不是页面写：Codex 的 widget 在 iframe 里不一定拿得到剪贴板权限。粘给 AI 之后，路径可以直接 Read 看图，shape id 可以直接调整理工具。单选一行，多选时首行写页名和个数、之后一行一个。三份 skill 都写了用户粘来这段时怎么用。`COWART_CLIPBOARD_DRY_RUN=1` 只拼文本、不动剪贴板（检查用）。
 - **顺带修掉的 tldraw bug**：菜单开着的时候直接拖卡片，之后右键再也打不开菜单（要刷新页面）。tldraw 5.1 把右键菜单渲染成 `{isOpen && <Portal>}`，isOpen 读它自己的 `editor.menus`：菜单从那里被拿掉，radix 的内容就地卸载，radix 并不知道自己关了。它的 Root 是非受控的、只在值变化时通知，于是它一直以为 open，之后每次右键都把 open 设成 true（值没变），tldraw 再也收不到 `onOpenChange(true)`。左键按下正是这条路：`MenuClickCapture` 在 `flushSync` 里调 `clearOpenMenus()`，抢在这一下传到 document、radix 的 `DismissableLayer` 看见外部点击之前。tldraw 自己的右键路径特意绕开了它（源码注释：不调 clearOpenMenus，让 radix 的外部点击检测去关，两边状态才对得上），所以页面脚本让 `clearOpenMenus` 也把右键菜单留给 radix：同一下按键里 radix 自己关掉它，跟 tldraw 同步，拖动照旧。接口检查盯着 `clearOpenMenus` / `deleteOpenMenu` / `context menu` 这几个名字还在上游产物里。
 - 检查：`service/test/context-menu-test.mjs`（并进 `test:claude`，单跑 `test:menu`，端口 43386）：Claude / ZCode 页面（HTTP）和 Codex widget（桥的私有通道）拷到同一段引用；截帧存进页素材，页面写的那条 image 记录过得了 tldraw 校验（`skippedRecords` 为空）；多选按行列出；画布上没有的图形被拒。浏览器里抓帧、放卡片、Ctrl+Z 撤回在 Browser 面板手验（2026-09-18，dev-host + 临时画布）。
+
+## 页的文件夹（2026-10-22）
+
+全机一张画布，所有会话、所有项目的页都在上面（10-22 本机 50 页），tldraw 的页菜单是一长列，找页难。用户要「页分组 / 多级文件夹」，选了：页菜单换成文件夹树（不另开侧栏），**页进哪个文件夹只由 AI 管**，用户在菜单里不拖、不建文件夹。
+
+- **数据**：文件夹记在页记录自己身上，`meta.cowartFolder` 是一串文件夹名用 `/` 连起来（`数码宝贝/参考`），没有就在顶层。上游存盘按页原样存页记录（含 meta），远端同步会把页记录的改动交给开着的页面，所以三个宿主都看得到、不用别的存储。没有单独的文件夹记录：有页在里面文件夹就在，不用建也不用删。
+- **页菜单**（`shared/web/page-tree.js`，三个宿主共用）：点左上角页名的按钮不再打开 tldraw 的列表（Radix 只在 click 上开它，脚本在 window 的捕获阶段把这次 click 截下），在原位置弹出自己的菜单：顶上搜索（页名和文件夹路径都算，上下键 + 回车跳页）、文件夹可折叠（同一层文件夹在前、页在后，都按画布上的页序；展开状态记在浏览器里）、当前页高亮并自动展开所在文件夹、页上标出谁负责（`service-bridge.js` 把负责关系发 `cowart:page-holders`）、底部「新建页面」。点一页只换页、菜单不收起（用户要能一页页翻着找，10-22 第一版点了就收起被嫌），点画布、按 Esc 或再点按钮才收起；上下键 + 回车同样。tldraw 列表原有的重命名 / 复制 / 删除放在每页的「⋮」和右键里（复制的页留在原文件夹，叫「… 副本」）；拖动排序没了。菜单挂在 body 上、层级在画布浮层（AI 面板、视频控制条）之上：画布在一个 fixed 的 <main> 里，自成层叠上下文，放在 tldraw 容器里出不来，tldraw 的主题变量在打开时从容器抄过来。菜单开着时页名、文件夹被会话改了，几百毫秒内重画，当前页挪了文件夹就展开新位置。用 tldraw 的 CSS 变量，跟着亮暗主题。
+- **排序**（用户选的三种，选择记在浏览器里）：建页先后（默认，画布上的页序，跟建页先后一致）、按名称（还是树；英文、数字开头的在前按字母，中文的在后按拼音，数字按大小：参考 2 在参考 10 前面）、最近改过（铺成一列，页名下一行是文件夹，右边「3 分钟前」；没有记录的老页排在分隔线下面，按页序）。上游每次保存把所有页文件都重写一遍，文件时间看不出哪页改过，所以服务自己记（`service/lib/page-activity.mjs`，画布目录的 `.cowart-page-activity.json`，10-22 起才有）：页面保存的差异里真变了的图形、绑定，页改名、新建（`delta-merge.mjs` 的 `changedPages`），以及模型的插入、整理、插视频、建页（`canvas-ops.mjs` 发 `pages-changed`）；挪文件夹不算。时间放在 `page-state` 里（`changedAt`），一页正被改时每次自动保存都会更新，所以最多 3 秒广播一次。
+- **模型这边**：服务的 `move_cowart_pages`（跟整理工具一样经 `model-tools` 列给三个宿主）：`pages` + `folder` 把页放进文件夹，`fromFolder` + `folder` 把整个文件夹（连子文件夹）挪过去 / 改名，`folder` 是 `/` 为顶层。文件夹不算页的内容，所以别人负责的页也能挪（不经 `#pageWrite`）。`render_cowart_canvas_widget` 多了 `folder`：进的页（新建的、已有的）放进那个文件夹。新建的页落在顶层而画布上有文件夹时，打开结果列出现有文件夹，让模型在明显同一个项目 / 主题时放进去并告诉用户。画布摘要的页标题带「在文件夹「…」里」。
+- **Claude 的命令**：新的「页」组：`pages [文件夹]`（按文件夹缩进；给了文件夹只列那一个，50 页时不用整棵读）、`folder <文件夹> <页名>…` / `folder <新文件夹> --from <旧文件夹>`；`open` / `take` 带 `--folder`。页名照旧按名字找：服务建页时同名的页只有一个，不另加「文件夹/页名」的写法（会跟页名里本来的 `/` 打架）。
+- **检查**：`service/test/page-folders-test.mjs`（并进 `test:claude`，单跑 `test:folders`，端口 43389）；接口检查盯着 `tlui-page-menu__trigger`、`duplicatePage`、`renamePage`。菜单本身在 Browser 面板里手验（临时画布，10-22）：折叠、搜索 + 键盘跳页、会话改文件夹时实时重画、负责人标记、复制 / 删除 / 新建 + 起名、点页不收起、三种排序、在画布上改东西后「最近改过」几秒内把这页排到最前。
 
 ## 注意
 

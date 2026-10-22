@@ -9,7 +9,7 @@ const LINE_SEPARATOR = String.fromCharCode(0x2028)
 const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029)
 const SHARED_WEB_DIR = join(ADAPTERS_DIR, 'shared', 'web')
 // Page scripts both hosts inject after their bridge; the kit comes first.
-export const SHARED_WEB_SCRIPTS = ['kit.js', 'canvas-chrome.js', 'video-playback.js', 'ai-video.js', 'ai-image.js', 'web-reference.js']
+export const SHARED_WEB_SCRIPTS = ['kit.js', 'canvas-chrome.js', 'page-tree.js', 'video-playback.js', 'ai-video.js', 'ai-image.js', 'web-reference.js']
 
 export async function readUpstreamWidgetHtml() {
   return readFile(UPSTREAM_WIDGET_HTML, 'utf8')

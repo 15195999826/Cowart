@@ -105,6 +105,18 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 - 结果里出现「⚠ … 超出了分组框」时照提示处理（给框 `fit: true`，或给它 `frameId: "page"`），不然页面上超出的部分被框裁掉。
 - 摘要里标「⚠ … 是无效记录」的东西页面上看不到、下次保存会被丢掉，别当它在画布上；需要的话用工具重新放一份。
 
+### 4.2 给页分文件夹
+
+画布左上角的页菜单按文件夹显示（可以多级：`数码宝贝/参考`），带搜索。文件夹归你按用户的意思管：用户在菜单里不能拖页（用户选的）。用户说「页太多了，帮我分一下类」「把数码宝贝的页归到一个文件夹」「这页放进 X」时：
+
+1. `get_cowart_canvas_state` 的页列表看现在有哪些页（页名、id）。
+2. 分法拿不准时先列给用户（文件夹名、各放哪几页）确认；用户说清楚了就直接做。按项目 / 主题分，一层就够时别建多层。
+3. `move_cowart_pages { pages: [页名或 id, …], folder: "数码宝贝/参考" }`（`folder: "/"` 是顶层）。整个文件夹改名或挪位置：`move_cowart_pages { fromFolder: "旧", folder: "新" }`，子文件夹跟着走；`folder: "/"` 就是拆掉它。
+4. 用户说了新页放哪个文件夹：`render_cowart_canvas_widget` 带上 `page` 和 `folder`（已有的页带 `folder` 也会挪过去）。
+
+- 你新建的页落在顶层时，render 的结果会列出现有的文件夹：它明显属于其中一个（同一个项目、同一个主题）就用 `move_cowart_pages` 放进去，回复里说一句放在哪；拿不准就留在顶层，别为它新建文件夹。
+- 文件夹只是页的分类，不动页上的东西，别人负责的页也能挪；除了上一条，只在用户要你分类时才动。没有页的文件夹就不存在：不用建，也不用删。
+
 ## 5. 标注和注释
 
 标注是绑在卡片上的（数据层绑定，随画布保存），不是靠位置猜的。画布摘要里每条标注一行：
@@ -124,7 +136,7 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 
 | 工具 | 干什么 | 要点 |
 |---|---|---|
-| `render_cowart_canvas_widget` | 打开画布、进入 / 接管页 | `sessionName`、`page`、`shownPage`；结果带网址、监听命令、谁负责哪页 |
+| `render_cowart_canvas_widget` | 打开画布、进入 / 接管页 | `sessionName`、`page`、`shownPage`、`folder`；结果带网址、监听命令、谁负责哪页 |
 | `get_cowart_canvas_state` | 画布摘要 | 默认不带快照 |
 | `get_cowart_selection` | 本会话页面里选中的图形 | 判断 AI 图片框 / 锚点 |
 | `insert_cowart_image` | 放图片 | `imagePath`；`anchorShapeId` + `placement`（right / left / below / above），或 `x / y`，或传 AI 图片框 id 替换它；`pageId` |
@@ -134,6 +146,7 @@ Cowart 是一块 tldraw 无限画布：图片、视频、网页截图卡片、AI
 | `insert_cowart_frame` | 建分组框 | `name`、`shapeIds`（或空框的 `x / y / w / h`） |
 | `update_cowart_shapes` | 批量移动、改尺寸、改文字 / 框标题、进出分组框 | `updates`：`shapeId` + `x / y`、`dx / dy`、`w / h`、`text`、`name`、`frameId`、`fit` |
 | `delete_cowart_shapes` | 删除 | `shapeIds`；`deleteChildren` 连框里的东西一起删；页面 Ctrl+Z 撤不回 |
+| `move_cowart_pages` | 把页放进页菜单的文件夹 | `pages` + `folder`（`"/"` 顶层）；或 `fromFolder` + `folder` 挪整个文件夹，见 4.2 |
 | `get_cowart_request` / `reply_cowart_request` / `list_cowart_requests` | 画布请求的详情、状态、列表 | 状态 running / done / failed / skipped |
 | `send_cowart_feedback` | 记下用户对 Cowart 本身的意见 | 见第 7 节 |
 
