@@ -19,8 +19,36 @@
 
 ## 2. 拍板记录
 
-- 修哪些：只修 A（推荐：7 项都是小改、有测试钉住；B1 只为让上游的 `check:plugin` 过，而 fork 已不再当 Codex 插件发布、这个检查不在任何流程里，却要装根依赖重建上游产物）/ A + B / 都不动 → **待拍板**
+- 修哪些：只修 A（推荐：7 项都是小改、有测试钉住；B1 只为让上游的 `check:plugin` 过，而 fork 已不再当 Codex 插件发布、这个检查不在任何流程里，却要装根依赖重建上游产物）/ A + B / 都不动 → **拍板 A + B**（2026-10-23）
+- 怎么落地：两个追加阶段，各一个 commit、各派一个 fresh 子 agent（opus、xhigh）：TR1 = A 桶 7 项，TR2 = B1。B1 放开计划 §2 守卫①里的根 `package.json` / `package-lock.json` / `plugin.json` 和 `mcp/generated/`（只限 TR2，且只限版本相关的变化）；`src/`、`mcp/server.mjs`、`mcp/lib/`、根 `skills/` 照旧冻结。
 
-## 3. 落地（拍板前只写「待拍板」）
+## 3. 落地
 
-- 待拍板
+验收沿计划 §2（全量组：`check:contract`、`test:claude`、`test:zcode`、`build:artifacts`、`check:artifacts`、`probe:cold`；守卫②照旧；TR1 起守卫②再加：真 `~/.cowart-claude/service.log` 的大小和 `~/.cowart-claude/service-exit/` 列表在跑测试前后一致）。偏离写进 [`codex-cli-resident-deviations.md`](codex-cli-resident-deviations.md) 新节「TR1 / TR2」，编号 `TR1-n` / `TR2-n`。阶段做完在下表填状态和 SHA（SHA 用随后一个 docs 提交回填），并在计划 §6 对应条目末尾标「→ 已修 <SHA>」，登记的标「→ 登记：<触发条件>」，已关闭的标「→ 已关闭」。
+
+| 阶段 | 状态 | SHA | 备注 |
+|---|---|---|---|
+| TR1 A 桶 7 项 | 未开始 | | |
+| TR2 B1 根版本恢复上游 | 未开始 | | |
+
+### TR1 A 桶 7 项
+
+**改法**：
+- **A1 日志**：`service/bin/cowart-service.mjs` 的 `--log` 分支：打开时用 `statSync` 记下已有大小，每次写入累加字节数；超过上限（`client.mjs` 导出的 `LOG_LIMIT_BYTES`，`COWART_LOG_LIMIT_BYTES` 可改，测试用）时关掉 fd、把文件改名成 `.1`（覆盖旧的 `.1`）、重新打开、计数归零。`service/client.mjs` 的 `spawnService`：两条路（WMI、退回的 spawn）都给服务带 `--log SERVICE_LOG`，退回的 spawn 的 stdio 改成 `ignore`；拉起前不再调 `rotateServiceLog()`（轮转只由服务自己做：启动时一次 + 写满时）。客户端自己往日志追加的那一行（`launch via WMI failed…`）照旧 append。
+- **A2 测试隔离运行目录**：新 `claude/scripts/test-runtime.mjs`：`COWART_RUNTIME_DIR` 没设时设成本进程独有的临时目录（`mkdtemp`），进程退出时删掉；`test-kit.mjs` 把它作为第一个 import。所有会拉起服务的测试入口（`claude/scripts/*-test.mjs`、`service/test/*.mjs`、`zcode/scripts/smoke-test.mjs`）在 import `service/client.mjs` / `lib/token.mjs` 之前先 import 它（ESM 按出现顺序求值；已自己设了的测试如 `stop-test` 不受影响）。
+- **A3**：`claude/scripts/install-skill.mjs` 文件头注释补一句：在有 Codex 的机器上还会装 Codex 的 cowart skill、提醒 hook，并去掉原来的 `cowart_mcp`。
+- **A4 服务端文字按宿主**：`service/lib/server.mjs` 里令牌无效、监听缺 `--session` 两处不知道会话，改成不点名宿主的说法（「回到你的会话重新打开画布」）；`#openCanvas` 里 `take --shown` 时没开页的报错，host codex 说「还没在 Codex 内置浏览器里打开这张画布」，其余照旧（claude 一字不改）；`service/lib/generation-jobs.mjs` 的「这类请求要交给 Claude 处理」改成「交给负责这一页的会话处理」。
+- **A5 重启后也提醒**：`server.mjs` 的 `hook-check`：会话不在内存里时，按请求里的会话 id 查 `this.queue.list(id)`；有未完、`executor !== 'service'` 的请求才 `this.#session(id)` 建会话、`#touchCommandSession(session, 'codex')` 并返回它们，否则照旧 `{ requests: [] }`、不建会话（会话 id 要从 HTTP 入口传进 `#bridgeCall`）。
+- **A6 `$HOME`**：`claude/lib/cli.mjs` 的 `cowartCommand()` 和用到 `COMMAND_LINK_SHOWN` 的文字：host codex 且没设 `COWART_COMMAND_LINK` 时写 `$HOME/.cowart/bin/cowart.mjs`；host claude 一字不改。
+- **A7 hook 不绑端口**：`cli.mjs` 的 hook 不再用 `findService`：用 `service/lib/canvas-lock.mjs` 的 `canvasOwner(SHARED_CANVAS_DIR)` 读锁文件拿端口和 pid，pid 不在就当服务没跑；在就 `probeService(port, token, { bind: false })` 后照旧 POST `hook-check`；没锁、连不上、超时一律不打印、退出 0。
+**完成定义**：A1–A7 的测试都绿；全量组绿；`rg -n "Claude 处理|回到 Claude Code" adapters/service/lib` 零命中；`rg -n "findService" adapters/claude/lib/cli.mjs` 零命中；守卫①空；守卫②（含真 `service.log`、`service-exit/`）前后一致。
+**钉子**：沿计划 S0；host claude 与 ZCode 断言不改。
+**测试**：resident-test 加 (q)【行为变化】`COWART_LOG_LIMIT_BYTES=2000` 的服务写满后出现 `service.log.1`，之后的日志行在新的 `service.log` 里；(r)【行为变化】服务在跑时，另一次拉起（端口被占、退出码 3）不会把它的日志改名。codex-cli-test 加 (s)【行为变化】host codex 的 `take --shown` 报错不含「Browser 面板」；(t)【行为变化】请求文件里排着 `codex-X` 的未完请求、服务重启后 `hook prompt`（会话 X）打印提醒；(u)【行为变化】host codex 的 `open` 文字含 `$HOME/.cowart/bin/cowart.mjs`、不含 `~/.cowart`（测试里不设 `COWART_COMMAND_LINK` 时）；(v)【行为变化】服务跑在扫描范围外的端口（锁文件指着它）时 `hook prompt` 照样找得到。A2 的验收即守卫②的新增项。
+**规则之家**：`FORK.md`「画布服务」里讲日志轮转、hook 找服务的句子各改一句；`adapters/claude/README.md` 环境变量节加 `COWART_LOG_LIMIT_BYTES`。
+
+### TR2 B1 根版本恢复上游
+
+**改法**：`git checkout upstream/main -- package.json package-lock.json plugin.json`（三个文件和上游只差版本行，10-23 核过：`0.1.28+codex.20261022110200` → `0.1.27`，共 4 处）。根目录 `npm run build:artifacts`（失败于依赖时先 `npm ci`）。先差分：`git diff --stat mcp/generated` 只能是 `release-manifest.json` 和 `cowart-widget.html` 两个文件、且只有版本字符串变化；有别的变化就把 `mcp/generated` 还原（`git checkout -- mcp/generated`）、BLOCKED 附差分。然后适配层 `npm --prefix adapters run build:artifacts`（适配层发布清单记着 `mcp/generated` 的哈希）。
+**完成定义**：`git diff upstream/main -- package.json package-lock.json plugin.json .mcp.json .codex-plugin/plugin.json` 为空；根 `npm run check:artifacts` 和 `npm run check:plugin` 通过；全量组绿；`git status --porcelain -- src mcp/server.mjs mcp/lib skills` 为空；守卫②一致。
+**钉子**：沿计划 S0。**测试**：无新行为（版本字符串）。
+**规则之家**：`FORK.md` 里说根版本 / 插件版本的句子（分支与同步、补丁点清单 `.mcp.json` 那行附近）改成「根版本跟上游一致，fork 只升适配层版本」。

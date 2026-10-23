@@ -76,3 +76,11 @@
 - S7-6 / [假设] `#settle` 每次拉起后重算 20 秒等待（原先从进 `#settle` 算）、`CanvasGuard` 记新条目前先清已结算的，这两处没加测试 / 前者要慢 WMI 才测得到、只放宽上限；后者外面看不出（结算的条目本来就不再用），现有写入保护测试兜住没回归。
 - S7-7 / [假设] `Presence` 在 `#persist` 里删 7 天没见、不负责页、没开着面板的条目（同存盘的口径，只多了负责页 / 面板两条保留）/ 审查 medium：常驻后内存里的会话名只增不删，备用名会用光、旧名不能再用。
 - S7-8 / resident-test 起服务那步包进 step（+1 PASS），codex-cli-test 的 finally 各步单独 catch、`stopTestService` 挪进 try / 审查 low：失败路径会跳过清理和 finish；只改测试。
+
+## TR1 A 桶 7 项
+
+- 
+
+## TR2 B1 根版本恢复上游
+
+- 
