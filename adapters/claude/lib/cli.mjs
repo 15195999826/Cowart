@@ -8,7 +8,9 @@
 // registered project by project, and the session was online only while that process lived.
 // Codex sessions run the same command (hostFromEnv): their texts link the canvas for Codex's
 // built-in browser and run no listener (their requests wait until the user asks, 看画布); their
-// canvas page keeps them online while it is open (server.mjs).
+// canvas page keeps them online while it is open (server.mjs). Codex runs `hook prompt` whenever
+// the user sends a message (install.mjs puts it in its hooks.json): it reminds the session of the
+// requests waiting for it.
 //
 // The commands follow what a session does with the canvas, not the tools one by one: open it
 // and take pages (open, take, listen), look at it (pages, page, selection), put things on it
@@ -17,10 +19,11 @@
 // a canvas request (written for Codex) spells them.
 import { readFile } from 'node:fs/promises'
 
-import { CanvasServiceClient } from '../../service/client.mjs'
+import { CanvasServiceClient, findService } from '../../service/client.mjs'
 import { DEFAULT_PORT, VERSION, samePath } from '../../service/lib/identity.mjs'
 import { MOVE_PAGES_TOOL, folderWords, newPageFolderHint, normalizeFolder, pageTreeLines } from '../../service/lib/page-folders.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
+import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { COMMAND_LINK, COMMAND_LINK_SHOWN, ENTRY, installCowart, linkTarget, removeCowart } from './install.mjs'
 import { listenForRequests } from './listen.mjs'
 import { ANNOTATION_EDIT_NOTE, ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, requestLine, restartListenerNote } from './request-notice.mjs'
@@ -45,6 +48,13 @@ export function isDesktopEntrypoint(entrypoint) {
 export function sessionIdFromEnv(env = process.env) {
   const raw = env.COWART_SESSION_ID || env.CLAUDE_CODE_HOST_SESSION_ID || env.CLAUDE_CODE_SESSION_ID || (env.CODEX_THREAD_ID ? `codex-${env.CODEX_THREAD_ID}` : '')
   return String(raw).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 96) || null
+}
+
+// Codex gives its prompt hook the thread on stdin (session_id) and not in the environment (S3 ⓪
+// of docs/plan/codex-cli-resident.md): the session is the command's (D7), else codex-<that>.
+export function hookSessionId(env = process.env, input = null) {
+  const thread = typeof input?.session_id === 'string' ? input.session_id : ''
+  return sessionIdFromEnv(env.CODEX_THREAD_ID || !thread ? env : { ...env, CODEX_THREAD_ID: thread })
 }
 
 // Which host runs the command: COWART_HOST when set (tests), else Claude Code when it gave the
@@ -306,8 +316,9 @@ const OTHER_COMMANDS = [
   ['会话', ['listen'], 'listen', '画布请求监听：用 Bash 工具后台跑（run_in_background: true，description 写「Cowart 画布请求」），来了请求才退出，退出的通知叫醒你；它连着就表示这个会话在线。别用 Monitor 跑（最多 30 分钟，到点就叫醒会话）'],
   ['其它', ['call'], "call <工具名> [--json '{…}']", '照工具定义直接调一个工具（画布请求里按 Codex 写的工具调用照搬到这里）；参数也能写成 --kebab-case'],
   ['其它', ['tools'], 'tools [<工具名>]', '列出所有工具；给了工具名就打出它的参数定义'],
+  ['其它', ['hook'], 'hook prompt', 'Codex 的提醒 hook（install 装进 Codex 的 hooks.json，用户每发一句话 Codex 跑一次）：画布上有请求在等这个会话就提醒一句，没有就什么都不打；会话里不用自己跑'],
   ['其它', ['help'], 'help [<命令>]', '用法；给了命令就列出它的全部参数'],
-  ['其它', ['install', 'uninstall'], 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart，并装上画布服务的开机自启（Windows）/ 删掉这些`]
+  ['其它', ['install', 'uninstall'], 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart，并装上画布服务的开机自启（Windows）；这台机器装了 Codex 的话，再给它装上 cowart skill 和提醒 hook、去掉原来的 cowart_mcp / 删掉这些`]
 ]
 // Codex runs no listener: its requests wait until the user asks for them (看画布).
 const CODEX_LISTEN_ABOUT = 'Codex 不用：画布请求不会叫醒 Codex 会话，用户说「看画布」（或答应要做）时用 requests 取，request <编号> 看详情照做'
@@ -937,7 +948,56 @@ function pagesResult({ pages: all, myPageId, shownPageId }, cli, wantedFolder = 
 
 const detailsCommand = (cli) => (id) => `运行 ${cli} request ${id}`
 
+// What Codex's prompt hook adds to the user's message when requests wait for the session: a
+// reminder, not the requests (D10). The user's message comes first; the requests are done when the
+// user says 看画布 or yes. Nothing when nothing waits.
+export function hookReminder(requests, cli = cowartCommand()) {
+  if (!Array.isArray(requests) || requests.length === 0) return ''
+  const line = (request) => {
+    const where = [request.pageName ? `来自「${request.pageName}」这一页` : '', request.status === 'running' ? '你已回过 running，做完回 done / failed' : ''].filter(Boolean).join('，')
+    return `- #${request.id}「${request.title}」${where ? `（${where}）` : ''}：${cli} request ${request.id}`
+  }
+  return [
+    `Cowart 画布上有 ${requests.length} 条请求在等这个会话（用户在画布上点的，不是这条消息说的）：`,
+    ...requests.map(line),
+    `先回答用户这条消息。它跟画布无关时，在回复末尾提一句这些请求、问要不要做；用户说「看画布」或答应要做时，运行 ${cli} requests 取出来，再照每条后面的 request 命令看详情照做（还没读过 cowart skill 的话先读它）。`
+  ].join('\n')
+}
+
 // ---- Running --------------------------------------------------------------------------
+
+const HOOK_TIMEOUT_MS = 2_500
+
+// `hook prompt`: Codex runs it for every message the user sends (UserPromptSubmit), with the turn as
+// JSON on stdin, and adds what it prints to the message (D9). It only finds the service (starts
+// none, makes no session: hook-check in server.mjs) and prints nothing when there is nothing to
+// remind of, or anything goes wrong or takes more than 2.5 s: the user's message must not wait.
+async function promptHook(cli) {
+  setTimeout(() => process.exit(0), HOOK_TIMEOUT_MS)
+  try {
+    let input = null
+    try {
+      input = JSON.parse(await readStdin())
+    } catch {
+      // No turn on stdin: the environment may still say whose it is.
+    }
+    const session = hookSessionId(process.env, input)
+    if (!session) return exit(0)
+    const token = await loadOrCreateToken()
+    const found = await findService({ port: Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT, token })
+    if (!found) return exit(0)
+    const response = await fetch(`http://127.0.0.1:${found.port}/api/bridge/call`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cowart-token': token },
+      body: JSON.stringify({ session, op: 'hook-check', cli: true, host: 'codex' })
+    })
+    if (!response.ok) return exit(0)
+    const { result } = await response.json()
+    return exit(0, hookReminder(result?.requests, cli))
+  } catch {
+    return exit(0)
+  }
+}
 
 function newClient(session, host) {
   return new CanvasServiceClient({
@@ -1153,6 +1213,11 @@ export async function main(argv = process.argv.slice(2)) {
     const { name, rest } = splitCommand(argv)
     if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli, host))
     if (name === '--version') return exit(0, VERSION)
+    // Codex's, before the desktop switch and the session check: it takes the thread from stdin.
+    if (name === 'hook') {
+      if (rest[0] !== 'prompt' || rest.length > 1) throw new UsageError(`用法：${cli} hook prompt（Codex 的提醒 hook 跑它，会话里不用自己跑）`)
+      return promptHook(cli)
+    }
     if (name === 'install') {
       const { ok, lines } = await installCowart()
       return exit(ok ? 0 : 1, [...lines, `会话里这样用：node ${COMMAND_LINK_SHOWN} <命令>（node ${COMMAND_LINK_SHOWN} help 看用法）。`].join('\n'))

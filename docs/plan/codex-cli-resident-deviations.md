@@ -34,7 +34,15 @@
 
 ## S4 Codex 的 hook、skill 与安装
 
-- 
+- S4-1 / [假设] `hook-check` 在 `/api/bridge/call` 入口就分开：只 `#sessions.get`、跳过通用的 cli 续租，`#bridgeCall` 收到 null 会话回空 / 入口先 `#session(id)` 会建会话，等不到 `#bridgeCall` 的 case。
+- S4-2 / [假设] config.toml 只删表头是 `mcp_servers.cowart_mcp` 或 `mcp_servers.cowart_mcp.…` 的表（去掉空白和引号再比），`[mcp_servers.cowart_mcp_two]` 留着 / 字面「以 `[mcp_servers.cowart_mcp` 开头」会删掉名字恰好以它开头的别的服务。
+- S4-3 / [假设] hooks.json：第一条 cowart hook 原地替换，多的删、只装它的组删；内容不变就不写不备份；同一秒已有备份名就加 `-2`；容 BOM；不是 JSON 或认不出 `hooks.UserPromptSubmit` 数组就不动、报一行 / 计划只写「替换不重复、坏了不动」，取最小、不多留备份的写法。
+- S4-4 / [假设] hooks.json 坏了、`skills/cowart` 是真实目录时 install 退出 1；没有 Codex 主目录只报一行、退出 0 / 照 S2-5「有一部分没装上就退出 1」。
+- S4-5 / [假设] uninstall 只在命令入口已删或指向本份时删 hook；`UserPromptSubmit` 删空就去掉这个键 / 照 S2-4「别的 checkout 的不动」：入口还指向别的 checkout 时 hook 照样能用。
+- S4-6 / [假设] `build-artifacts` 把 `adapters/claude/codex-skill/**` 列进发布清单的 resources，probe:cold 给沙箱建 Codex 主目录、断言链接和 hook 指向发布副本 / 不然从发布副本（省心版）install 没有 Codex skill 可链。
+- S4-7 / [假设] test-kit 的会话环境给一个从不建的 `CODEX_HOME`（smoke 的 install），probe:cold 用沙箱里的 / 守卫②：install 现在会写 Codex 主目录。
+- S4-8 / [假设] 导出 `hookSessionId(env, input)`、`hookReminder(requests, cli)`；提醒每条带自己的 `request <N>` 命令，running 的注明做完回 done / failed；`hook` 后面不是 `prompt` 就打用法、退出 2 / 计划没写到，取最小实现。
+- S4-9 / 核对了 hook 命令在 Windows 怎么跑：codex-rs `hooks/src/engine/command_runner.rs` 用 `cmd.exe /C` 加 raw 的外层引号，D9 的 `"<node>" "<入口>" hook prompt` 原样到得了 / 计划定了格式，cmd /C 的去引号规则可能吃掉它。
 
 ## S5 删掉 Codex widget + MCP
 

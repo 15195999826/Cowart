@@ -200,6 +200,8 @@ function sessionEnv({ cwd, port, session, env }) {
     COWART_COMMAND_LINK: COMMAND_LINK,
     COWART_SERVICE_LINK: join(INSTALL_DIR, 'bin', 'cowart-service.mjs'),
     COWART_STARTUP_DIR: join(INSTALL_DIR, 'Startup'),
+    // install sets Codex up when its home exists: never the user's ~/.codex (this one never does).
+    CODEX_HOME: join(INSTALL_DIR, 'codex'),
     ...env
   }
 }

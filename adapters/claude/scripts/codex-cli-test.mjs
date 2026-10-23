@@ -3,12 +3,16 @@
 // D11 / D12 of docs/plan/codex-cli-resident.md): Codex gives the commands it runs CODEX_THREAD_ID
 // and nothing of Claude's, and that is the session (codex-<thread>) and its host. Its texts send
 // the user a link for Codex's built-in browser and never a listener (Codex has none); its canvas
-// page keeps it online while open; that page names Codex and offers Codex imagegen. The check runs
-// with a runtime directory, a canvas and a port of its own.
+// page keeps it online while open; that page names Codex and offers Codex imagegen. Its prompt hook
+// (`cowart hook prompt`, D9 / D10) reminds the session of the requests waiting for it and says
+// nothing otherwise; `cowart install` sets Codex up (D13: the skill, the hook, no cowart_mcp server).
+// The check runs with a runtime directory, a canvas, a Codex home and a port of its own.
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -19,7 +23,7 @@ const root = await mkdtemp(join(tmpdir(), 'cowart-codex-cli-check-'))
 process.env.COWART_RUNTIME_DIR = join(root, 'runtime')
 const { loadOrCreateToken } = await import('../../service/lib/token.mjs')
 const { ADAPTERS_DIR } = await import('../../shared/paths.mjs')
-const { EMPTY_CANVAS, cliSession, delay, finish, openEvents, serviceStatus, step, stopTestService, waitFor } = await import('./test-kit.mjs')
+const { COMMAND_LINK, EMPTY_CANVAS, cliSession, delay, finish, openEvents, serviceStatus, step, stopTestService, waitFor } = await import('./test-kit.mjs')
 
 const PORT = Number(process.env.COWART_CODEX_CLI_TEST_PORT) || 43391
 const run = promisify(execFile)
@@ -37,6 +41,17 @@ function codexEnv(thread, more = {}) {
   return env
 }
 const codexSession = (thread, more) => cliSession({ cwd: projectDir, port: PORT, session: `codex-${thread}`, env: codexEnv(thread, more) })
+
+// What Codex gives its prompt hook (S3 ⓪): the thread in stdin's session_id, none in the environment.
+async function promptHook(thread) {
+  const env = { COWART_SESSION_ID: undefined, CODEX_THREAD_ID: undefined }
+  for (const key of Object.keys(process.env)) if (/^CLAUDE_/i.test(key)) env[key] = undefined
+  const hook = cliSession({ cwd: projectDir, port: PORT, session: `codex-${thread}`, env })
+  const input = { session_id: thread, turn_id: 'turn-1', cwd: projectDir, hook_event_name: 'UserPromptSubmit', model: 'gpt-5', prompt: '帮我看看这个函数' }
+  const started = Date.now()
+  const result = await hook.run(['hook', 'prompt'], { input: JSON.stringify(input) })
+  return { ...result, ms: Date.now() - started }
+}
 
 const BANNED = [/Browser 面板/, /run_in_background/, /AskUserQuestion/, /mcp__Claude_Browser__/]
 function noClaudeWords(text, what) {
@@ -178,6 +193,176 @@ try {
     } finally {
       page.close()
     }
+  })
+
+  await step("(o) D9: the hook's session is the command's (D7), else codex-<stdin's session_id>", async () => {
+    const { hookSessionId } = await import('../lib/cli.mjs')
+    assert.equal(hookSessionId({}, { session_id: 'a1b2' }), 'codex-a1b2')
+    assert.equal(hookSessionId({}, { session_id: 'a/b c' }), 'codex-abc')
+    assert.equal(hookSessionId({ CODEX_THREAD_ID: 'from-env' }, { session_id: 'a1b2' }), 'codex-from-env')
+    assert.equal(hookSessionId({ COWART_SESSION_ID: 'mine' }, { session_id: 'a1b2' }), 'mine')
+    assert.equal(hookSessionId({}, {}), null)
+    assert.equal(hookSessionId({}, null), null)
+  })
+
+  await step('(o) hook prompt with no service running, or one that never answers: nothing printed, exit 0, within 2.5 s', async () => {
+    await stopTestService(PORT)
+    const none = await promptHook(thread)
+    assert.equal(none.code, 0, none.stderr)
+    assert.equal(none.stdout + none.stderr, '')
+    assert.ok(none.ms < 2500, `took ${none.ms} ms`)
+    assert.equal(await serviceStatus(PORT), null, 'the hook started a service')
+    // A port that takes the connection and never answers: the hook gives up after 2.5 s.
+    const sockets = new Set()
+    const mute = net.createServer((socket) => {
+      sockets.add(socket)
+      // The hook's process goes away mid-connection.
+      socket.on('error', () => {})
+    })
+    await new Promise((resolve) => mute.listen(PORT, '127.0.0.1', resolve))
+    try {
+      const stuck = await promptHook(thread)
+      assert.equal(stuck.code, 0, stuck.stderr)
+      assert.equal(stuck.stdout + stuck.stderr, '')
+      assert.ok(stuck.ms >= 2400 && stuck.ms < 4500, `took ${stuck.ms} ms`)
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise((resolve) => mute.close(resolve))
+    }
+  })
+
+  // Sessions end two seconds after their last command (D8 below).
+  const lease = { COWART_SESSION_LEASE_MS: '2000' }
+  await step('(o) hook prompt for a known Codex session: nothing when nothing waits; the requests, 看画布 and the commands when some do', async () => {
+    const warmup = cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-hook-warmup', env: lease })
+    assert.equal((await warmup.run(['pages'])).code, 0)
+    assert.equal((await codex.run(['pages'])).code, 0)
+    const quiet = await promptHook(thread)
+    assert.equal(quiet.code, 0, quiet.stderr)
+    assert.equal(quiet.stdout + quiet.stderr, '')
+
+    const created = await api(origin, '/api/messages', { text: '[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\nPrompt:\n一个设置页', session: SESSION, pageName: '设置页', projectDir, canvasDir })
+    const id = created.request.id
+    const told = await promptHook(thread)
+    assert.equal(told.code, 0, told.stderr)
+    assert.match(told.stdout, new RegExp(`#${id}「`))
+    assert.match(told.stdout, /「设置页」/)
+    assert.match(told.stdout, /看画布/)
+    assert.match(told.stdout, /\.mjs"? requests\b/)
+    assert.match(told.stdout, new RegExp(`\\.mjs"? request ${id}\\b`))
+    noClaudeWords(told.stdout, 'hook prompt')
+    assert.doesNotMatch(told.stdout, /listen|监听/)
+    // A reminder only: the request is not taken as delivered.
+    const listed = await api(origin, '/api/bridge/call', { session: SESSION, op: 'request-list', args: {} })
+    assert.equal(listed.result.requests.find((request) => request.id === id)?.delivered, false)
+
+    assert.equal((await codex.run(['reply', String(id), 'skipped'])).code, 0)
+    assert.equal((await promptHook(thread)).stdout, '')
+  })
+
+  await step('(o) D8: the hook keeps a known Codex session online, as its commands do', async () => {
+    await waitFor(async () => (await sessionOf(SESSION))?.state === 'ended', { timeoutMs: 8000, what: 'the Codex session to end (a lease of 2 s)' })
+    const hooked = await promptHook(thread)
+    assert.equal(hooked.code, 0, hooked.stderr)
+    assert.equal((await sessionOf(SESSION))?.state, 'online', 'the hook did not bring the session back')
+  })
+
+  await step('(o) hook prompt for a thread that never ran a command: nothing printed, and no session for it', async () => {
+    const stranger = randomUUID()
+    const result = await promptHook(stranger)
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(result.stdout + result.stderr, '')
+    assert.equal(await sessionOf(`codex-${stranger}`), null, 'the hook made a session for a thread it did not know')
+  })
+
+  await step('(p) install sets Codex up: the skill, the prompt hook once, no cowart_mcp server, backups; uninstall takes the skill and the hook away', async () => {
+    const home = join(root, 'codex-home')
+    const skills = join(home, 'skills')
+    const junction = process.platform === 'win32' ? 'junction' : 'dir'
+    // The old Codex skills (adapters/codex/skills of some checkout), linked the way Codex had them.
+    const oldSkills = join(root, 'old-checkout', 'adapters', 'codex', 'skills')
+    const OLD = ['cowart-image-edit', 'cowart-image-gen', 'cowart-open-canvas']
+    await mkdir(skills, { recursive: true })
+    for (const name of ['cowart', ...OLD]) {
+      await mkdir(join(oldSkills, name), { recursive: true })
+      await symlink(join(oldSkills, name), join(skills, name), junction)
+    }
+    // Hooks of the user's, and a cowart hook an earlier install wrote.
+    const otherHooks = {
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'echo other', timeout: 3 }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'echo stop' }] }]
+    }
+    const hooksFile = join(home, 'hooks.json')
+    const hooksBefore = `${JSON.stringify({ hooks: { ...otherHooks, UserPromptSubmit: [...otherHooks.UserPromptSubmit, { hooks: [{ type: 'command', command: 'node "C:/old/.cowart/bin/cowart.mjs" hook prompt', timeout: 5 }] }] } }, null, 2)}\n`
+    await writeFile(hooksFile, hooksBefore)
+    // config.toml in CRLF: the cowart_mcp server and its subtable go, the rest stays byte for byte.
+    const kept = ['model = "gpt-5"', '', '[mcp_servers.other]', 'command = "x"', '', ''].join('\r\n')
+    const cowartMcp = ["[mcp_servers.cowart_mcp]", "command = 'C:\\Program Files\\nodejs\\node.exe'", "args = ['C:\\x\\start.mjs']", '', '[mcp_servers.cowart_mcp.env]', 'FOO = "1"', '', ''].join('\r\n')
+    const after = ['[mcp_servers.cowart_mcp_two]', 'command = "y"', '', '[notice]', 'a = 1', ''].join('\r\n')
+    const configFile = join(home, 'config.toml')
+    await writeFile(configFile, kept + cowartMcp + after)
+
+    const installer = cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-installer', env: { CODEX_HOME: home } })
+    const first = await installer.run(['install'])
+    assert.equal(first.code, 0, first.stderr || first.stdout)
+    assert.match(first.stdout, /Codex/)
+    const again = await installer.run(['install'])
+    assert.equal(again.code, 0, again.stderr || again.stdout)
+
+    const codexSkill = join(ADAPTERS_DIR, 'claude', 'codex-skill', 'cowart')
+    assert.ok((await lstat(join(skills, 'cowart'))).isSymbolicLink(), 'skills/cowart is not a link')
+    assert.equal(await realpath(join(skills, 'cowart')), await realpath(codexSkill))
+    for (const name of OLD) {
+      await assert.rejects(lstat(join(skills, name)), `the old ${name} link is still there`)
+      assert.ok(existsSync(join(oldSkills, name)), `the directory the old ${name} link led to is gone`)
+    }
+
+    const hooks = JSON.parse(await readFile(hooksFile, 'utf8'))
+    const ours = hooks.hooks.UserPromptSubmit.flatMap((group) => group.hooks).filter((hook) => hook.command.includes('cowart') && hook.command.includes('hook prompt'))
+    assert.deepEqual(ours, [{ type: 'command', command: `"${process.execPath}" "${COMMAND_LINK}" hook prompt`, timeout: 5 }])
+    assert.deepEqual(hooks.hooks.UserPromptSubmit[0], otherHooks.UserPromptSubmit[0])
+    assert.deepEqual(hooks.hooks.Stop, otherHooks.Stop)
+    assert.equal(await readFile(configFile, 'utf8'), kept + after)
+
+    const backups = await readdir(home)
+    const configBackups = backups.filter((name) => /^config\.toml\.bak-cowart-\d{14}/.test(name))
+    assert.equal(configBackups.length, 1, backups.join(', '))
+    assert.equal(await readFile(join(home, configBackups[0]), 'utf8'), kept + cowartMcp + after)
+    const hooksBackups = backups.filter((name) => /^hooks\.json\.bak-cowart-\d{14}/.test(name))
+    assert.equal(hooksBackups.length, 1, `the second install changed nothing, so it backs nothing up: ${backups.join(', ')}`)
+    assert.equal(await readFile(join(home, hooksBackups[0]), 'utf8'), hooksBefore)
+
+    const removed = await installer.run(['uninstall'])
+    assert.equal(removed.code, 0, removed.stderr || removed.stdout)
+    await assert.rejects(lstat(join(skills, 'cowart')), 'uninstall left the skill link')
+    assert.ok(existsSync(join(codexSkill, 'SKILL.md')), "uninstall took the checkout's skill away")
+    assert.deepEqual(JSON.parse(await readFile(hooksFile, 'utf8')).hooks, otherHooks)
+    assert.equal(await readFile(configFile, 'utf8'), kept + after, 'uninstall changed config.toml')
+  })
+
+  await step("(p) install with no Codex home leaves Codex alone; a hooks.json that is not JSON, and skills that are not the old plugin's, are left as they are", async () => {
+    const missing = join(root, 'no-codex')
+    const skipped = await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-installer', env: { CODEX_HOME: missing } }).run(['install'])
+    assert.equal(skipped.code, 0, skipped.stderr || skipped.stdout)
+    assert.match(skipped.stdout, /Codex/)
+    assert.equal(existsSync(missing), false, 'install made a Codex home')
+
+    const broken = join(root, 'codex-broken')
+    const skills = join(broken, 'skills')
+    // A skill of the user's under an old name: one linked from elsewhere, one a real directory.
+    const elsewhere = join(root, 'my-skills', 'cowart-image-edit')
+    await mkdir(elsewhere, { recursive: true })
+    await mkdir(join(skills, 'cowart-open-canvas'), { recursive: true })
+    await writeFile(join(skills, 'cowart-open-canvas', 'SKILL.md'), 'mine')
+    await symlink(elsewhere, join(skills, 'cowart-image-edit'), process.platform === 'win32' ? 'junction' : 'dir')
+    await writeFile(join(broken, 'hooks.json'), '{ "hooks": ')
+    const result = await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-installer', env: { CODEX_HOME: broken } }).run(['install'])
+    assert.notEqual(result.code, 0, 'install said it set the hook up')
+    assert.match(result.stdout + result.stderr, /hooks\.json/)
+    assert.equal(await readFile(join(broken, 'hooks.json'), 'utf8'), '{ "hooks": ')
+    assert.equal((await readdir(broken)).some((name) => name.includes('.bak-cowart-')), false, 'a file left alone needs no backup')
+    assert.equal(await realpath(join(skills, 'cowart-image-edit')), await realpath(elsewhere), 'a link to somewhere else was touched')
+    assert.equal(await readFile(join(skills, 'cowart-open-canvas', 'SKILL.md'), 'utf8'), 'mine', 'a real directory was touched')
   })
 } finally {
   await codex.close()

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
@@ -115,8 +115,11 @@ try {
     COWART_COMMAND_LINK: commandLink,
     // install also writes the service's entry and its start at logon: into the sandbox.
     COWART_SERVICE_LINK: join(homeDir, '.cowart', 'bin', 'cowart-service.mjs'),
-    COWART_STARTUP_DIR: join(homeDir, 'Startup')
+    COWART_STARTUP_DIR: join(homeDir, 'Startup'),
+    // and sets Codex up when its home is there: the sandbox's.
+    CODEX_HOME: join(homeDir, '.codex')
   }
+  await mkdir(claudeEnv.CODEX_HOME, { recursive: true })
   const runNode = (script, args, input = '') => new Promise((done) => {
     const child = spawn(process.execPath, [script, ...args], { cwd: pluginDir, env: claudeEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     children.push(child)
@@ -134,6 +137,9 @@ try {
     assert.ok((await readFile(claudeEnv.COWART_SERVICE_LINK, 'utf8')).includes('/adapters/generated/cowart-service.mjs"'), 'The service started at logon is the installed bundle')
     assert.ok(await exists(join(claudeEnv.COWART_STARTUP_DIR, 'CowartCanvas.lnk')), 'install puts the service in the Startup folder')
   }
+  assert.equal(await realpath(join(claudeEnv.CODEX_HOME, 'skills', 'cowart')), await realpath(join(pluginDir, 'adapters/claude/codex-skill/cowart')), "Codex gets the release's Codex skill")
+  const codexHooks = JSON.parse(await readFile(join(claudeEnv.CODEX_HOME, 'hooks.json'), 'utf8')).hooks.UserPromptSubmit.flatMap((group) => group.hooks)
+  assert.deepEqual(codexHooks.map((hook) => hook.command), [`"${process.execPath}" "${commandLink}" hook prompt`], 'Codex runs the installed command as its prompt hook')
   const opening = await runNode(commandLink, ['call', 'render_cowart_canvas_widget', '--json', '-', '--out', 'json'], JSON.stringify({ page: '冷安装共享页', sessionName: '小暖' }))
   const openedClaude = payload(JSON.parse(opening.stdout || '{}'))
   assert.equal((await serviceStatus()).pid, started.pid, 'Both bundled hosts must reuse one service')

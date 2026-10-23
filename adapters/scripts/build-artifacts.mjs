@@ -92,6 +92,8 @@ const resourcePaths = [
   'adapters/shared/empty-canvas.json',
   ...await filesIn('adapters/shared/web'),
   ...await filesIn('adapters/claude/web'),
+  // The Codex skill `cowart install` links into Codex (claude/lib/install.mjs).
+  ...await filesIn('adapters/claude/codex-skill'),
   ...await filesIn('adapters/codex/web'),
   'mcp/generated/cowart-mcp.mjs',
   'mcp/generated/cowart-widget.html',

@@ -7,9 +7,12 @@
 // command and service, so installing another one rewrites them. Installing starts no service:
 // sessions start it when they need it, as before. COWART_COMMAND_LINK, COWART_SERVICE_LINK and
 // COWART_STARTUP_DIR put the files elsewhere (checks).
+// On a machine with Codex (CODEX_HOME, else ~/.codex) it also sets Codex up to run the same command:
+// its cowart skill (installCodex below), the prompt hook that reminds a session of its canvas
+// requests, and without the cowart_mcp server its MCP bridge needed.
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, symlinkSync, unlinkSync } from 'node:fs'
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -181,6 +184,231 @@ export async function removeServiceAutostart() {
   return files.length > 0 ? { removed: true, files } : { removed: false, reason: '没有安装过' }
 }
 
+// ---- Codex ----------------------------------------------------------------------------
+// Codex sessions run the cowart command too (D13 of docs/plan/codex-cli-resident.md). Its skill is
+// linked into <home>/skills/cowart the way the Claude skill is into ~/.claude/skills; its hooks.json
+// gets a UserPromptSubmit hook that runs `cowart hook prompt` (cli.mjs) through the command above;
+// and what the Codex plugin's MCP bridge used goes: the cowart_mcp server in config.toml and the
+// three skills beside the old cowart one. A file is backed up before it changes
+// (<file>.bak-cowart-<time>); nothing is touched when Codex's home is not there.
+export const CODEX_SKILL = join(ADAPTERS_DIR, 'claude', 'codex-skill', 'cowart')
+const OLD_CODEX_SKILLS = ['cowart-image-edit', 'cowart-image-gen', 'cowart-open-canvas']
+const HOOK_EVENT = 'UserPromptSubmit'
+const HOOK_TIMEOUT_S = 5
+
+export function codexHome() {
+  return process.env.CODEX_HOME || join(homedir(), '.codex')
+}
+
+// What the hook runs. Codex runs it through cmd /C "…" on Windows and $SHELL -lc elsewhere.
+export function promptHookCommand() {
+  return `"${process.execPath}" "${COMMAND_LINK}" hook prompt`
+}
+
+const isCowartHook = (hook) => typeof hook?.command === 'string' && hook.command.includes('cowart') && hook.command.includes('hook prompt')
+
+function kindOf(path) {
+  try {
+    const stats = lstatSync(path)
+    return stats.isSymbolicLink() ? 'link' : stats.isDirectory() ? 'directory' : 'file'
+  } catch {
+    return 'missing'
+  }
+}
+
+// Where a link leads, as written (a junction's target may come with \\?\ in front).
+function linkLeadsTo(path) {
+  try {
+    return readlinkSync(path).replace(/^\\\\\?\\/, '')
+  } catch {
+    return null
+  }
+}
+
+function pointsAt(link, target) {
+  try {
+    return samePath(realpathSync(link), realpathSync(target))
+  } catch {
+    return samePath(linkLeadsTo(link), target)
+  }
+}
+
+// A junction on Windows (no admin rights needed), a symlink elsewhere; both go with rmdir there.
+function makeLink(target, link) {
+  symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+}
+
+function removeLink(link) {
+  if (process.platform === 'win32') rmdirSync(link)
+  else unlinkSync(link)
+}
+
+function stamp(date = new Date()) {
+  const two = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${two(date.getMonth() + 1)}${two(date.getDate())}${two(date.getHours())}${two(date.getMinutes())}${two(date.getSeconds())}`
+}
+
+async function backUp(file) {
+  const base = `${file}.bak-cowart-${stamp()}`
+  let backup = base
+  for (let n = 2; existsSync(backup); n += 1) backup = `${base}-${n}`
+  await copyFile(file, backup)
+  return backup
+}
+
+const withoutBom = (text) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
+
+function isHooksFile(config) {
+  const object = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  return object(config) && (config.hooks === undefined || (object(config.hooks) && (config.hooks[HOOK_EVENT] === undefined || Array.isArray(config.hooks[HOOK_EVENT]))))
+}
+
+// The UserPromptSubmit hooks with the cowart one in them once (hook) or not at all (null): an
+// earlier cowart hook is replaced where it is, more of them go, and so do groups that held only them.
+function withHook(config, hook) {
+  const groups = config.hooks?.[HOOK_EVENT] ?? []
+  if (!hook && !groups.some((group) => Array.isArray(group?.hooks) && group.hooks.some(isCowartHook))) return config
+  let placed = false
+  const kept = []
+  for (const group of groups) {
+    if (!Array.isArray(group?.hooks) || !group.hooks.some(isCowartHook)) {
+      kept.push(group)
+      continue
+    }
+    const hooks = group.hooks.flatMap((entry) => {
+      if (!isCowartHook(entry)) return [entry]
+      if (placed || !hook) return []
+      placed = true
+      return [hook]
+    })
+    if (hooks.length > 0) kept.push({ ...group, hooks })
+  }
+  if (hook && !placed) kept.push({ hooks: [hook] })
+  const hooks = { ...config.hooks, [HOOK_EVENT]: kept }
+  if (kept.length === 0) delete hooks[HOOK_EVENT]
+  return { ...config, hooks }
+}
+
+// hooks.json changed by change(config); left alone when it is not JSON Codex would read.
+async function editHooks(home, change) {
+  const file = join(home, 'hooks.json')
+  const original = existsSync(file) ? await readFile(file, 'utf8') : null
+  let config = {}
+  if (original !== null) {
+    try {
+      config = JSON.parse(withoutBom(original))
+    } catch {
+      return { ok: false, file, reason: '不是合法的 JSON' }
+    }
+    if (!isHooksFile(config)) return { ok: false, file, reason: `的格式认不出（要 {"hooks": {"${HOOK_EVENT}": [...]}}）` }
+  }
+  const next = change(config)
+  if (JSON.stringify(next) === JSON.stringify(config)) return { ok: true, file, changed: false }
+  const backup = original === null ? null : await backUp(file)
+  await writeFile(file, `${JSON.stringify(next, null, 2)}\n`)
+  return { ok: true, file, changed: true, backup }
+}
+
+// config.toml without the table [mcp_servers.cowart_mcp] and its subtables ([…cowart_mcp.env]),
+// up to the next other table; every other byte as it was.
+export function withoutCowartMcp(text) {
+  const table = /^[ \t]*\[\[?(.*?)\]\]?[ \t]*(#.*)?\r?\n?$/
+  let dropping = false
+  return text
+    .split(/(?<=\n)/)
+    .filter((line) => {
+      const header = table.exec(line)
+      if (header) dropping = /^mcp_servers\.cowart_mcp(\.|$)/.test(header[1].replace(/[\s"']/g, ''))
+      return !dropping
+    })
+    .join('')
+}
+
+async function dropCowartMcp(home) {
+  const file = join(home, 'config.toml')
+  if (!existsSync(file)) return { changed: false }
+  const original = await readFile(file, 'utf8')
+  const text = withoutCowartMcp(original)
+  if (text === original) return { changed: false }
+  const backup = await backUp(file)
+  await writeFile(file, text)
+  return { changed: true, file, backup }
+}
+
+// The old plugin's skills: links into some checkout's adapters/codex/skills, nothing else.
+function isOldCodexSkill(link) {
+  return String(linkLeadsTo(link) ?? '').replaceAll('\\', '/').toLowerCase().includes('/adapters/codex/skills/')
+}
+
+// { skipped } when this machine has no Codex; else { ok, lines }.
+export async function installCodex() {
+  const home = codexHome()
+  if (!existsSync(home)) return { skipped: `没找到 ${home}，这台机器像是没装 Codex` }
+  const lines = []
+  let ok = true
+  const failed = (line) => {
+    ok = false
+    lines.push(line)
+  }
+
+  const link = join(home, 'skills', 'cowart')
+  const kind = kindOf(link)
+  if (!existsSync(join(CODEX_SKILL, 'SKILL.md'))) {
+    failed(`Codex 的 cowart skill 没装：这一份 Cowart 里没有 ${join(CODEX_SKILL, 'SKILL.md')}。`)
+  } else if (kind === 'link' && pointsAt(link, CODEX_SKILL)) {
+    lines.push(`Codex 的 cowart skill 已经链接：${link} → ${CODEX_SKILL}`)
+  } else if (kind === 'link' || kind === 'missing') {
+    mkdirSync(dirname(link), { recursive: true })
+    if (kind === 'link') removeLink(link)
+    makeLink(CODEX_SKILL, link)
+    lines.push(`${kind === 'link' ? '已把 Codex 的 cowart skill 改指向' : '已给 Codex 装上 cowart skill'}：${link} → ${CODEX_SKILL}`)
+  } else {
+    failed(`Codex 的 cowart skill 没装：${link} 是一个真实的${kind === 'directory' ? '目录' : '文件'}，不是链接，没动它；要换成链接请先自己挪走。`)
+  }
+  const old = OLD_CODEX_SKILLS.map((name) => join(home, 'skills', name)).filter((path) => kindOf(path) === 'link' && isOldCodexSkill(path))
+  for (const path of old) removeLink(path)
+  if (old.length > 0) lines.push(`已删掉以前 Codex 插件的 skill 链接：${old.map((path) => basename(path)).join('、')}（现在都在 cowart 这一个 skill 里）。`)
+
+  const hook = await editHooks(home, (config) => withHook(config, { type: 'command', command: promptHookCommand(), timeout: HOOK_TIMEOUT_S }))
+  if (!hook.ok) failed(`Codex 的提醒 hook 没装：${hook.file} ${hook.reason}，没动它。`)
+  else if (!hook.changed) lines.push(`Codex 的提醒 hook 已经装好：${hook.file}`)
+  else lines.push(`已在 ${hook.file} 装上 Codex 的提醒 hook（用户每发一句话跑一次 cowart hook prompt，画布上有请求在等时提醒会话）${hook.backup ? `，原文件备份在 ${hook.backup}` : ''}；Codex 第一次见到它时要在 Codex 里信任一次。`)
+
+  const mcp = await dropCowartMcp(home)
+  if (mcp.changed) lines.push(`已从 ${mcp.file} 去掉以前 Codex 插件的 cowart_mcp（备份在 ${mcp.backup}）；开着的 Codex 要重开才不再起它。`)
+  return { ok, lines }
+}
+
+// The skill link when it leads to this Cowart, and the prompt hook unless another Cowart's command
+// still answers at the command's place (the hook runs that). config.toml stays as it is.
+export async function removeCodex() {
+  const home = codexHome()
+  if (!existsSync(home)) return { skipped: `没找到 ${home}` }
+  const lines = []
+  let ok = true
+  const link = join(home, 'skills', 'cowart')
+  const kind = kindOf(link)
+  if (kind === 'link' && pointsAt(link, CODEX_SKILL)) {
+    removeLink(link)
+    lines.push(`已删掉 Codex 的 cowart skill 链接 ${link}。`)
+  } else if (kind !== 'missing') {
+    lines.push(`没删 ${link}：它不是指向这一份 Cowart 的链接。`)
+  }
+  const command = linkTarget(COMMAND_LINK)
+  if (existsSync(COMMAND_LINK) && !samePath(command, ENTRY)) {
+    lines.push(`Codex 的提醒 hook 没删：${COMMAND_LINK} 指向的是 ${command ?? '别的东西'}，hook 还在用它。`)
+  } else {
+    const hook = await editHooks(home, (config) => withHook(config, null))
+    if (!hook.ok) {
+      ok = false
+      lines.push(`Codex 的提醒 hook 没删：${hook.file} ${hook.reason}，没动它。`)
+    } else if (hook.changed) {
+      lines.push(`已从 ${hook.file} 删掉 Codex 的提醒 hook（原文件备份在 ${hook.backup}）。`)
+    }
+  }
+  return { ok, lines }
+}
+
 // Everything above, said line by line; ok: false when a part failed.
 export async function installCowart() {
   const command = await installCommandLink()
@@ -194,6 +422,17 @@ export async function installCowart() {
   } catch (error) {
     ok = false
     lines.push(`画布服务的开机自启没装上：${error.message}`)
+  }
+  try {
+    const codex = await installCodex()
+    if (codex.skipped) lines.push(`Codex 的 cowart skill 和提醒 hook 没装：${codex.skipped}。`)
+    else {
+      ok &&= codex.ok
+      lines.push(...codex.lines)
+    }
+  } catch (error) {
+    ok = false
+    lines.push(`Codex 的 cowart skill 和提醒 hook 没装上：${error.message}`)
   }
   return { ok, lines }
 }
@@ -212,6 +451,16 @@ export async function removeCowart() {
   } catch (error) {
     ok = false
     lines.push(`画布服务的开机自启没删掉：${error.message}`)
+  }
+  try {
+    const codex = await removeCodex()
+    if (!codex.skipped) {
+      ok &&= codex.ok
+      lines.push(...codex.lines)
+    }
+  } catch (error) {
+    ok = false
+    lines.push(`Codex 的 cowart skill 和提醒 hook 没删掉：${error.message}`)
   }
   return { ok, lines }
 }

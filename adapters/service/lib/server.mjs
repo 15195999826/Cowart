@@ -431,9 +431,12 @@ export class CanvasServer {
     if (req.method === 'POST' && url.pathname === '/api/bridge/call') {
       const { session: id, cwd, op, args, cli, host } = await readJsonBody(req)
       if (!validId(id)) return sendJson(res, 400, { error: '缺少会话标识。' })
-      const session = this.#session(id)
+      // Codex's prompt hook (hook-check) asks for every thread the user talks in: one that never ran
+      // a command is no session here, and none is made for it.
+      const asking = op === 'hook-check'
+      const session = asking ? this.#sessions.get(id) ?? null : this.#session(id)
       // A cowart command: the session is online for a while after it (no bridge keeps it).
-      if (cli === true) this.#touchCommandSession(session, nonEmpty(host))
+      if (cli === true && !asking) this.#touchCommandSession(session, nonEmpty(host))
       try {
         const result = await this.#bridgeCall(session, { cwd, op, args: args && typeof args === 'object' ? args : {} })
         return sendJson(res, 200, { result })
@@ -986,8 +989,17 @@ export class CanvasServer {
   }
 
   async #bridgeCall(session, { cwd, op, args }) {
-    session.cwd = nonEmpty(cwd) ?? session.cwd
+    if (session) session.cwd = nonEmpty(cwd) ?? session.cwd
     switch (op) {
+      case 'hook-check': {
+        // The requests still waiting for a Codex session, for its prompt hook to remind it of
+        // (cowart hook prompt). Asking delivers nothing; a known command session stays online
+        // the way its commands keep it.
+        if (!session) return { requests: [] }
+        if (session.cli) this.#touchCommandSession(session, 'codex')
+        const waiting = this.queue.list(session.id).filter((request) => !FINAL_STATUSES.has(request.status) && request.executor !== 'service')
+        return { requests: waiting.map(({ id, title, pageName, status }) => ({ id, title, pageName, status })) }
+      }
       case 'widget-call': {
         const pane = this.#touchWidget(session, args.pane)
         const body = args.body && typeof args.body === 'object' && !Array.isArray(args.body) ? args.body : {}
