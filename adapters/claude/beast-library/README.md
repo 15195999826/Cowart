@@ -20,6 +20,6 @@
 
 ## 要先装什么
 
-- **Claude Code 桌面版**（Windows / Mac，公司中转的桌面版也行）。命令行版 claude 和 Codex 用不了。
+- **Claude Code 桌面版**（Windows / Mac，公司中转的桌面版也行）。命令行版 claude 用不了；电脑上装了 Codex 的，装的时候顺带让 Codex 也能用（画布在 Codex 的内置浏览器里看）。
 - **Node 22.12 以上**。
 - **猛兽的 beast 命令行**：出图靠它。过了猛兽新手关的同事已经有了；没有也能用画布，只是 AI 图片 / AI 视频要改成发给会话来做。

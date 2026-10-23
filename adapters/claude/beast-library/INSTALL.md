@@ -1,5 +1,5 @@
 ---
-works-with: Claude Code 桌面版 · Windows / Mac（命令行版 claude、Codex 用不了）
+works-with: Claude Code 桌面版 · Windows / Mac（命令行版 claude 用不了；电脑上装了 Codex 的，顺带让 Codex 也能用）
 needs: Node ≥ 22.12 · 二选一：省心版 = Cowart 运行包 {{VERSION}}（猛兽取件柜 cowart 栏）/ 开发版 = git clone 源码自己改
 ---
 
@@ -9,7 +9,10 @@ Cowart 是 Claude Code 桌面版里的一块无限画布（tldraw）：图片、
 按页分给不同会话干活。装好之后在新会话里说「打开 Cowart 画布」，画布就在桌面版右侧的 Browser 面板里打开。
 
 Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bin/cowart.mjs <命令>`，全局的 cowart skill 讲怎么用。
-所以装的就两样东西：skill，和 `~/.cowart/bin/cowart.mjs` 这个命令入口（它指向装好的那一份 Cowart）。不用给项目注册任何东西，哪个项目里开的会话都能用。
+所以装的是：skill，`~/.cowart/bin/cowart.mjs` 这个命令入口（它指向装好的那一份 Cowart），Windows 上再加画布服务的开机自启
+（`~/.cowart/bin/cowart-service.mjs`、`start-service.vbs` 和启动文件夹里的 `CowartCanvas.lnk`，登录时在后台起画布服务，任务管理器「启动应用」里能禁用）。
+电脑上装了 Codex（有 `~/.codex`）的，命令的 `install` 还会顺带给 Codex 装上它的 cowart skill 和提醒 hook（Codex 也跑同一个命令，画布在 Codex 的内置浏览器里看）。
+不用给项目注册任何东西，哪个项目里开的会话都能用。
 
 ## 0. 先确认适用，再让用户二选一
 
@@ -39,8 +42,8 @@ Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bi
 | 用户级 MCP 注册 | 读 `~/.claude.json` 顶层 `mcpServers.cowart`。**别用** `claude mcp get` / `claude mcp list` 查：它们做健康检查会顺手拉起画布服务，服务占着命令的输出不放，命令卡住不返回 | 0.2.14 及以前装的，**不管哪一种都要注销**；看 `args` 里的脚本路径认出是哪一份（在 `~/.cowart/releases/cowart-<版本>/` 下 = 省心版，别的目录 = 开发版） |
 | 项目级 MCP 注册 | 读 `~/.claude.json`，找 `projects.<目录>.mcpServers` 里叫 `cowart` 的 | 以前在某个项目里单独注册过的，**都要注销**：项目级优先于用户级，不清的话，在那个项目里开的会话还走旧的那份 |
 | skill | `~/.claude/skills/cowart` | 普通文件夹 = 省心版；链接（Windows junction / Mac symlink）到某个 clone = 开发版。Git Bash 的 `ls` 会把 junction 也显示成链接，拿不准用 PowerShell `(Get-Item <路径>).LinkType` |
-| 运行包 | `~/.cowart/releases/` 下**只认 `cowart-<版本>` 开头的目录** | 省心版装过的版本。`<版本>-<提交>`（如 `0.2.13-d51159a`）这种是作者开发机上 Codex 用的发布副本，不归这本书管，查到也别动 |
-| Codex | `codex plugin list` 里的 cowart，以及 `~/.codex/config.toml` 里手工注册的 `[mcp_servers.cowart_mcp]` | 另一份，告诉用户、问要不要卸 |
+| 运行包 | `~/.cowart/releases/` 下**只认 `cowart-<版本>` 开头的目录** | 省心版装过的版本。`<版本>-<提交>`（如 `0.2.13-d51159a`）这种是作者开发机上的发布副本（以前给 Codex 插件用），不归这本书管，查到也别动 |
+| Codex 插件 | `codex plugin list` 里的 cowart | 以前的 Codex 插件，另一份，告诉用户、问要不要卸。`~/.codex/config.toml` 里的 `[mcp_servers.cowart_mcp]`、`~/.codex/skills/` 下以前插件的 cowart skill 链接不用手动清：第 3A / 3B 步的 install 会去掉（改之前先备份） |
 
 要装的跟已有的是同一种、同一个版本，而且没有 MCP 注册：什么都不用清，直接跳到第 6 步验证。否则按下面清：
 
@@ -50,7 +53,7 @@ Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bi
      第 4 步请用户开个新会话：新版的第一条 cowart 命令会把旧服务替换掉，旧会话也改连新服务。等 `--status` 里的 `root` 换成新的那份，再删旧运行包（第 4 条）。
    - **版本号一样或更小**，而服务跑的正是要删掉的那份（比如同一版本从开发版换省心版、还要删 clone）：先请用户关掉旧版注册之后开的会话，
      再 `--stop`，然后才删目录。不停的话，新装的那份会接着用这个目录已经删了的旧服务，画布页面打不开。
-   - 服务是别的东西起的（比如 Codex 那份、或者要留着的 clone）就**不停**，告诉用户：停了会打断那边开着的画布；版本号一样时新装的那份会直接连上它，不影响用。
+   - 服务是别的东西起的（比如以前 Codex 插件那份、或者要留着的 clone）就**不停**，告诉用户：停了会打断那边开着的画布；版本号一样时新装的那份会直接连上它，不影响用。
 2. 注销 MCP（先给用户看要删的那几行）：用户级 `claude mcp remove cowart -s user`；项目级的**进到那个项目目录里**跑 `claude mcp remove cowart -s local`。
    项目目录已经不在了（在那里跑不了命令）、或者找不到 `claude` 命令：备份 `~/.claude.json`，把对应的 `mcpServers.cowart` 那一项删掉。
 3. skill：`~/.claude/skills/cowart` 是**链接就只删链接本身**——Windows `cmd /c rmdir "%USERPROFILE%\.claude\skills\cowart"`；
@@ -58,7 +61,8 @@ Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bi
    都会穿过链接改掉、删掉它指向的 clone 里的源码。是普通文件夹就整个删。
 4. 省心版的运行包 `~/.cowart/releases/cowart-<旧版本>/`：删掉（升级时等服务换成新版再删，见第 1 条）。开发版的 clone 目录**不删**——那是用户自己的代码，告诉用户它已经不再被使用。
    clone 有未提交的改动、或者还连着远程仓库（`git -C <clone> status` / `git remote -v`）时，说明它可能是谁正在用的开发环境，先特别提醒用户再注销。
-5. `~/.cowart/bin/cowart.mjs` 不用删：第 3A / 3B 步装新的时会改写它。
+5. `~/.cowart/bin/` 下的 `cowart.mjs`、`cowart-service.mjs`、`start-service.vbs`，启动文件夹里的 `CowartCanvas.lnk`，以及 Codex 的 `~/.codex/skills/cowart` 链接、
+   `~/.codex/hooks.json` 里的 cowart hook 都不用删：第 3A / 3B 步装新的时会改写、改指向。
 6. **别动** `~/.cowart/canvas`（画布本身）、`~/.cowart-claude/`（会话名字、令牌、日志）：两种版本共用，切换不丢画布。
 
 ## 2. Node ≥ 22.12（两种都要；AI 查，没有请用户装）
@@ -82,13 +86,15 @@ Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bi
    - Mac：`mkdir -p ~/.cowart/releases && unzip -q cowart-{{VERSION}}.zip -d ~/.cowart/releases`。
 5. 解出来的顶层目录就是 `cowart-{{VERSION}}`（列一下 `~/.cowart/releases/` 确认），`~/.cowart/releases/cowart-{{VERSION}}/adapters/generated/cowart.mjs` 在，`release-origin.json` 里的
    `version` 是 `{{VERSION}}`。下载的 zip 删掉。
-6. 装 cowart 命令（先告诉用户：要写 `~/.cowart/bin/cowart.mjs`，指向这个运行包）：
+6. 装 cowart 命令（先告诉用户：要写 `~/.cowart/bin/cowart.mjs`，指向这个运行包；Windows 上还会装画布服务的开机自启；
+   装了 Codex 的电脑上还会改 `~/.codex`：链上 Codex 的 cowart skill、在 `hooks.json` 里加提醒 hook、从 `config.toml` 去掉以前的 `cowart_mcp`，改之前都先备份）：
 
    ```bash
    node "<家目录>/.cowart/releases/cowart-{{VERSION}}/adapters/generated/cowart.mjs" install
    ```
 
-   它打出「已安装 cowart 命令：… → …」就好了。Windows 上路径里的反斜杠换成 `/` 也行。
+   第一行打出「已安装 cowart 命令：… → …」，后面每装一样一行（开机自启、Codex 的 skill / hook，没有 Codex 时说跳过）。
+   退出码不是 0 = 有一样没装上，原因就在那几行里，照原话告诉用户。Windows 上路径里的反斜杠换成 `/` 也行。
 7. skill：照接入清单把这本书的 SKILL.md 放进 `~/.claude/skills/cowart/`（第 1 步已经把链接、旧的那份清掉了；还在就先回第 1 步第 3 条）。
 
 ## 3B. 开发版：clone 源码
@@ -105,9 +111,10 @@ Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bi
    换行按 LF 检出是仓库自己的要求（FORK.md：Windows 上 CRLF 检出会把页面产物打坏）。去掉 origin 之后这份代码就是用户自己的：
    作者以后的更新不会拉进来，用户的改动也推不回作者那里。
 3. 装适配层依赖：`npm ci --prefix "<目录>/adapters"`（约 50 MB，MCP SDK 等）。
-4. 压掉仓库根目录 `.mcp.json` 里给 Codex 用的 `cowart_mcp`：在 `<目录>/.claude/settings.local.json` 写
+4. 压掉仓库根目录 `.mcp.json` 里上游原版的 `cowart_mcp`（上游给 Codex 插件用的，这个 fork 不用它）：在 `<目录>/.claude/settings.local.json` 写
    `{"disabledMcpjsonServers": ["cowart_mcp"]}`（已有这个文件就合并进去）。不压的话，在这个目录里开 Claude 会话会多出一套冲突的工具。
-5. 装 skill 和 cowart 命令（先告诉用户：要把 `~/.claude/skills/cowart` 链接到仓库里的 skill，再写 `~/.cowart/bin/cowart.mjs` 指向仓库里的命令）：
+5. 装 skill 和 cowart 命令（先告诉用户：要把 `~/.claude/skills/cowart` 链接到仓库里的 skill，再写 `~/.cowart/bin/cowart.mjs` 指向仓库里的命令；
+   跟 3A 第 6 步一样，Windows 上还装开机自启，装了 Codex 的电脑上还改 `~/.codex`，改之前先备份）：
 
    ```bash
    node "<目录>/adapters/claude/scripts/install-skill.mjs"
@@ -115,12 +122,13 @@ Cowart 在 Claude Code 里**没有 MCP**：会话用 Bash 跑 `node ~/.cowart/bi
 
    **这本书的 SKILL.md 不用放**（接入清单的「放进 skill 目录」那一步照这里来）：以后改仓库里的 skill、命令直接生效。
 6. 告诉用户怎么改：开发准则、目录、补丁点都在仓库的 `FORK.md`，在这个目录里开会话改就行。FORK.md 里关于推送 GitHub、
-   发 Codex 插件、上架猛兽图书馆（`publish-beast-library.mjs`）的部分是作者自己的发版流程，脱钩之后用不上。
+   升版本发版、上架猛兽图书馆（`publish-beast-library.mjs`）的部分是作者自己的发版流程，脱钩之后用不上。
    改了画布页面（`src/`）要在根目录 `npm ci && npm run build:artifacts` 重新生成页面产物（再多约 170 MB 依赖），只改 `adapters/` 不用。
 
 ## 4.（两种都要）开一个新会话（用户本人）
 
 skill 只对新会话生效：请用户在桌面版里**新开一个会话**，不用退出桌面版。已经开着的会话看不到新 skill（第 1 步注销的旧 MCP 也还挂着），要在里面用就关掉重开。
+装了 Codex 的：Codex 那边也开一个新任务（看不到 cowart skill 就重开 Codex），Codex 第一次见到提醒 hook 时会请用户信任它，点信任。
 
 ## 5. 验证（在新会话里）
 
@@ -129,6 +137,9 @@ skill 只对新会话生效：请用户在桌面版里**新开一个会话**，�
 - 用户说「打开 Cowart 画布」：Browser 面板打开画布页面，顶部显示这个会话起的名字和「Claude 在等请求」（后台监听连上了）。
 - 命令说「只在 Claude Code 桌面版里用 … 入口是 …」= cowart 认为这个会话不是桌面版。用户确实在桌面版里，就把那句原话（带入口名）告诉用户、
   转给作者；临时绕法是在 `~/.claude/settings.json` 的 `env` 里加 `"COWART_ALLOW_CLI": "1"`，再开新会话（代价是终端里的 `claude` 命令行会话里 cowart 也干活）。
+- Windows：启动文件夹里有 `CowartCanvas.lnk`（install 那几行里写着路径；用户下次登录时画布服务就自己起来）。
+- 装了 Codex 的：`~/.codex/skills/cowart` 是指向这一份 Cowart 的链接，`~/.codex/hooks.json` 里有一条带 `hook prompt` 的 hook；
+  在 Codex 新任务里说「打开 Cowart 画布」，回来一个链接，点开在 Codex 的内置浏览器里看到画布。
 - 起不来：看 `~/.cowart-claude/service.log` 最后几十行，把报错告诉用户。
 - 回报时说清装的是**省心版 {{VERSION}}** 还是**开发版（从 {{COMMIT}} 起步、已脱钩，目录在哪）**，以及第 1 步清掉了什么。
 
@@ -141,5 +152,5 @@ skill 只对新会话生效：请用户在桌面版里**新开一个会话**，�
 ## 以后
 
 - **省心版升级**：`beast skill ls` 看到《cowart》有新版 → `beast skill get cowart` 再借一次 → 版本号变了就照 3A 装新运行包
-  （第 6 步的 `install` 会把 `~/.cowart/bin/cowart.mjs` 改指到新包；服务不用停、会话不用关），第 4 步开个新会话，`--status` 看到服务换成新版后删旧运行包，再第 5 步。
+  （第 6 步的 `install` 会把 `~/.cowart/bin/cowart.mjs`、开机自启和 Codex 的 skill 链接都改指到新包，Codex 的 hook 跑的是命令入口、跟着走；服务不用停、会话不用关），第 4 步开个新会话，`--status` 看到服务换成新版后删旧运行包，再第 5 步。
 - **开发版**：书出新版不用管。想换回省心版，照本说明选省心版重装一遍（第 1 步会清掉开发版的 skill 链接，clone 目录留着）。

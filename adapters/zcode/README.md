@@ -4,9 +4,9 @@
 
 ```
 ZCode 会话 ──stdio MCP──▶ 薄桥 cowart-zcode-mcp.mjs ──────────┐
-Claude Code 会话 ──Bash──▶ cowart 命令（adapters/claude，没有 MCP）──┤ HTTP 127.0.0.1:43240（令牌）
+Claude Code / Codex 会话 ──▶ cowart 命令（adapters/claude，没有 MCP）──┤ HTTP 127.0.0.1:43240（令牌）
                                                                  ▼
-              画布服务 adapters/service（全机一个，后台进程，空闲 10 分钟退出）
+              画布服务 adapters/service（全机一个，常驻：登录时自启，全机那张画布的服务闲着不退出）
                 ├─ 上游 Cowart 服务（黑盒子进程）+ 请求队列（按页路由）+ 画布直接生成
                 └─ 网页画布 ──▶ 任何浏览器打开（网址带会话标识；ZCode 没有 Browser 面板）
 ```

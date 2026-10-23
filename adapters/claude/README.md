@@ -1,38 +1,40 @@
-# Cowart · Claude Code 适配层
+# Cowart · Claude Code / Codex 适配层
 
-让上游 Cowart 画布在 **Claude Code 桌面版**里可用。改动都在本目录、`adapters/service/`（全机共用的画布服务）和 `adapters/shared/`；上游只开了几个通用的扩展接口（工具栏加按钮、图片工具栏加按钮、接管 AI 图片面板），另外把标注改成绑定到卡片（补丁点见仓库根目录 [FORK.md](../../FORK.md)）。
+让上游 Cowart 画布在 **Claude Code 桌面版**和 **Codex** 里可用：两边跑的是同一个 `cowart` 命令（Codex 2026-10-23 起，之前是原生 MCP Apps 小部件 + MCP 桥）。改动都在本目录、`adapters/service/`（全机共用的画布服务）和 `adapters/shared/`；上游只开了几个通用的扩展接口（工具栏加按钮、图片工具栏加按钮、接管 AI 图片面板），另外把标注改成绑定到卡片（补丁点见仓库根目录 [FORK.md](../../FORK.md)）。
 
 ## 它做了什么
 
 ```
-Claude Code 会话 A ──Bash──▶ node ~/.cowart/bin/cowart.mjs <命令>（每条命令一个短进程）──┐
-Claude Code 会话 B ──Bash──▶ node ~/.cowart/bin/cowart.mjs <命令>                        ──┤ HTTP 127.0.0.1:43240（令牌）
-                                                                                          ▼
-                    画布服务 adapters/service（全机一个，后台进程，空闲 10 分钟退出）
-                      ├─ 上游 Cowart 服务（mcp/generated，黑盒子进程，只有一个）
-                      ├─ 网页画布 ──▶ 各会话 Browser 面板里的画布页面（网址带会话标识）
-                      │     └─ 上游画布页面 + 注入的 Claude 宿主桥（web/bridge.js）+ 两边共用的页面脚本（../shared/web）
-                      └─ 请求队列（按页路由）──▶ cowart listen（各会话 Bash 后台跑着，来了请求才退出；连着 = 会话在线）──▶ 唤醒负责那一页的会话
+Claude Code 会话 ──Bash──▶ node ~/.cowart/bin/cowart.mjs <命令>（每条命令一个短进程）──┐
+Codex 会话 ──终端命令──▶ node ~/.cowart/bin/cowart.mjs <命令>                         ──┤ HTTP 127.0.0.1:43240（令牌）
+                                                                                       ▼
+                    画布服务 adapters/service（全机一个，常驻：登录时自启，全机那张画布的服务闲着不退出）
+                      ├─ 上游 Cowart 服务（mcp/generated，黑盒子进程，只有一个；3 分钟没有调用就停，下次调用再起）
+                      ├─ 网页画布 ──▶ Claude 的 Browser 面板 / Codex 的内置浏览器里的画布页面（网址带会话标识）
+                      │     └─ 上游画布页面 + 注入的宿主桥（web/bridge.js）+ 各宿主共用的页面脚本（../shared/web）
+                      └─ 请求队列（按页路由）──▶ Claude：cowart listen（会话 Bash 后台跑着，来了请求才退出；连着 = 会话在线）──▶ 唤醒负责那一页的会话
+                                                └▶ Codex：没有监听；用户每发一句话，提醒 hook（cowart hook prompt）有请求在等就提一句
 ```
 
-`cowart` 命令（`bin/cowart.mjs`，逻辑在 `lib/cli.mjs`）是 Claude 这边唯一的入口：没有 MCP 服务。以前是每个项目各注册一个 MCP 薄桥，没注册的项目里用不了，会话在不在线也全看那个 MCP 进程活着没有（桥一退出，会话负责的页就丢了）。现在 skill 是全局的，命令在 `~/.cowart/bin/cowart.mjs` 这个固定位置，哪个项目里开的会话都能用；会话在线靠后台跑着的 `cowart listen`（见下面的「会话在线」）。Codex 的画布是 MCP Apps 小部件，还是 MCP；ZCode 也还是 MCP 桥（`adapters/zcode`）。
+`cowart` 命令（`bin/cowart.mjs`，逻辑在 `lib/cli.mjs`）是 Claude Code 和 Codex 唯一的入口：没有 MCP 服务。以前 Claude 是每个项目各注册一个 MCP 薄桥，没注册的项目里用不了，会话在不在线也全看那个 MCP 进程活着没有（桥一退出，会话负责的页就丢了）。现在 skill 是全局的，命令在 `~/.cowart/bin/cowart.mjs` 这个固定位置，哪个项目里开的会话都能用；Claude 的会话在线靠后台跑着的 `cowart listen`（见下面的「会话在线」）。命令从环境变量认宿主（`lib/cli.mjs` 的 `hostFromEnv`）：有 `CLAUDE_CODE_*` 是 Claude Code，只有 `CODEX_THREAD_ID` 是 Codex，结果和请求说明按宿主换说法（Codex 版 skill 在 `codex-skill/cowart`）。ZCode 还是 MCP 桥（`adapters/zcode`）。
 
-| 上游在 Codex 里的做法 | 这里的替代 |
+| 上游原版在 Codex 里的做法（本 fork 的 Codex 到 2026-10-23 也是） | 这里的替代 |
 |---|---|
-| MCP Apps widget 内嵌显示 | 画布服务在本地提供网页，在 Browser 面板打开 |
+| MCP Apps widget 内嵌显示 | 画布服务在本地提供网页：Claude 在 Browser 面板、Codex 在内置浏览器里打开 |
 | 画布调工具走 MCP Apps 桥 | 注入 `window.cowartMcp`，经本地 HTTP 交给画布服务里的上游服务 |
-| 画布发消息 = `ui/message` 对话轮 | 进请求队列 → 发给负责这一页的会话 → 后台监听退出、唤醒会话 → Claude 用确认卡片问用户 → 执行 |
-| Codex 内置 imagegen | AI 图片面板里选 beast-gen 模板；上游其它生图请求改用 beast-gen skill |
+| 画布发消息 = `ui/message` 对话轮 | 进请求队列 → 发给负责这一页的会话 → Claude：后台监听退出、唤醒会话，用确认卡片问用户再执行；Codex：用户发话时提醒 hook 提一句，用户说「看画布」或答应时再取来做 |
+| Codex 内置 imagegen | Claude：AI 图片面板里选 beast-gen 模板，上游其它生图请求改用 beast-gen skill；Codex：照旧能选 Codex imagegen，由负责那页的 Codex 会话用内置生图完成 |
 | GA4 统计 | 统计工具不转发，页面安全策略挡掉所有外部域名 |
 
 另外补了上游没有的：
 
-- **全机一个画布服务**：会话用 Bash 跑 `cowart` 命令，每条命令连上服务、做一件事就退出；画布网页、上游子进程、请求队列都在同一个后台服务里：第一次用时自动在后台拉起，之后各会话复用；没有会话在线、也没有打开的画布页面，10 分钟后自动退出。同一张画布可以同时在几个会话里开着，写入都经这一个服务排队，不会再两边各写一份文件。
+- **全机一个画布服务**：会话跑 `cowart` 命令，每条命令连上服务、做一件事就退出；画布网页、上游子进程、请求队列都在同一个后台服务里。Windows 上登录时由开机自启拉起（`install` 装的），没在跑时第一条命令在后台拉起（经 WMI，不挂在 Claude Code / Codex 下，宿主关了它也不跟着没），之后各会话复用；全机那张画布的服务闲着也不退出，上游子进程 3 分钟没有调用就先停掉、省内存。同一张画布可以同时在几个会话里开着，写入都经这一个服务排队，不会再两边各写一份文件。
 - **分页负责制**：一张画布大家共用，谁都能看、能改；权限只在「页」上（tldraw 的页，左上角切换）。每一页同一时间由一个会话负责，每个会话最多负责一页。在哪个会话里说「打开 Cowart 画布 角色设定」（或「接管 角色设定」「接管这页」），「角色设定」就归它：没有这页就新建，原来负责它的会话自动让出，这个会话之前负责的页放掉。只说「打开 Cowart 画布」只打开画布，不进任何页；在画布上翻页只是看。某一页的 AI 请求发给负责它的会话，不管是在哪个会话的 Browser 面板里点的；没人负责的页，点它的那个面板所属的会话就顺手负责了。不带 `pageId` 的插入放进这个会话负责的页，没负责页时放进它的面板正看着的页（没人负责的话）；别的会话负责的页不能往里放东西（例外：它之前从那页发出、还在做的请求，结果照样放回），Claude 会提示你说「接管 <页名>」。之后不带目录调用的 Cowart 工具，都作用在这个会话最后打开的那张画布上。
 - **同一页几个面板同时改也不出错**：上游页面每次保存整张画布，两个面板同时改会互相覆盖。这里的页面保存只交「我改了什么」（改动 / 新增的记录和删掉的记录），画布服务合到磁盘副本再存：晚同步的面板冲不掉别人的东西，没见过的页和记录也删不掉，AI 插进来的结果不会丢。两个面板同时在一页画东西，各自的东西都在；只有同一时刻改同一条记录，后一个才盖掉前一个。
-- **请求按页送到负责的会话**：画布网址带会话标识，命令和监听从环境变量拿会话标识（桌面版给会话的 Bash 传 `CLAUDE_CODE_HOST_SESSION_ID`），一个 Browser 面板就属于打开它的那个会话（画布顶部显示它的名字，这就是「我是谁」）。在某一页点 AI 按钮，请求进画布服务的队列、发给负责这一页的会话；面板上的提示条会写明发给了谁（「#5 AI 图片 → 阿满 · 请到阿满的对话里点执行」），`request / reply / requests` 只看得到路由到本会话的请求。会话结束后，它负责的页变成没人负责，它打开的面板顶部显示「小川 的会话已结束：回到 Claude Code 重新打开画布才能接上」（在这个面板里点别的会话负责的页照样能发过去），没处理的请求留着；同一个会话再跑任何 cowart 命令就接上了，补发这些请求，那一页没被别人接走的话也还是它的。
-- **会话在线**：后台跑着的 `cowart listen` 连着，这个会话就在线。监听送来请求后退出（这就是叫醒会话的方式）：会话正在处理、在等用户回答，所以照样在线，页还是它的，直到它重跑监听（最多 12 小时）。监听没送请求就断了（会话被关、后台任务被停），2 分钟后算会话结束、放掉它负责的页。从没起过监听、只跑命令的会话，最后一条命令后 30 分钟结束。
+- **请求按页送到负责的会话**：画布网址带会话标识，命令和监听从环境变量拿会话标识（桌面版给会话的 Bash 传 `CLAUDE_CODE_HOST_SESSION_ID`；Codex 给它跑的命令传 `CODEX_THREAD_ID`，会话是 `codex-<thread>`），一个 Browser 面板（Codex 是内置浏览器里的那一页）就属于打开它的那个会话（画布顶部显示它的名字，这就是「我是谁」）。在某一页点 AI 按钮，请求进画布服务的队列、发给负责这一页的会话；面板上的提示条会写明发给了谁（「#5 AI 图片 → 阿满 · 请到阿满的对话里点执行」），`request / reply / requests` 只看得到路由到本会话的请求。会话结束后，它负责的页变成没人负责，它打开的面板顶部显示「小川 的会话已结束：回到 Claude Code 重新打开画布才能接上」（在这个面板里点别的会话负责的页照样能发过去），没处理的请求留着；同一个会话再跑任何 cowart 命令就接上了，补发这些请求，那一页没被别人接走的话也还是它的。
+- **会话在线**：后台跑着的 `cowart listen` 连着，这个会话就在线。监听送来请求后退出（这就是叫醒会话的方式）：会话正在处理、在等用户回答，所以照样在线，页还是它的，直到它重跑监听（最多 12 小时）。监听没送请求就断了（会话被关、后台任务被停），2 分钟后算会话结束、放掉它负责的页。从没起过监听、只跑命令的会话，最后一条命令后 30 分钟结束。Codex 会话没有监听：它的画布页开着就在线，页关了再留 30 分钟，之后的每条命令和每次提醒 hook 也续这 30 分钟。
 - **会话空闲时不耗 token**：每个会话在后台跑一个监听（`node ~/.cowart/bin/cowart.mjs listen`，用 Bash 的 `run_in_background` 跑）。它平时一直等着、不唤醒会话；画布上真来了请求才退出，后台任务的完成通知把会话叫醒，会话处理完再启动一次。它没有定时器，画布服务换版本重启时自己接上，会话挂一晚上也不会被叫醒。监听没在跑时（会话正在处理上一条、会话重开或桌面版重启过），请求在画布服务里排队，画布顶部写「请求会排队 · 到对话里说「看画布」」：在那个会话里说一句「看画布」，Claude 就把排队的请求取来问你。不用 Monitor：它一次最多 30 分钟，到点必定叫醒会话。
+- **Codex 里同一个命令**：Codex 会话在终端里跑 `node ~/.cowart/bin/cowart.mjs <命令>`（Codex 版 skill 讲怎么用）。`open` 给一个可点的链接，画布在 Codex 的内置浏览器里看；画布请求叫不醒 Codex，在服务里排队：用户每发一句话，Codex 跑一次提醒 hook（`cowart hook prompt`，`install` 写进 Codex 的 `hooks.json`），有请求在等这个会话就在这句话后面附一句提醒（编号、标题、哪一页），没有就什么都不加，服务没跑或 2.5 秒没答也不加，用户的话不等它。模型先答用户这句话，跟画布无关时在回复末尾问一句要不要做；用户说「看画布」或答应时 `requests` 取、`request <N>` 照做。`listen` 在 Codex 里不用。AI 图片面板在 Codex 打开的画布上多一项 Codex imagegen，用 Codex 内置的图片生成。
 - **AI 图片 / AI 视频点发送就生成**：面板里模型和参数都选好了，点「发送」后画布服务直接调猛兽生成，不经过 Claude 会话、也不用在对话里确认：先写提示词（后台跑一次不带工具的 `claude -p`，按 beast-gen skill 里这个模型的写法把你的描述改写好，参考图一起给它看），再上传素材、提交、等结果，生成完直接替换占位框（要透明底的先抠图）。画布顶部的请求条显示走到哪一步（写提示词 / 排队 / 生成中 / 放进画布），放进画布之前可以点「撤销」停下。本机没装 beast 命令行时退回老路：请求发给会话、在对话里确认。
 - **AI 图片面板按 beast-gen 能力选**：点 AI 图片框弹出的面板换成适配层的：参考图、描述，底栏选模型（自动 / Krea 2 / FLUX.2 Klein / FLUX.2 Dev / Ideogram 4 / Lib Image 2.5 Fast·Pro）和参数（画幅、清晰度、张数、档位、透明底），右侧显示大概耗时或「消耗团队额度」。画幅也在参数里选：选了框就变成那个比例并锁定，拖框角只改大小（上游原本放在右上角的「尺寸 / 比例」不再显示，控制项都在这一个面板里）。先选中图片再点 AI 图片，框会建在图片右边的空地上，这些图自动成为参考图。「自动」按需求在免费模板里挑（写提示词时一起定）。
 - **标注绑定到卡片**：用底部「标注」工具从任意位置拖一根箭头，拖动时鼠标下的卡片会高亮，在卡片上松手，箭头尖就钉在松手的那个点，接着写要求：回车完成（Shift+回车换行），也可以按 Esc 或点别处；完成后回到选择模式，点到的卡片会被选中、出现它的工具栏，再画一条要重新点「标注」。没写字就结束的标注直接撤掉，不会留下空箭头。能标的卡片是图片（含网页卡片）、视频、AI HTML、AI Slides；松手的地方不是卡片，这根箭头会撤掉并提示「标注要指向一张卡片」。绑定关系存在画布数据里：移动卡片时标注整条跟着走，删卡片时它的标注一起删（撤销时一起回来）；把箭头尖拖到另一张卡片上就改绑到松手的位置，拖到空白处（或整根箭头拖得箭头尖离开了卡片）会退回原位并提示。按标注修改 / 按标注生成 Html、AI HTML 和 AI Slides 的按标注修改、网页卡片的「照这个做 HTML」都只取绑在这张卡片上的标注（上游原本按卡片周围一圈里的红色箭头和文字去猜）；发给 AI 的请求除了截图，还逐条列出每个标注的字和它指向卡片上的位置。只认「标注」「注释」工具画的箭头，红色文字、普通箭头不算；以前画的标注，打开画布时箭头尖落在卡片上的会自动补上绑定。
@@ -63,20 +65,24 @@ Claude Code 会话 B ──Bash──▶ node ~/.cowart/bin/cowart.mjs <命令> 
 npm install --prefix adapters
 ```
 
-再装 Claude 这边（一次就行；仓库挪了位置再跑一次，`uninstall:claude` 移除）：
+再装 Claude Code 和 Codex 这边（一次就行；仓库挪了位置再跑一次，`uninstall:claude` 移除）：
 
 ```bash
 npm --prefix adapters run install:claude
 ```
 
-它做两件事：
+它做这几件事（除了第一件，其余都在 `lib/install.mjs`，`cowart install` / `uninstall` 也是它；每件一行说明，有一件没装上就退出 1）：
 
 - 在 `~/.claude/skills/cowart` 建一个指向 `adapters/claude/skills/cowart` 的目录链接（Windows 是 junction，不用管理员权限），skill 跟着检出的代码走；
-- 写 `~/.cowart/bin/cowart.mjs`：一个指向本仓库 `adapters/claude/bin/cowart.mjs` 的小入口。skill 里的命令都写成 `node ~/.cowart/bin/cowart.mjs <命令>`，所以不管 Cowart 装在哪，会话都用这一个路径。
+- 写 `~/.cowart/bin/cowart.mjs`：一个指向本仓库 `adapters/claude/bin/cowart.mjs` 的小入口。skill 里的命令都写成 `node ~/.cowart/bin/cowart.mjs <命令>`，所以不管 Cowart 装在哪，会话都用这一个路径；
+- 画布服务的开机自启（只在 Windows）：`~/.cowart/bin/cowart-service.mjs`（同样是指向本仓库服务入口的小入口）、旁边的 `start-service.vbs`（不显示窗口跑服务，只跑一份；退出码 0 / 3 / 4 就结束，别的 60 秒后重起）和启动文件夹里的 `CowartCanvas.lnk`。登录时服务就起来，任务管理器「启动应用」里能禁用。装的时候不启动服务，会话用到时照旧拉起；
+- 这台机器装了 Codex（有 `CODEX_HOME`，没设就看 `~/.codex`）时：把 `<Codex 主目录>/skills/cowart` 链到 `codex-skill/cowart`，删掉以前 Codex 插件留下的 `cowart-image-edit` / `cowart-image-gen` / `cowart-open-canvas` 链接，在 `hooks.json` 里装上提醒 hook（UserPromptSubmit，已有的别的 hook 原样留着，Codex 第一次见到它时要在 Codex 里信任一次），从 `config.toml` 里删掉以前插件的 `[mcp_servers.cowart_mcp]`（开着的 Codex 重开才不再起它）。改 `hooks.json`、`config.toml` 之前先备份成 `<文件>.bak-cowart-<时间>`。
 
-不用再给每个项目 `claude mcp add`：skill 是全局的，任何项目里新开的桌面版会话都能用。以前注册过的项目级 `mcpServers.cowart`（在 `~/.claude.json` 里）删掉，免得同一个会话里多出一套 MCP 工具。命令只在桌面版里干活：会话入口（`CLAUDE_CODE_ENTRYPOINT`）是 `claude-desktop` 或它带后缀的变体（公司中转版是 `claude-desktop-3p`）才算桌面版；别的入口（命令行版、VS Code 插件等）跑 cowart 只提示入口不对、不拉起画布服务。没设入口变量时（手动在终端里试）照常，要设 `COWART_SESSION_ID=<随便一个名字>` 当会话标识。
+`uninstall:claude` 删掉这些（入口指向别的 Cowart 时不动；正在跑的画布服务不停；`cowart_mcp` 不恢复）。
 
-`node ~/.cowart/bin/cowart.mjs help` 看所有命令，`help <命令>` 看那个命令的参数（命令自己的参数之外，工具定义里少用的参数也列着、配中文说明，写成 `--kebab-case`；也能整个给 `--json`）。画布请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在 skill 里，Claude 做画布上的事之前会先加载它。
+不用再给每个项目 `claude mcp add`：skill 是全局的，任何项目里新开的桌面版会话都能用。以前注册过的项目级 `mcpServers.cowart`（在 `~/.claude.json` 里）删掉，免得同一个会话里多出一套 MCP 工具。命令只在桌面版里干活：会话入口（`CLAUDE_CODE_ENTRYPOINT`）是 `claude-desktop` 或它带后缀的变体（公司中转版是 `claude-desktop-3p`）才算桌面版；别的入口（命令行版、VS Code 插件等）跑 cowart 只提示入口不对、不拉起画布服务。没设入口变量时（手动在终端里试）照常，要设 `COWART_SESSION_ID=<随便一个名字>` 当会话标识。这道门只管 Claude Code：Codex 会话（只有 `CODEX_THREAD_ID`）不查。
+
+`node ~/.cowart/bin/cowart.mjs help` 看所有命令，`help <命令>` 看那个命令的参数（命令自己的参数之外，工具定义里少用的参数也列着、配中文说明，写成 `--kebab-case`；也能整个给 `--json`）。画布请求怎么处理、结果放哪一页、标注怎么读、Codex 口吻的提示词怎么换成 beast-gen 都在 skill 里，Claude 做画布上的事之前会先加载它；Codex 读它自己的那份（`codex-skill/cowart/SKILL.md`）。
 
 环境变量：
 
@@ -84,9 +90,12 @@ npm --prefix adapters run install:claude
 - `COWART_CANVAS_DIR`：全机那张画布放在哪，默认 `~/.cowart/canvas`；只管会话拉起的那个服务，平时不用设。
 - `COWART_DOMAIN_PORT`：本机门房（Caddy 之类，把 `cowart.localhost` 转到画布服务的端口、保留 Host）听的端口，默认 80（只给用这台机器画布的服务）。门房转到了本服务，网址就是 `http://cowart.localhost`；没有门房时是 `cowart.localhost:<服务端口>`；`0` 关掉，网址回到 `127.0.0.1:<服务端口>`。
 - `COWART_ALLOW_CLI=1`：命令行版等非桌面入口也让 cowart 干活（没有 Browser 面板，网址在浏览器里打开）。
-- `COWART_SESSION_ID`：会话标识，手动试用、测试时用；平时由桌面版的 `CLAUDE_CODE_HOST_SESSION_ID` 给。
+- `COWART_SESSION_ID`：会话标识，手动试用、测试时用；平时由桌面版的 `CLAUDE_CODE_HOST_SESSION_ID` 给（Codex 是 `codex-<CODEX_THREAD_ID>`）。
+- `COWART_HOST`：当作哪个宿主（`claude` / `codex`），测试、手动试用时用；平时按有没有 `CLAUDE_CODE_*`、`CODEX_THREAD_ID` 认。
 - `COWART_SESSION_BUSY_MS` / `COWART_LISTENER_GONE_MS` / `COWART_SESSION_LEASE_MS`：会话在线的三段时间（只管它拉起的服务）：监听送来请求后最多在线多久（默认 12 小时）、监听没送请求就断了以后多久算结束（默认 2 分钟）、没监听时最后一条命令后多久算结束（默认 30 分钟）。
 - `COWART_COMMAND_LINK`：`install` 写的入口放哪，默认 `~/.cowart/bin/cowart.mjs`（测试用）。
+- `COWART_SERVICE_LINK`：`install` 写的服务入口放哪，默认 `~/.cowart/bin/cowart-service.mjs`，`start-service.vbs` 写在它旁边；`COWART_STARTUP_DIR`：`CowartCanvas.lnk` 放进哪个启动文件夹，默认问 Windows（都是测试用）。
+- `CODEX_HOME`：Codex 的主目录，默认 `~/.codex`；`install` 往这里装 Codex 的 skill 和提醒 hook，目录不在就跳过。
 - `COWART_SERVICE_IDLE_MS`：画布服务空闲多久退出，默认全机那张画布的服务不退出、别的画布（`COWART_CANVAS_DIR`）的 10 分钟；`COWART_UPSTREAM_IDLE_MS`：上游子进程多久没有调用就停掉（下次调用再拉起），默认 3 分钟。
 - `COWART_BEAST_CLI`：猛兽命令行的位置，默认 `~/.beast/bin/beast.mjs`；找不到时 AI 图片 / AI 视频退回发给会话。
 - `COWART_PROMPT_WRITER=off`：画布直接生成时不改写提示词，按原话（套上模板必需的结构）生成；`COWART_PROMPT_MODEL` 换写提示词的模型（默认 haiku），`COWART_CLAUDE_CLI` 指定 claude 可执行文件。
@@ -95,13 +104,13 @@ npm --prefix adapters run install:claude
 
 ```bash
 npm --prefix adapters run service:status    # 在跑的服务、连着的会话和页面
-npm --prefix adapters run service:stop      # 停掉它，下次有会话要用时自动拉起
+npm --prefix adapters run service:stop      # 停掉它，下次有会话要用时自动拉起（开机自启要到下次登录才再起它）
 node adapters/service/bin/cowart-service.mjs --stop --port <端口>   # 只停这个端口上的（测试服务、联调宿主）
 ```
 
 `service:status` / `service:stop` 像 cowart 命令一样从 43240 往后找；`service:stop` 只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停，要停就带上它的端口。给了端口（`--port` 或 `COWART_CLAUDE_PORT`），`--stop` 就只看这一个端口，不往后找；`--status` 找到的不是问的那个端口时会说。
 
-服务日志在 `~/.cowart-claude/service.log`。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
+服务日志在 `~/.cowart-claude/service.log`（服务自己追加；它没起来时的退出码在 `~/.cowart-claude/service-exit/<pid>`，拉起它的命令读完就删）。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
 
 ## 使用
 
@@ -110,13 +119,19 @@ node adapters/service/bin/cowart-service.mjs --stop --port <端口>   # 只停�
 3. AI 图片 / AI 视频点「发送」就开始生成，进度和结果都在画布上。其它请求（按标注修改、AI HTML、AI Slides、照这个做 HTML）在负责这一页的会话里弹一张确认卡片，点了才执行，卡片里选免费本地模型 / 云端模型。结果回到画布，状态显示在画布顶部。
 4. 用着哪里不舒服，在任何会话里说「反馈：……」，Claude 用 `cowart feedback`（工具 `send_cowart_feedback`）记到本机的 `~/.cowart/feedback/`（会话、页、代码版本、最近的画布请求自动附上）；回到 Cowart 仓库用 `npm --prefix adapters run feedback` 查看和处理（见 FORK.md「反馈」）。
 
-画布是画布服务的，全机只有一张，所有会话、所有项目都在上面按页分工：数据存在 `~/.cowart/canvas/`（每页一个目录，素材跟着页走），格式和 Codex 版一致。以前存在各项目 `canvas/` 下的页，用 `node adapters/service/bin/cowart-service.mjs --import <画布目录> …` 搬进来（整页目录拷过去，原目录不动）。
+在 Codex 里（装好后开一个新任务，还看不到 cowart skill 就重开 Codex；提醒 hook 第一次出现时在 Codex 里信任它）：
+
+1. 对 Codex 说「打开 Cowart 画布」或「打开 Cowart 画布 角色设定」。它跑 `cowart open`，回你一个链接，点开就在 Codex 的内置浏览器里看画布（也可以 Ctrl+Shift+B 打开内置浏览器再粘贴网址）。
+2. AI 图片 / AI 视频跟 Claude 一样点发送就生成。其它请求（按标注修改、AI HTML、AI Slides、照这个做 HTML、选了 Codex imagegen 的 AI 图片）排在服务里：你下次在这个任务里说话时，Codex 会在回复里提到有几条请求在等；说「看画布」（或答应要做）它就取来照做，结果回到原来那一页。
+
+画布是画布服务的，全机只有一张，所有会话、所有项目都在上面按页分工：数据存在 `~/.cowart/canvas/`（每页一个目录，素材跟着页走），格式和上游原版一致。以前存在各项目 `canvas/` 下的页，用 `node adapters/service/bin/cowart-service.mjs --import <画布目录> …` 搬进来（整页目录拷过去，原目录不动）。
 
 ## 开发与检查
 
 ```bash
-npm --prefix adapters run test:claude       # 端到端：冒烟、多会话、直接生成、反馈、整理、右键菜单、页的文件夹、手动停服务、网址测试（cowart 命令一条一个进程地跑；临时项目、测试端口，不碰真实画布和反馈目录）
+npm --prefix adapters run test:claude       # 端到端：冒烟、多会话、直接生成、反馈、整理、右键菜单、页的文件夹、请求、手动停服务、网址、上游子进程、常驻、Codex 命令会话测试（cowart 命令一条一个进程地跑；临时项目、测试端口，不碰真实画布、反馈目录和真安装）
 npm --prefix adapters run test:multi        # 只跑多会话测试
+npm --prefix adapters run test:codex-cli    # 只跑 Codex 命令会话测试（会话和宿主、文字、在线、提醒 hook、install 的 Codex 部分）
 npm --prefix adapters run feedback          # 反馈收件箱：列出没处理的反馈（-- show / done / wontfix / reopen <编号>）
 npm --prefix adapters run check:contract    # 同步上游后跑：适配层依赖的上游接口是否还在
 node adapters/claude/scripts/dev-host.mjs --project <目录> [--session <标识>] [--canvas <目录>]   # 不经 Claude Code 手动联调
@@ -124,7 +139,7 @@ node adapters/claude/scripts/dev-host.mjs --project <目录> [--session <标识>
 
 `dev-host.mjs` 像一个会话一样用 cowart 命令的代码打开画布、一直连着监听（会话在线，画布请求打印在它的输出里），并在 `127.0.0.1:43299` 提供控制端口：带请求头 `x-cowart-dev: 1` 发 `POST /call {"name": "...", "arguments": {...}}`，就能直接调任意工具。也可以直接跑命令：`COWART_SESSION_ID=dev-host node adapters/claude/bin/cowart.mjs <命令>`。它用自己的会话标识（默认 `dev-host`），不会动你当前会话负责的页；设 `COWART_CLAUDE_PORT` 换个端口、再用 `--canvas` 给一个临时画布目录，就是一套独立的测试服务（不换端口时 `--canvas` 不让用，免得机器上的画布服务换了画布）。
 
-改了画布服务会加载的代码（`adapters/service`、`adapters/shared/*.mjs`、上游产物）后，下一条 cowart 命令发现代码指纹变了，会拉起新服务：新服务先接过画布锁、再让旧服务退出，旧服务的监听、各宿主的桥重连时就都等它（哪份代码的都一样），已打开的页面自动重连。从别的代码目录来的（比如 Codex 的插件缓存）只在版本号更大时才替换，不会两边来回抢。页面脚本（`web/`、`../shared/web/`）每次打开页面都现读，刷新页面就生效；cowart 命令（`bin/`、`lib/`）每条都现读，改了下一条就生效。
+改了画布服务会加载的代码（`adapters/service`、`adapters/shared/*.mjs`、上游产物）后，下一条 cowart 命令发现代码指纹变了，会拉起新服务：新服务先接过画布锁、再让旧服务退出，旧服务的监听、各宿主的桥重连时就都等它（哪份代码的都一样），已打开的页面自动重连。从别的代码目录来的（比如本机的发布副本、同事装的省心版）只在版本号更大时才替换，不会两边来回抢。页面脚本（`web/`、`../shared/web/`）每次打开页面都现读，刷新页面就生效；cowart 命令（`bin/`、`lib/`）每条都现读，改了下一条就生效。
 
 ## 已知限制
 
@@ -138,7 +153,9 @@ node adapters/claude/scripts/dev-host.mjs --project <目录> [--session <标识>
 - **同一时刻改同一条记录，后保存的覆盖**：页面保存只交差异，两个面板改不同的东西互不干扰；但同一条记录（同一张卡片的位置、同一段文字）在 1.6 秒的同步间隔里被两个面板同时改，后保存的那份覆盖先保存的。
 - **视频要画布服务在线才看得到**：视频不像图片那样缓存在页面内存里，服务不在时（比如手动停掉），已打开的画布上视频会变成空框；重新打开画布即可恢复。
 - **自动播放绕开了「减少动态效果」**：tldraw 遇到系统开了这个设置就不自动播放，看起来像静态图。适配层改为每段视频加载后自动静音循环播放一次。
-- **只在桌面版干活**：命令行版、VS Code 插件里跑 cowart 只提示入口不对（设 `COWART_ALLOW_CLI=1` 可放开）。公司中转版桌面版（`claude-desktop-3p`）也算桌面版。
+- **Claude Code 只在桌面版干活**：命令行版、VS Code 插件里跑 cowart 只提示入口不对（设 `COWART_ALLOW_CLI=1` 可放开）。公司中转版桌面版（`claude-desktop-3p`）也算桌面版。Codex 不受这条限制。
+- **Codex 要用户开口才处理请求**：Codex 没有监听，画布请求不会叫醒它；提醒 hook 只在用户发话时提一句，用户说「看画布」或答应才做。服务换版本重启后，Codex 会话要再跑一条 cowart 命令才认得回来，这之间它排着的请求不提醒。
+- **开机自启只有 Windows**：Mac / Linux 上服务照旧由第一条命令在后台拉起。
 - **外部网站嵌入用不了**：页面安全策略只放行本地内容，tldraw 自带的「嵌入」（YouTube、Figma、GitHub Gist 等）会是空白，所以菜单入口已去掉；要参考网页请用「网页参考」截图卡片。
 - **长网页卡片放大看顶部时，工具栏会消失**：tldraw 的图片工具栏只在卡片中心在屏幕内时出现，「照这个做 HTML」也在这一排里；缩小一点让卡片中心回到屏幕里就有了。
 - **网页截图要本机有 Chrome 或 Edge**：Edge 152 在部分 Windows 机器上无头模式一启动就退出，所以优先用 Chrome；需要登录才能看的页面截到的是未登录的样子。

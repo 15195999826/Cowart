@@ -181,7 +181,7 @@ npm --prefix adapters run probe:cold
 | S3 命令认 Codex 会话 | 已完成 | a30b506 | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 119 PASS + 6 node:test（+9：codex-cli D7 单元 / k ×2 / l ×4 / n / m）、zcode 12、codex 25 + 26、build / check OK、cold 4；⓪ 实测 thread_id = shell 的 CODEX_THREAD_ID = hook stdin 的 session_id，hook 进程没有 CODEX_THREAD_ID；守卫空；两问自查：关页续租用已有的 session.timer（`close()` 清、关服务时不续），测试的服务、临时目录在 finally 清掉；新循环遍历的都是 Object.keys 的数组 |
 | S4 Codex 的 hook、skill 与安装 | 已完成 | 907768a | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 126 PASS + 6 node:test（+7：codex-cli o ×5 / p ×2）、zcode 12、codex 25 + 26、build / check OK、cold 4（install 另断言 Codex skill 链到发布副本、hook 跑装好的命令）；test:codex-cli 另连跑 2 次绿；守卫空；两问自查：hook 的 2.5 秒定时器随进程退出，服务没加表或定时器（hook-check 不建会话，续租用已有的 session.timer）；skill 链接、hook 条目 uninstall 删，cowart_mcp 按计划不恢复，备份留给用户；测试的 Codex 主目录、占端口的服务在 finally 清掉；新循环遍历的都是解析出的数组或 queue.list 的拷贝 |
 | S5 删掉 Codex widget + MCP | 已完成 | 5ed065d | 全量组全绿（第 1 关一轮过，test:codex 已删）：contract OK、test:claude 127 PASS + 13 node:test（+1 PASS：搬来的 hello；+7 node:test：搬来的撤销 410、page-client ×3、从 test:codex 挪来的 media-assets ×2、新的「不再接 widget 投递」先红后绿）、zcode 12、build / check OK、cold 3（去掉 Codex 桥、widget 两步，改由命令拉起服务）；少掉的只有 Codex 桥 / widget 专用的：test:codex 的 node:test 19 个（asset-cache 2 + 3 子、partial native host updates、widget event cursors、mixed-host 1 + 10 子、restarted service）和 Codex smoke 25 个；守卫空；两问自查：删掉的 widget 表、投递租约定时器连同 `close()` 里的清理一起去掉，没加新的表或定时器；新测试的服务、页面流、listen 子进程、临时目录在 finally / after 清掉；新循环遍历的都是数组字面量或拷贝 |
-| S6 文档 | 未开始 | | |
+| S6 文档 | 已完成 | | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 127 PASS + 13 node:test、zcode 12、build / check OK（产物无变化）、cold 3；测试数不变（只改文档）；退役词 rg 余 11 行，都标明历史或待撤：FORK.md 分支与同步（verify-release / switch-codex-entry 历史）、宿主差异（Codex 列「10-23 以前」；ZCode 列和 zcode/README 是 09-14 的 ZCode 核实）、Codex 也改走 ×3（原来 / 清旧链接 / 去掉的）、素材加载、Codex 原生小部件一节、注意（旧 skill 目录）、补丁点 Blob 行（待撤）、claude/README 对照表（上游原版 / 10-23 前）；FORK.md 仓内路径脚本逐个核过，只缺写成历史的已删路径；守卫空；两问自查：只改文档，没加表 / 定时器 / 文件 / 进程 / 安装项，没有新循环 |
 | S7 整体审与收口 | 未开始 | | |
 
 > 备注列只写验收摘要一行（各组结果 / 测试数变化 / 内存数字 / 守卫 / 两问自查一句），偏离内容在 deviations 文件。
@@ -190,7 +190,8 @@ npm --prefix adapters run probe:cold
 
 - （S2）常驻的服务日志只在服务启动时轮转（> 5 MB 改名 `.1`），一直不重启就一直长；要在运行中按大小轮转得另做。
 - （S2）test-kit 不隔离 `COWART_RUNTIME_DIR`：多数测试的服务日志和退出码文件写进真的 `~/.cowart-claude`（被替换、空闲退出的测试服务留下的退出码文件，要等之后某次拉起时满一天才删）。
-- （S2）`adapters/claude/README.md` 环境变量一节没有 `COWART_SERVICE_LINK` / `COWART_STARTUP_DIR`，S6 写「install 装什么」时一起补。
+- （S2）`adapters/claude/README.md` 环境变量一节没有 `COWART_SERVICE_LINK` / `COWART_STARTUP_DIR`，S6 写「install 装什么」时一起补。→ S6 已补（另加 `CODEX_HOME`、`COWART_HOST`）。
+- （S6）`adapters/claude/scripts/install-skill.mjs` 文件头注释只说装 Claude skill、命令入口和开机自启，没提它（经 `installCowart`）也装 Codex 的 skill + hook；代码注释不在 S6 文档范围。
 - （S3）服务端给命令的文字还是 Claude 的说法，Codex 会话也会看到：`take --shown` 没开页时「还没在 Browser 面板里打开」（`server.mjs` 的 `#openCanvas`）、令牌无效「回到 Claude Code 重新打开画布」、没有 beast 命令行时「这次交给 Claude 处理」（`generation-jobs.mjs`）。
 - （S3）D7 把 `CLAUDE_CODE_*` 排在 `CODEX_THREAD_ID` 前：从 Claude Code 会话里起的 Codex（⓪ 实测就是）跑命令会被认成 Claude 会话，桌面版门禁也照查；只影响这种嵌套。
 - （S4）会话只记在服务进程里：服务重启（换版本）后，Codex 会话再跑一条 cowart 命令之前 hook 认不得它，它排着的请求这段时间不提醒（D8「没跑过命令的 thread 不建会话」按服务进程算）。

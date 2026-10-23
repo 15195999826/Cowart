@@ -59,7 +59,12 @@
 
 ## S6 文档
 
-- 
+- S6-1 / [假设] 计划没点名的 `beast-library/README.md`（「Codex 用不了」）和 `zcode/README.md`（图里「空闲 10 分钟退出」，Claude 那行加 Codex）也改了 / 写的正是本计划改掉的事（S1 常驻、S4 install 顺带装 Codex），不改就错。
+- S6-2 / [假设] INSTALL.md「去掉 cowart_mcp 的说明」取第 1 节 Codex 那行手动卸 `[mcp_servers.cowart_mcp]`（install 现在自己去掉）；3B 第 4 步压掉根 `.mcp.json` 的 `cowart_mcp` 留着、改说成上游原版的 / 恢复上游后根 `.mcp.json` 仍有它，clone 里开 Claude 会话照样多一套工具。
+- S6-3 / Claude 版、ZCode 版 SKILL.md 没改 / 两份里的 Codex 只出现在「Codex 口吻」几条（计划说不改），没有 Codex 小部件的字样。
+- S6-4 / [假设] widget-resource 补丁行补登第二处 `[fork-patch]`（`callServerTool` 前转标准 JSON）；「待撤」只标纯小部件的两行（widget-resource、Blob 上限），`readCowartHtmlDataUrl` 行只注明经 MCP 读成 Blob 那条路 / 它原来只记在删掉的「Codex 任务切换与恢复」；存储参数等待那行画布服务的网页也在用。
+- S6-5 / [假设] 「FORK.md 写到的仓内路径都在」按现行的核：写成历史的已删路径（`adapters/codex/`、`cowart-codex-mcp.mjs`、`widget-panes.mjs`、`verify-release.mjs`、`switch-codex-entry.mjs`、`cowart-claude-mcp.mjs`）不在是对的 / 历史要写得出删了什么。
+- S6-6 / [假设] claude/README「已知限制」和 FORK.md 写进两条后续观察（服务重启后 hook 认不得 Codex 会话、服务端几句报错还是 Claude 说法）/ 用户该知道；只写不修。
 
 ## S7 整体审与收口
 
