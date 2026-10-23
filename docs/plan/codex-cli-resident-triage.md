@@ -1,6 +1,6 @@
 # Codex 改走 cowart 命令 + 画布服务常驻 §6 后续观察 — 分诊与拍板（2026-10-23）
 
-> 来源：[`codex-cli-resident.md`](codex-cli-resident.md) §6「后续观察」18 条。本文是「分诊 → 分桶 → 用户拍板 → 一轮落地」的产出。**执行状态：待拍板**。验收沿计划 §2，一个 commit，执行方不 push。
+> 来源：[`codex-cli-resident.md`](codex-cli-resident.md) §6「后续观察」18 条。本文是「分诊 → 分桶 → 用户拍板 → 一轮落地」的产出。**执行状态：用户拍板 A + B，一轮落地 TR1 410b2d7、TR2 cecacbe**。验收沿计划 §2，一个 commit，执行方不 push。
 > 同一计划再分诊一轮：在本文件末尾追加「## 第 N 轮（日期）」节，不另开文件。
 
 ## 0. 本轮约束（用户拍板）
@@ -29,7 +29,7 @@
 | 阶段 | 状态 | SHA | 备注 |
 |---|---|---|---|
 | TR1 A 桶 7 项 | 已完成 | 410b2d7 | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 143 PASS + 13 node:test（+6：resident q / r、codex-cli s / t / u / v；A2 无新用例、A3 只改注释）、zcode 12、build / check OK、cold 3；两条 rg 零命中；守卫①空，守卫②前后一致（含真 `service.log` 1845313 字节不变、`service-exit/` 59 个不变）；偏离 9 条（TR1-1…9），后续观察 +2；两问自查：日志 fd 随进程、`.1` 只留一份，hook-check 建回的会话走原有的租约 / 结束 / 遗忘，退回 spawn 的退出码文件在子进程退出时删，测试的临时运行目录通过即删、锁替身和服务在 finally 清掉；新循环遍历的都是 `queue.list` 的拷贝或常量数组 |
-| TR2 B1 根版本恢复上游 | 已完成 | | 全量组全绿（第 1 关一轮过）：contract OK（upstream 0.1.27）、test:claude 143 PASS + 13 node:test、zcode 12、build / check OK、cold 3，测试数不变（无新行为）；根 `check:artifacts`、`check:plugin` 通过（0.1.27）；`mcp/generated` 差分只有 `cowart-widget.html` 1 处版本串和 `release-manifest.json` 的版本串 + widget 哈希，另两个产物逐字节相同；适配层产物只变 `serviceBuild` 指纹和清单哈希；与上游五个文件差分为空，`src mcp/server.mjs mcp/lib skills` 空；守卫②前后一致（含真 `service.log` 1845313 字节、`service-exit/` 59 个）；偏离 4 条（TR2-1…4），后续观察 +0；两问自查：只改版本串和文档，没加表 / 定时器 / 文件 / 进程 / 安装项，没有新循环 |
+| TR2 B1 根版本恢复上游 | 已完成 | cecacbe | 全量组全绿（第 1 关一轮过）：contract OK（upstream 0.1.27）、test:claude 143 PASS + 13 node:test、zcode 12、build / check OK、cold 3，测试数不变（无新行为）；根 `check:artifacts`、`check:plugin` 通过（0.1.27）；`mcp/generated` 差分只有 `cowart-widget.html` 1 处版本串和 `release-manifest.json` 的版本串 + widget 哈希，另两个产物逐字节相同；适配层产物只变 `serviceBuild` 指纹和清单哈希；与上游五个文件差分为空，`src mcp/server.mjs mcp/lib skills` 空；守卫②前后一致（含真 `service.log` 1845313 字节、`service-exit/` 59 个）；偏离 4 条（TR2-1…4），后续观察 +0；两问自查：只改版本串和文档，没加表 / 定时器 / 文件 / 进程 / 安装项，没有新循环 |
 
 ### TR1 A 桶 7 项
 
