@@ -196,7 +196,7 @@ npm --prefix adapters run probe:cold
 - （S3）D7 把 `CLAUDE_CODE_*` 排在 `CODEX_THREAD_ID` 前：从 Claude Code 会话里起的 Codex（⓪ 实测就是）跑命令会被认成 Claude 会话，桌面版门禁也照查；只影响这种嵌套。
 - （S4）会话只记在服务进程里：服务重启（换版本）后，Codex 会话再跑一条 cowart 命令之前 hook 认不得它，它排着的请求这段时间不提醒（D8「没跑过命令的 thread 不建会话」按服务进程算）。 → 已修 410b2d7
 - （S4）命令给 Codex 的文字写 `node ~/.cowart/bin/cowart.mjs`：Windows PowerShell 5.1 不展开 `~`（pwsh 7.6 展开，Codex 优先用 pwsh）；Codex skill 里写了换成 `$HOME` 的写法，命令自己的文字没改。 → 已修 410b2d7
-- （S5）根目录上游的 `scripts/check-plugin-metadata.mjs` 现在报根 `package.json` 版本（`0.1.28+codex.…`）≠ `.codex-plugin/plugin.json`（上游 0.1.27）：D15 只恢复后者、根版本不动；不在全量组里。
+- （S5）根目录上游的 `scripts/check-plugin-metadata.mjs` 现在报根 `package.json` 版本（`0.1.28+codex.…`）≠ `.codex-plugin/plugin.json`（上游 0.1.27）：D15 只恢复后者、根版本不动；不在全量组里。 → 已修（TR2，SHA 回填）
 - （S5）本机真安装还指着删掉的东西：`~/.codex/config.toml` 的 `cowart_mcp` 跑发布副本 0.2.16 的桥（协议同为 3，会沿用本仓库换上的服务，widget 的调用都报「不认识操作」）；`~/.codex/skills/` 下 4 个 junction 指向已删的 `adapters/codex/skills/*`。S7 人工验收第 1 条真装 install 会清掉。
 - （S7 审查）提醒 hook 找服务用的是命令的 `findService`：每句话都会短暂绑一下 43240（服务没跑时往后 20 个端口都绑一下）；正赶上开机自启的服务在起，它会以 3（端口被占）退出、vbs 就此结束。改成只连不绑在 Windows 上每个空端口要 1–2 秒，会顶满 2.5 秒，没改。 → 已修 410b2d7
 - （S7 审查）config.toml 里紧挨在 `[mcp_servers.cowart_mcp]` 段后面、下一张表表头前的注释行会跟着这一段一起删（有备份）。
