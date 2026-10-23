@@ -2,27 +2,27 @@
   "version": "0.3.0",
   "generatedBy": "adapters/scripts/build-artifacts.mjs",
   "node": ">=22.12.0",
-  "serviceBuild": "ddbdb723392703b4",
+  "serviceBuild": "7daf94534aa75b95",
   "artifacts": {
-    "cowart-service.mjs": "e9568e15046c68a67ae82d4c8d88a238956b4a62446230bf5ab1d2d042d45491",
-    "cowart.mjs": "2f1d23143c5d396bb18342c371d86cfcd19d7b50a1987e53b00ae3a9ae2e11c5"
+    "cowart-service.mjs": "cedaf8638ebb6b201ba2cff6e2eee68fdd674f74c46781ef2452ca281b90115b",
+    "cowart.mjs": "97a1056a5442d37450d8b40538be0098f5570775e0e5c6bed17e483934aae8cb"
   },
   "resources": {
     ".codex-plugin/plugin.json": "dd0715519d22c61543a81dbcc0806843c6e4ea2cde3dc3e409b59214f54c61fd",
     "adapters/claude/codex-skill/cowart/SKILL.md": "6fc72e6c891e3d2cbcc0e896b051faf46e2c42069c92dbd7e59df849fe95ac57",
     "adapters/claude/web/bridge.js": "4250813ca4f0af7a62bf38c22c50207c72da4ebfff514c3a357542d30fb7a573",
-    "adapters/package.json": "d1fb62dd6bce7e8752d98e2454fe0641efe474b7d72ac40049911ad6f782ae5a",
+    "adapters/package.json": "656e2665a59fcff0fab65e8aca7ab0933dff684856add29afdcfea1e2d7e3463",
     "adapters/shared/empty-canvas.json": "6bddaf12509f149623013b0b7566cfd917c994be1dc35f008603833dc04b3f31",
     "adapters/shared/web/ai-image.js": "fbed408cd27f9f5bf14a35aa6a349dda005c9148edf43c25cc31feecf35ef389",
     "adapters/shared/web/ai-video.js": "fa84e2bb31979a5bc3df92668301a33d044465ba650898e7fb62e417c0cf6619",
     "adapters/shared/web/canvas-chrome.js": "b915ebce694f494f5342e0dfcd51ff8882fa858aafd7996ebba695e75358429b",
-    "adapters/shared/web/kit.js": "f61b7c2f277261f0a3f13e31eac15ddc522e6843152c74ca2c9cea3228b0fa18",
+    "adapters/shared/web/kit.js": "b901f394c35bd858f5fc48b69e355f7647c301ab9f198db377eec2697fa7968f",
     "adapters/shared/web/page-tree.js": "30e926f670fbac22a28d423a9bea79e0dfd1f5a2c4ca1c79da59b8bf334a6d87",
-    "adapters/shared/web/service-bridge.js": "d4f8dfddc358850cc8ec974fc46e3d57109232a83fbad9b54d7eb9f8709d3c12",
-    "adapters/shared/web/video-playback.js": "f94b064eca02b1e8b0b238edf55ac824174f3ea295803e16885008abde555785",
+    "adapters/shared/web/service-bridge.js": "2d08116631a497a98b4ed2f17f9bb0bd1d4beb1d8cdae59bf762df9577d6c3d9",
+    "adapters/shared/web/video-playback.js": "57983644ec07adaa1112274b356457b45856f08db73238c590665582ae67f9db",
     "adapters/shared/web/web-reference.js": "30bd9b8a520d45df06cb555bd036f06eeebe47f3ec209c22614736ce39098aad",
-    "mcp/generated/cowart-mcp.mjs": "c9c3b52995e6b371049a224046765927b85f649595369a9b527d7e1d9b3c5ed5",
-    "mcp/generated/cowart-widget.html": "e888b0d9e512b1694c46d898c3d17830a4a6fd2c3d51a4ef929f04167e3d9f8e",
-    "mcp/generated/release-manifest.json": "bf06398fce055e01623622945d6512428c888bf90036f17152a3be098271c883"
+    "mcp/generated/cowart-mcp.mjs": "c04042ee34cfd40200f98ff403fcee2edd45f99c2ed817eeab4c0f88979f1179",
+    "mcp/generated/cowart-widget.html": "9568a5c46a9614e44ee698d4d3b0f4385575f8c65dda3f2d7711091fe5b71e14",
+    "mcp/generated/release-manifest.json": "3673530d8615944a738c1cc196967669fa0e3e8f9dbc7766973e5791c7b30f28"
   }
 }

@@ -5,7 +5,8 @@
   const kit = window.__cowartKit
   if (!kit || window.__cowartVideoPlayback) return
   window.__cowartVideoPlayback = true
-  const isActive = () => !document.hidden && window.cowartMcp?.isActive?.() !== false
+  const isActive = () => !document.hidden
+  // Where each video was, for when tldraw mounts its player again (zooming, switching pages).
   const remembered = new Map()
   const restoring = new WeakSet()
   const identity = (video) => {
@@ -21,18 +22,6 @@
     if (!id || restoring.has(video) || video.readyState < 1) return
     remembered.set(id.shapeId, { source: id.source, time: video.currentTime, paused: Boolean(video.dataset.cowartUserPaused), muted: video.muted, rate: video.playbackRate })
     if (remembered.size > 256) remembered.delete(remembered.keys().next().value)
-  }
-  window.__cowartVideoState = {
-    capture() {
-      document.querySelectorAll('video.tl-video').forEach(remember)
-      return Object.fromEntries(remembered)
-    },
-    restore(state) {
-      if (!state || typeof state !== 'object') return
-      for (const [key, value] of Object.entries(state).slice(0, 256)) {
-        if (value && typeof value.source === 'string' && Number.isFinite(value.time) && value.time >= 0) remembered.set(key, value)
-      }
-    }
   }
 
   // Media failures belong to the card, not the connection pill. A connected
@@ -64,14 +53,6 @@
     failures.set(assetId, { message, src: window.__cowartEditor.getAsset(assetId)?.props.src })
   }
 
-  window.addEventListener('cowart:asset-load', ({ detail }) => {
-    if (!detail?.assetId) return
-    const props = window.__cowartEditor?.getAsset(detail.assetId)?.props
-    if (!props || detail.cacheKey !== [props.src ?? '', props.fileSize ?? '', props.mimeType ?? '', props.name ?? ''].join('\u001f')) return
-    if (detail.error) failures.set(detail.assetId, { message: detail.error, src: props.src })
-    else failures.delete(detail.assetId)
-  })
-
   function renderFailures(editor) {
     const visible = new Set()
     for (const shape of editor.getCurrentPageShapes()) {
@@ -98,12 +79,8 @@
           const current = failures.get(currentAssetId)
           if (!current) return
           current.retrying = true
-          const src = editor.getAsset(currentAssetId)?.props.src || ''
-          if (/^\/(page-assets|assets)\//.test(src)) {
-            window.dispatchEvent(new CustomEvent('cowart:retry-asset', { detail: { assetId: currentAssetId } }))
-          } else {
-            videoElementForShape(shape.id)?.load()
-          }
+          // The player reads its source again (the service streams local videos by range).
+          videoElementForShape(shape.id)?.load()
         })
         document.body.appendChild(element)
         notice = { element, label, retry, container: null }
@@ -195,7 +172,12 @@
       video.addEventListener('ratechange', () => remember(video))
       // A <source> error does not bubble, so listen in capture phase as well.
       video.addEventListener('error', () => mediaFailed(video), true)
-      video.addEventListener('loadeddata', () => failures.delete(assetForVideo(video)))
+      // Every time, not once: 重试 reloads the player (load()), which stops it until its frames
+      // are back.
+      video.addEventListener('loadeddata', () => {
+        failures.delete(assetForVideo(video))
+        resume(video)
+      })
       // Not networkState: a video that was just inserted reports NETWORK_NO_SOURCE until the
       // browser starts on its <source>, which read as a failure on every new card (a retry
       // too) until its first frame came. A source that fails later fires the error above.
@@ -209,14 +191,12 @@
         delete video.dataset.cowartUserPaused
       })
       if (video.readyState >= 2) resume(video)
-      else video.addEventListener('loadeddata', () => resume(video), { once: true })
     }
     const activityChanged = () => document.querySelectorAll('video.tl-video').forEach((video) => {
       if (isActive()) resume(video)
       else { remember(video); video.pause() }
     })
     document.addEventListener('visibilitychange', activityChanged)
-    window.addEventListener('cowart:activity', activityChanged)
     const scan = (root) => {
       if (root.matches && root.matches('video.tl-video')) startVideo(root)
       if (root.querySelectorAll) root.querySelectorAll('video.tl-video').forEach(startVideo)

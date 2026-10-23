@@ -10,8 +10,6 @@
   const PANE_HEADER = 'x-cowart-pane'
   // This page load.
   const PANE = `pane-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-  const hostLabel = config.host === 'codex' ? 'Codex' : 'Claude'
-  const transport = window.__cowartCreateTransport?.({ config, pane: PANE }) || null
   // 'lost' is the page's own: a request it still shows that a replaced service did not keep.
   const FINAL_STATUSES = new Set(['done', 'failed', 'skipped', 'cancelled', 'lost'])
   const LOST_NOTICE = '画布服务重启过（换了新版本），这条请求没保留下来；要的话请重新点一次。'
@@ -31,7 +29,7 @@
     preferredDisplayMode: 'fullscreen'
   }
 
-  if (!transport) window.openai = Object.assign(window.openai || {}, {
+  window.openai = Object.assign(window.openai || {}, {
     toolOutput,
     toolResponseMetadata: {},
     rawToolResult: { structuredContent: toolOutput },
@@ -40,11 +38,6 @@
     displayMode: 'fullscreen',
     availableDisplayModes: ['fullscreen']
   })
-
-  if (transport) {
-    window.openai = window.openai || {}
-    window.openai.toolOutput = { ...toolOutput, ...config, rendering: 'native-widget' }
-  }
 
   let overlay = null
   // Set on each (re)connect: a different service instance (a newer version replaced the old
@@ -58,7 +51,6 @@
   }
 
   async function postJson(path, body, timeoutMs) {
-    if (transport) return transport.postJson(path, body, timeoutMs)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     let response
@@ -195,7 +187,6 @@
     let pendingGoto = null
     // Pages this pane has shown: tldraw remembers their cameras, new ones get fitted to content.
     const visited = new Set()
-    let restoredPageId = null
 
     window.addEventListener('cowart:canvas-ready', ({ detail }) => {
       editor = detail.editor
@@ -213,7 +204,7 @@
     // creates the pages it hands to sessions).
     function requestedPage() {
       const all = editor.getPages()
-      for (const id of [restoredPageId, config.heldPageId, config.pageId]) {
+      for (const id of [config.heldPageId, config.pageId]) {
         const page = id && all.find((entry) => entry.id === id)
         if (page) return page
       }
@@ -242,12 +233,6 @@
     // URL asks for a page, the saved view only stays if it is of that very page.
     function adjustFirstView(structured) {
       const store = structured && structured.snapshot && structured.snapshot.store
-      if (structured?.sessionViewState && store?.[structured.viewState?.currentPageId]) {
-        restoredPageId = structured.viewState.currentPageId
-        visited.add(restoredPageId)
-        pendingGoto = null
-        return
-      }
       if (!store || !(config.heldPageId || config.pageId || config.page)) return
       const byName = config.page && Object.values(store).find((record) => record && record.typeName === 'page' && record.name === config.page)
       const wanted = [config.heldPageId, config.pageId].find((id) => id && store[id]) || (byName && byName.id) || null
@@ -256,9 +241,7 @@
       else visited.add(wanted)
     }
 
-    function goTo(pageId, initial = false) {
-      if (initial && restoredPageId) return
-      if (!initial) restoredPageId = null
+    function goTo(pageId) {
       pendingGoto = pageId
       check()
     }
@@ -273,7 +256,6 @@
       loaded = true
       openRequestedPage()
       check()
-      if (transport && config.claimShownPage) enter(true).catch((error) => overlay?.setPageError(error.message))
     }
 
     function send(pageId) {
@@ -376,8 +358,8 @@
     }
 
     // This pane's session takes the page on screen.
-    async function enter(onlyIfFree = false) {
-      const result = await postJson('/api/pages/enter', { pane: PANE, ...current(), onlyIfFree }, 8000)
+    async function enter() {
+      const result = await postJson('/api/pages/enter', { pane: PANE, ...current() }, 8000)
       if (result.state) setState(result.state)
       return result
     }
@@ -459,26 +441,18 @@
     if (snapshot && snapshot === lastRead.snapshot) lastRead.version = lastRead.read
   }
 
-  function installApi() {
   window.cowartMcp = {
-    ...(transport?.nativeApi || {}),
-    getStorageTarget: () => ({ projectDir: config.projectDir, canvasDir: config.canvasDir }),
     // A hidden page stays out of the remote sync (upstream skips its polls while this is false):
     // a poll would lay the stored canvas over what the page has not saved yet.
-    ...(transport ? { waitUntilActive: transport.waitUntilActive, isActive: transport.isActive } : { isActive: () => !document.hidden }),
+    isActive: () => !document.hidden,
     // A page the service serves loads its pictures and videos straight from it: videos by range
     // requests, pictures kept by the browser (the service answers an unchanged file with a 304),
-    // and nothing copied into page memory. The native widget cannot reach the service and reads
-    // them through MCP.
-    ...(transport ? {} : { directAssetUrl: (asset) => (asset && (asset.type === 'video' || asset.type === 'image') && /^\/(page-assets|assets)\//.test(asset.props?.src || '') ? asset.props.src : null) }),
+    // and nothing copied into page memory.
+    directAssetUrl: (asset) => (asset && (asset.type === 'video' || asset.type === 'image') && /^\/(page-assets|assets)\//.test(asset.props?.src || '') ? asset.props.src : null),
     async callServerTool(request, options) {
       const name = request && request.name
       let args = (request && request.arguments) || {}
       let delta = null
-      if (transport && name === 'save_cowart_view_state') {
-        if (!transport.isActive()) return { structuredContent: { ok: true, inactive: true } }
-        args = { ...args, viewState: { ...args.viewState, cowartPlayback: window.__cowartVideoState?.capture() } }
-      }
       if (name === 'save_cowart_canvas_state') {
         delta = sync.delta(args.snapshot)
         if (delta) args = { ...args, cowartDelta: { put: delta.put, remove: delta.remove } }
@@ -490,23 +464,7 @@
       if (name === 'get_cowart_canvas_state' && lastRead.version && Date.now() - lastRead.at < FULL_READ_MS) {
         args = { ...args, cowartSince: lastRead.version }
       }
-      const read = (input) => postJson('/api/tools/call', { name, arguments: input }, (options && options.timeoutMs) || 120000)
-      // The native widget keeps the pictures and videos it read (asset-cache.js).
-      const result = transport && name === 'read_cowart_page_asset' && /\.(mp4|m4v|mov|webm|apng|avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(args.assetUrl || '')
-        ? await window.__cowartReadCachedAsset(args, read)
-        : await read(args)
-      if (name === 'read_cowart_page_asset' && !result.isError && result.structuredContent?.nextOffset != null) {
-        const parts = [result.structuredContent.dataBase64]
-        let next = result.structuredContent.nextOffset
-        while (next != null) {
-          const chunk = await postJson('/api/tools/call', { name, arguments: { ...args, offset: next, expectedVersion: result.structuredContent.version } }, 120000)
-          if (chunk.isError) return chunk
-          if (chunk.structuredContent.nextOffset != null && chunk.structuredContent.nextOffset <= next) throw new Error('素材读取未能继续。')
-          parts.push(chunk.structuredContent.dataBase64)
-          next = chunk.structuredContent.nextOffset
-        }
-        result.structuredContent = { ...result.structuredContent, dataBase64: parts.join(''), nextOffset: null }
-      }
+      const result = await postJson('/api/tools/call', { name, arguments: args }, (options && options.timeoutMs) || 120000)
       if (delta && !result.isError && (result.structuredContent || {}).ok !== false) delta.commit()
       if (name === 'get_cowart_canvas_state' && !result.isError && result.structuredContent?.unchanged) {
         // A caller that loads the canvas anew (upstream remounting it) still gets it whole.
@@ -519,7 +477,6 @@
         if (!firstStateSeen) {
           firstStateSeen = true
           pages.adjustFirstView(result.structuredContent)
-          window.__cowartVideoState?.restore(result.structuredContent?.viewState?.cowartPlayback)
         }
         pages.canvasLoaded()
         // Upstream applies the snapshot as soon as this returns; look at what it kept then.
@@ -571,28 +528,15 @@
       }
     },
     getHostCapabilities() {
-      return transport ? transport.nativeApi.getHostCapabilities() : hostCapabilities
+      return hostCapabilities
     },
-    async updateModelContext(...args) {
-      return transport ? transport.nativeApi.updateModelContext(...args) : {}
+    async updateModelContext() {
+      return {}
     },
-    async requestDisplayMode(...args) {
-      return transport ? transport.nativeApi.requestDisplayMode(...args) : { mode: 'fullscreen' }
+    async requestDisplayMode() {
+      return { mode: 'fullscreen' }
     },
-    notifyResize() { transport?.nativeApi.notifyResize?.() }
-  }
-  }
-  installApi()
-  transport?.ready.then(installApi).catch(() => {})
-
-  // View/media state is session-local and flushes before native sandbox teardown.
-  if (transport) {
-    window.__cowartFlushView = async () => {
-      if (!window.__cowartEditor || !transport.isActive() || !firstStateSeen) return
-      const viewState = { ...window.__cowartViewState(), cowartPlayback: window.__cowartVideoState?.capture(), updatedAt: new Date().toISOString() }
-      await postJson('/api/tools/call', { name: 'save_cowart_view_state', arguments: { viewState } }, 8000)
-    }
-    setInterval(() => window.__cowartFlushView().catch(() => {}), 1000)
+    notifyResize() {}
   }
 
   // ---- Saving without animation frames --------------------------------------------------
@@ -646,8 +590,6 @@
   function visibilityChanged() {
     clearInterval(flushTimer)
     flushTimer = document.hidden ? setInterval(flushCanvasChanges, FLUSH_MS) : null
-    // The native widget's transport reports its own activity.
-    if (!transport) window.dispatchEvent(new CustomEvent('cowart:activity', { detail: { active: !document.hidden } }))
     if (document.hidden) saveOnLeaving()
   }
   document.addEventListener('visibilitychange', visibilityChanged)
@@ -727,7 +669,7 @@
 
   function createOverlay() {
     const hostElement = document.createElement('div')
-    hostElement.id = config.host === 'codex' ? 'cowart-codex-overlay' : 'cowart-claude-overlay'
+    hostElement.id = 'cowart-claude-overlay'
     hostElement.style.cssText =
       'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483000;pointer-events:none;'
     const root = hostElement.attachShadow({ mode: 'open' })
@@ -784,7 +726,6 @@
       if (state.agentOnline) return ['agent', `${name} · ${duty} · ${AGENT_LABEL} 在等请求`, name]
       // No listener running is the normal state between requests, not a fault: requests wait in
       // the service until the session runs it again, or the user says 看画布 in its conversation.
-      if (transport) return ['queue', `${name} · ${duty} · 请求先排队`, name]
       const handling = handlingRequest()
       if (handling === 'running') return ['queue', `${name} · ${duty} · 正在处理请求 · 新请求先排队`, name]
       if (handling === 'asking') return ['queue', `${name} · ${duty} · 等你在对话里确认 · 新请求先排队`, name]
@@ -888,12 +829,12 @@
           return '↩️ 已撤销'
         default:
           if (!request.delivered) {
-            return request.session === config.session && !transport
+            return request.session === config.session
               ? '📥 已排队 · 到对话里说「看画布」'
               : `📥 已排队，等${sessionName(request.session)}来取`
           }
           return request.session === config.session
-            ? transport ? '📨 已发送给 Codex' : `👉 请到 ${HOST_LABEL} 对话里点「执行」`
+            ? `👉 请到 ${HOST_LABEL} 对话里点「执行」`
             : `📨 已发送给${sessionName(request.session)}的对话`
       }
     }
@@ -1053,32 +994,7 @@
     }
   }
 
-  function handleServiceEvent(event, data) {
-    switch (event) {
-      case 'hello':
-        noteService(data)
-        overlay.setOutdated(Boolean(data.protocol && config.protocol && data.protocol !== config.protocol))
-        pages.setConnected(true)
-        break
-      case 'stopping': overlay.setRestarting(); break
-      case 'presence': overlay.setPresence(data); break
-      case 'page-state': pages.setState(data); break
-      case 'pages-deleted': pages.removePages(data.pageIds || []); break
-      case 'goto-page': pages.goTo(data.pageId, data.initial === true); break
-      case 'reveal-shapes': follow.reveal(data.pageId, data.shapeIds); break
-      case 'requests': overlay.sync(data.requests || [], serviceRestarted); break
-      case 'request': overlay.upsert(data); break
-    }
-  }
-
   function connectEvents() {
-    if (transport) {
-      transport.connectEvents(handleServiceEvent, (online) => {
-        overlay.setServiceOnline(online)
-        if (!online) pages.setConnected(false)
-      })
-      return
-    }
     const query = new URLSearchParams({ token: config.token || '', session: config.session || '', pane: PANE, canvasDir: config.canvasDir || '' })
     const source = new EventSource(`/api/page-events?${query}`)
     source.onopen = () => overlay.setServiceOnline(true)

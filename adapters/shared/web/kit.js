@@ -9,8 +9,7 @@
   if (window.__cowartKit) return
 
   const hostConfig = window.__cowartHostConfig || {}
-  const HOST = hostConfig.host === 'codex' ? 'codex' : 'claude'
-  const HOST_NAME = hostConfig.hostName || (HOST === 'codex' ? 'Codex' : 'Claude')
+  const HOST_NAME = hostConfig.hostName || 'Claude'
   const PREPARE_REQUEST_TOOL = 'prepare_cowart_generation_request'
   const HOLDER_GAP = 40
   // Same geometry as upstream's AI image panel (getAiImageGenerationPanelLayout).
@@ -173,7 +172,7 @@
     const view = editor.getViewportPageBounds()
     const screen = editor.getViewportScreenBounds()
     const zoom = editor.getZoomLevel()
-    const bar = document.getElementById('cowart-claude-overlay') || document.getElementById('cowart-codex-overlay')
+    const bar = document.getElementById('cowart-claude-overlay')
     const barBottom = bar ? bar.getBoundingClientRect().bottom : screen.y
     const toolbar = document.querySelector('.tlui-layout__bottom')
     const toolbarTop = toolbar ? toolbar.getBoundingClientRect().top : screen.y + screen.h
@@ -237,21 +236,9 @@
     return material.source === 'shape' ? { shapeId: material.shapeId } : { dataUrl: material.dataUrl, fileName: material.fileName }
   }
 
-  // Thumbnails go through the app's asset resolver when it has one (Codex serves page
-  // assets through the MCP bridge); the plain src works on the Claude host.
+  // Thumbnails go through the app's asset resolver when it has one; the plain src works too.
   const thumbUrls = new Map()
   const thumbListeners = new Set()
-  // The app lets go of the Blob URLs of assets off the page (the native widget): resolve again.
-  window.addEventListener('cowart:asset-url-released', ({ detail }) => {
-    let released = false
-    for (const [assetId, url] of thumbUrls) {
-      if (url === detail?.objectUrl) {
-        thumbUrls.delete(assetId)
-        released = true
-      }
-    }
-    if (released) for (const listener of thumbListeners) listener()
-  })
 
   function thumbForShape(editor, shape) {
     const asset = assetOfShape(editor, shape)
@@ -508,12 +495,8 @@
     return { projectDir: output.projectDir, canvasDir: output.canvasDir }
   }
 
-  // Opens a web page outside the canvas (MCP Apps hosts may not allow window.open).
+  // Opens a web page outside the canvas.
   function openLink(url) {
-    if (window.openai && typeof window.openai.openExternal === 'function') {
-      window.openai.openExternal({ href: url })
-      return
-    }
     window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -1453,7 +1436,6 @@
   }
 
   const kit = {
-    host: HOST,
     hostName: HOST_NAME,
     hostConfig,
     ICONS,

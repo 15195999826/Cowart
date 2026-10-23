@@ -862,12 +862,6 @@ ${t}`}function $Xt(t){return t.replaceAll("</script","<\\/script").replaceAll("<
 
   function applyHostContext(context) {
     if (!context) return;
-    // [fork-patch] Host-context notifications are partial (theme, dimensions,
-    // etc.). Missing fields must not clear fullscreen or suspend media reads.
-    context = {
-      ...window.openai?.hostContext,
-      ...Object.fromEntries(Object.entries(context).filter(([_key, value]) => value !== undefined)),
-    };
     try {
       if (context.theme && typeof apps.applyDocumentTheme === "function") {
         apps.applyDocumentTheme(context.theme);
@@ -972,11 +966,8 @@ ${t}`}function $Xt(t){return t.replaceAll("</script","<\\/script").replaceAll("<
       try {
         if (!app || typeof app.callServerTool !== "function") throw new Error("Host tool bridge is unavailable.");
         await waitForReady(app);
-        // [fork-patch] postMessage preserves undefined, unlike a JSON/stdio
-        // transport. Native hosts reject those values as invalid tool params.
-        const jsonRequest = JSON.parse(JSON.stringify(request));
         return await withTimeout(
-          app.callServerTool(jsonRequest, options),
+          app.callServerTool(request, options),
           options?.timeoutMs || 30000,
           "Cowart server tool call timed out.",
         );

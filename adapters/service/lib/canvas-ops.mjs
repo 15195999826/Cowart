@@ -23,7 +23,6 @@ import { applyDelta, changedPages, pageOfRecord, readDelta, stableStringify } fr
 import { COPY_REFERENCE_TOOL, copyCanvasReference } from './copy-reference.mjs'
 import { REVEAL_FILE_TOOL, revealCanvasFile } from './reveal-file.mjs'
 import { describeMoves, folderOf, normalizeFolder, planPageMoves, withFolder } from './page-folders.mjs'
-import { readMediaAsset } from './media-assets.mjs'
 
 // A canvas nobody has opened yet gets its first page from this (the schema of the bundled
 // tldraw and a document record); the page fills in the rest when it loads.
@@ -396,12 +395,6 @@ export class CanvasOps extends EventEmitter {
   // Tool calls from a canvas page (the upstream widget and the shared panels). pane is the
   // page's { session } when it identified itself.
   async callFromPage(name, args, { host, pane } = {}) {
-    if (name === 'read_cowart_page_asset') {
-      try {
-        const media = await readMediaAsset(args)
-        if (media) return textResult('画布素材。', media)
-      } catch (error) { return errorResult(error.message) }
-    }
     if (DROPPED_TOOLS.has(name)) {
       return { content: [], structuredContent: { configured: false, delivered: false, skippedBy: 'cowart-canvas-service' } }
     }

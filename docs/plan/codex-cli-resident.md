@@ -151,7 +151,7 @@ npm --prefix adapters run probe:cold
 
 ## 4. 明确不做（本轮认可，勿重开）
 
-- 撤回只给 widget 用的上游补丁点（`src/App.jsx`、`src/cowartClient.js`、`mcp/lib/widget-resource.mjs`），以及页面脚本（`service-bridge.js`、`kit.js`、`video-playback.js`）里的 `transport` 分支和 `media-assets.mjs` 分段读：没有页面级自动测试兜底，改 `src/` 还要重建根产物，单独一轮。
+- 撤回只给 widget 用的上游补丁点（`src/App.jsx`、`src/cowartClient.js`、`mcp/lib/widget-resource.mjs`），以及页面脚本（`service-bridge.js`、`kit.js`、`video-playback.js`）里的 `transport` 分支和 `media-assets.mjs` 分段读：没有页面级自动测试兜底，改 `src/` 还要重建根产物，单独一轮。 → 同日另一轮撤掉（Browser 面板手验，见 FORK.md「Codex 原生小部件」）
 - ZCode 改走命令；主动叫醒 Codex（`codex queue`、app-server daemon）；Mac / Linux 开机自启；V8 参数调优；换掉 MCP SDK 客户端。
 - 发版：push、bump 后发同事版、其它机器、删 `~/.cowart/releases` 旧副本、真机 install。用户收工后做。
 
