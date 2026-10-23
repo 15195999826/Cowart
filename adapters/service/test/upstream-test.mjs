@@ -2,7 +2,8 @@
 // UpstreamCowart (shared/upstream.mjs), the service's one connection to the upstream Cowart MCP
 // server it runs as a child process. Pins what the service relies on today: a server that died is
 // started again by the next call, calls that arrive together start one server, and close() leaves
-// no server behind. The servers are found as this process's children whose command line runs
+// no server behind; and that a server idle for idleMs is stopped, the next call starting it again
+// and listTools() answering from what it listed before. The servers are found as this process's children whose command line runs
 // mcp/generated/cowart-mcp.mjs (Win32_Process on Windows, ps elsewhere); they keep a canvas of the
 // check's own.
 import assert from 'node:assert/strict'
@@ -12,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { finish, step, text, waitFor } from '../../claude/scripts/test-kit.mjs'
+import { delay, finish, step, text, waitFor } from '../../claude/scripts/test-kit.mjs'
 import { UpstreamCowart } from '../../shared/upstream.mjs'
 
 const run = promisify(execFile)
@@ -36,8 +37,8 @@ async function upstreamServers() {
 }
 
 const stderr = []
-function upstream() {
-  return new UpstreamCowart({ clientName: 'cowart-upstream-check', clientVersion: '0.0.0', cwd: root, env, onStderr: (chunk) => stderr.push(String(chunk)) })
+function upstream(options = {}) {
+  return new UpstreamCowart({ clientName: 'cowart-upstream-check', clientVersion: '0.0.0', cwd: root, env, onStderr: (chunk) => stderr.push(String(chunk)), ...options })
 }
 
 async function canvasState(server) {
@@ -84,6 +85,39 @@ await step('(c) close() leaves no upstream server behind', async () => {
   assert.equal(running.length, 1, `one upstream server before close, found ${running.join(', ') || 'none'}`)
   await server.close()
   await waitFor(async () => (await upstreamServers()).length === 0, { timeoutMs: 3000, intervalMs: 200, what: 'the upstream server to go after close()' })
+})
+
+await step('(d) an upstream server idle for idleMs is stopped, and the next call starts it again', async () => {
+  let idleStops = 0
+  const server = upstream({ idleMs: 500, onIdleClose: () => { idleStops += 1 } })
+  try {
+    await canvasState(server)
+    await delay(1500)
+    const running = await upstreamServers()
+    assert.deepEqual(running, [], `no upstream server 1.5 s after the call, found ${running.join(', ')}`)
+    assert.equal(idleStops, 1, 'onIdleClose once')
+    await canvasState(server)
+    const after = await upstreamServers()
+    assert.equal(after.length, 1, `one upstream server after the next call, found ${after.join(', ') || 'none'}`)
+  } finally {
+    await server.close()
+  }
+})
+
+await step('(e) after an idle stop, listTools() answers without starting the upstream server', async () => {
+  const server = upstream({ idleMs: 500 })
+  try {
+    const tools = await server.listTools()
+    await delay(1500)
+    const running = await upstreamServers()
+    assert.deepEqual(running, [], `no upstream server 1.5 s after listTools, found ${running.join(', ')}`)
+    const again = await server.listTools()
+    assert.deepEqual(again.map((tool) => tool.name), tools.map((tool) => tool.name), 'the same tools')
+    const after = await upstreamServers()
+    assert.deepEqual(after, [], `listTools started no upstream server, found ${after.join(', ')}`)
+  } finally {
+    await server.close()
+  }
 })
 
 await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})

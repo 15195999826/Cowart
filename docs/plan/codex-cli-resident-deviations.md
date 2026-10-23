@@ -10,7 +10,9 @@
 
 ## S1 省内存、全机画布不空闲退出
 
-- 
+- S1-1 / [假设] `serviceIdleMs` 把空串的 `COWART_CANVAS_DIR` 也算没设（Infinity），`COWART_SERVICE_IDLE_MS` 不大于 0（含负数）时不用它 / 跟 `paths.mjs` 的 `COWART_CANVAS_DIR || 默认画布` 一致；旧写法负数会变成立刻退出。
+- S1-2 / [假设] `UpstreamCowart` 的 `idleMs` 不是有限正数（Infinity、0）就从不闲停；`onIdleClose` 只在真关掉了子进程时调；定时器回调吞掉异常 / 计划没写到，取最小实现，免得 Infinity 进 setTimeout 变成 1ms、日志回调出错打崩服务。
+- S1-3 / [假设] 规则之家之外顺带改了 `adapters/claude/README.md` 环境变量那行（`COWART_SERVICE_IDLE_MS` 默认值、加 `COWART_UPSTREAM_IDLE_MS`）/ 那行写的正是本阶段改掉的默认值，留到 S6 会错两个阶段。
 
 ## S2 脱离宿主拉起 + 开机自启
 

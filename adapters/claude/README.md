@@ -87,7 +87,7 @@ npm --prefix adapters run install:claude
 - `COWART_SESSION_ID`：会话标识，手动试用、测试时用；平时由桌面版的 `CLAUDE_CODE_HOST_SESSION_ID` 给。
 - `COWART_SESSION_BUSY_MS` / `COWART_LISTENER_GONE_MS` / `COWART_SESSION_LEASE_MS`：会话在线的三段时间（只管它拉起的服务）：监听送来请求后最多在线多久（默认 12 小时）、监听没送请求就断了以后多久算结束（默认 2 分钟）、没监听时最后一条命令后多久算结束（默认 30 分钟）。
 - `COWART_COMMAND_LINK`：`install` 写的入口放哪，默认 `~/.cowart/bin/cowart.mjs`（测试用）。
-- `COWART_SERVICE_IDLE_MS`：画布服务空闲多久退出，默认 10 分钟。
+- `COWART_SERVICE_IDLE_MS`：画布服务空闲多久退出，默认全机那张画布的服务不退出、别的画布（`COWART_CANVAS_DIR`）的 10 分钟；`COWART_UPSTREAM_IDLE_MS`：上游子进程多久没有调用就停掉（下次调用再拉起），默认 3 分钟。
 - `COWART_BEAST_CLI`：猛兽命令行的位置，默认 `~/.beast/bin/beast.mjs`；找不到时 AI 图片 / AI 视频退回发给会话。
 - `COWART_PROMPT_WRITER=off`：画布直接生成时不改写提示词，按原话（套上模板必需的结构）生成；`COWART_PROMPT_MODEL` 换写提示词的模型（默认 haiku），`COWART_CLAUDE_CLI` 指定 claude 可执行文件。
 

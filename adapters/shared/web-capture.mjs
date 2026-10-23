@@ -3,12 +3,11 @@
 // fetch would only see a shell). Drives the local Chrome / Edge through puppeteer-core;
 // set COWART_BROWSER_PATH to use another Chromium-based browser. (Edge 152 on Windows
 // can exit right away in headless mode, so Chrome is tried first and a failed launch
-// falls through to the next browser.)
+// falls through to the next browser.) puppeteer-core loads with the first capture, not with the
+// service: it takes about 20 MB that a service without web references never needs.
 import { existsSync } from 'node:fs'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-
-import puppeteer from 'puppeteer-core'
 
 import { pageAssetUrl, pageDirName, resolveCowartPaths } from '../../mcp/lib/canvas-storage.mjs'
 import { uniqueFilePath } from './files.mjs'
@@ -74,6 +73,7 @@ export function findBrowsers() {
 async function launchBrowser(view) {
   const browsers = findBrowsers()
   if (browsers.length === 0) throw new Error('找不到本机的 Chrome / Edge，截不了网页；可以用 COWART_BROWSER_PATH 指定浏览器路径。')
+  const { default: puppeteer } = await import('puppeteer-core')
   const failures = []
   for (const executablePath of browsers) {
     try {

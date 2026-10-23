@@ -1,5 +1,8 @@
 // Runs the upstream Cowart MCP server (mcp/generated bundle) as a child process
 // and talks to it as an MCP client, so adapters never have to modify upstream code.
+// The child process is stopped once no call has needed it for idleMs (COWART_UPSTREAM_IDLE_MS,
+// 3 minutes by default); the next call starts it again, and listTools() answers from what it
+// listed before.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
@@ -9,13 +12,26 @@ export class UpstreamCowart {
   #client = null
   #connecting = null
   #tools = null
+  // Calls using the child process right now, and the timer that stops it once there are none.
+  #inFlight = 0
+  #idleTimer = null
 
-  constructor({ clientName, clientVersion, cwd = process.cwd(), env = process.env, onStderr } = {}) {
+  constructor({
+    clientName,
+    clientVersion,
+    cwd = process.cwd(),
+    env = process.env,
+    onStderr,
+    idleMs = Number(process.env.COWART_UPSTREAM_IDLE_MS) || 180_000,
+    onIdleClose
+  } = {}) {
     this.clientName = clientName
     this.clientVersion = clientVersion
     this.cwd = cwd
     this.env = env
     this.onStderr = onStderr
+    this.idleMs = idleMs
+    this.onIdleClose = onIdleClose
   }
 
   async client() {
@@ -47,21 +63,57 @@ export class UpstreamCowart {
 
   async listTools() {
     if (this.#tools) return this.#tools
-    const client = await this.client()
-    const { tools } = await client.listTools()
-    this.#tools = tools
-    return tools
+    this.#begin()
+    try {
+      const client = await this.client()
+      const { tools } = await client.listTools()
+      this.#tools = tools
+      return tools
+    } finally {
+      this.#end()
+    }
   }
 
   async callTool(name, args = {}, { timeoutMs = 120_000 } = {}) {
-    const client = await this.client()
-    return client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs })
+    this.#begin()
+    try {
+      const client = await this.client()
+      return await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs })
+    } finally {
+      this.#end()
+    }
   }
 
-  async close() {
+  #begin() {
+    this.#inFlight += 1
+    clearTimeout(this.#idleTimer)
+    this.#idleTimer = null
+  }
+
+  #end() {
+    this.#inFlight -= 1
+    if (this.#inFlight > 0 || !(this.idleMs > 0) || !Number.isFinite(this.idleMs)) return
+    this.#idleTimer = setTimeout(() => this.#closeIdle().catch(() => {}), this.idleMs).unref()
+  }
+
+  // The tools listed stay: the next listTools() needs no child process.
+  async #closeIdle() {
+    this.#idleTimer = null
+    if (this.#inFlight > 0 || !this.#client) return
+    await this.#closeClient()
+    this.onIdleClose?.()
+  }
+
+  async #closeClient() {
     const client = this.#client
     this.#client = null
     await client?.close().catch(() => {})
+  }
+
+  async close() {
+    clearTimeout(this.#idleTimer)
+    this.#idleTimer = null
+    await this.#closeClient()
   }
 }
 

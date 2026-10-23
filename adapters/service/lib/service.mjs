@@ -1,9 +1,12 @@
 // The machine-wide canvas service process: the machine's one canvas (SHARED_CANVAS_DIR),
 // one upstream Cowart server, one request queue and one writer, shared by every session
-// (FORK.md). It has the canvas (canvas-lock.mjs) from before it listens until its last write,
-// and exits after it has sat idle (no session online, no canvas page open) for a while. One
-// that replaces a running service takes the canvas over first, then asks that service to stop
-// and starts once it has exited.
+// (FORK.md). It has the canvas (canvas-lock.mjs) from before it listens until its last write.
+// The service of the machine's canvas stays running when idle; one of another canvas (a
+// check's, a dev host's: COWART_CANVAS_DIR) exits after it has sat idle (no session online, no
+// canvas page open) for a while (serviceIdleMs). Idle, it stops its upstream server
+// (shared/upstream.mjs) and starts it again for the next call. One that replaces a running
+// service takes the canvas over first, then asks that service to stop and starts once it has
+// exited.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -28,7 +31,15 @@ import { loadOrCreateToken } from './token.mjs'
 const PAGE_BRIDGE_SCRIPT = join(ADAPTERS_DIR, 'claude', 'web', 'bridge.js')
 const PAGE_HOST = 'claude'
 const PAGE_HOST_LABELS = { zcode: 'ZCode' }
-const IDLE_MS = Number(process.env.COWART_SERVICE_IDLE_MS) || 10 * 60_000
+// How long the service sits idle before it exits: COWART_SERVICE_IDLE_MS when above 0; else
+// never for the machine's canvas (COWART_CANVAS_DIR not set), 10 minutes for another canvas.
+export function serviceIdleMs(env = process.env) {
+  const given = Number(env.COWART_SERVICE_IDLE_MS)
+  if (given > 0) return given
+  return env.COWART_CANVAS_DIR ? 10 * 60_000 : Infinity
+}
+// Before startCanvasService sets COWART_CANVAS_DIR for upstream.
+const IDLE_MS = serviceIdleMs()
 // How long a service that took the canvas over keeps trying for its port: bridges testing it
 // hold it for a moment, and the replaced service's bridges are waiting for this one.
 const BIND_RETRY_MS = 3_000
@@ -93,7 +104,8 @@ export async function startCanvasService({ port, replacing = null }) {
   const upstream = new UpstreamCowart({
     clientName: 'cowart-canvas-service',
     clientVersion: identity.version,
-    onStderr: (chunk) => process.stderr.write(chunk)
+    onStderr: (chunk) => process.stderr.write(chunk),
+    onIdleClose: () => log('upstream Cowart server stopped (idle)')
   })
   const ops = new CanvasOps({ upstream, guard: new CanvasGuard(), log })
   const jobs = new GenerationJobs({ upstream, ops, queue, log, onActivity: () => updateIdle() })
@@ -163,6 +175,7 @@ export async function startCanvasService({ port, replacing = null }) {
       idleTimer = null
       return
     }
+    if (IDLE_MS === Infinity) return
     idleTimer ??= setTimeout(() => shutdown('idle'), IDLE_MS)
   }
 
