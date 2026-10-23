@@ -4,12 +4,14 @@
 // after 10 minutes, and COWART_SERVICE_IDLE_MS sets the time for either. On Windows a session's
 // command starts the service through WMI, out of the job its host runs it in (a host that closes
 // its job ends everything in it), with no parent the host knows of; the service then keeps its
-// own log (--log) and leaves its exit code in a file for the command that started it. The check
+// own log (--log) and leaves its exit code in a file for the command that started it. A bridge
+// (ZCode's) counts as connected once the service said hello on its session stream. The check
 // runs with a token, a runtime directory and canvases of its own on ports of its own.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,7 +30,7 @@ process.env.COWART_STARTUP_DIR = join(root, 'Startup')
 delete process.env.COWART_CLAUDE_PORT
 const { CanvasServiceClient, SERVICE_ENTRY, spawnService } = await import('../client.mjs')
 const { finish, serviceStatus, step, stopTestService, waitFor } = await import('../../claude/scripts/test-kit.mjs')
-const { EXIT_PORT_TAKEN } = await import('../lib/identity.mjs')
+const { EXIT_PORT_TAKEN, localIdentity } = await import('../lib/identity.mjs')
 const { serviceIdleMs } = await import('../lib/service.mjs')
 const { RUNTIME_DIR, SERVICE_LOG } = await import('../lib/token.mjs')
 
@@ -172,6 +174,42 @@ await step('(j) installServiceAutostart writes the service entry, its launcher a
   assert.equal(removed.removed, true, JSON.stringify(removed))
   for (const file of [entry, launcher, shortcut]) assert.equal(existsSync(file), false, `${file} was left behind`)
   assert.equal((await removeServiceAutostart()).removed, false, 'nothing left to remove')
+})
+
+await step('a bridge (ZCode) is started once the service says hello on its session stream, which stays open in the background', async () => {
+  let registered = false
+  let reachedSession
+  const sessionReached = new Promise((resolve) => { reachedSession = resolve })
+  const timers = []
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/service') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(localIdentity()))
+    } else if (req.url.startsWith('/api/bridge/session?')) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(': connected\n\n')
+      reachedSession()
+      timers.push(setTimeout(() => { registered = true; res.write('event: hello\ndata: {}\n\n') }, 70))
+    } else if (req.url === '/api/bridge/call') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ result: { registered } }))
+    } else res.writeHead(404).end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const client = new CanvasServiceClient({ host: 'zcode', session: 'registration-test', cwd: root, port: server.address().port })
+  try {
+    let settled = false
+    const ready = client.start().then(() => { settled = true })
+    await sessionReached
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(settled, false, 'response headers alone must not signal registration')
+    await ready
+    assert.equal((await client.call('pages')).registered, true)
+  } finally {
+    client.close()
+    for (const timer of timers) clearTimeout(timer)
+    const closed = new Promise((resolve) => server.close(resolve))
+    server.closeAllConnections()
+    await closed
+  }
 })
 
 await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})

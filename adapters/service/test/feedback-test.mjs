@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// send_cowart_feedback end to end: a Claude Code session (cowart commands), a ZCode and a Codex
+// send_cowart_feedback end to end: a Claude Code and a Codex session (cowart commands) and a ZCode
 // session bridge share one test service and each records feedback into a throwaway inbox; then the inbox command
 // (service/bin/cowart-feedback.mjs) lists, shows and closes the items.
 import assert from 'node:assert/strict'
@@ -9,8 +9,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { CODEX_BRIDGE, EMPTY_CANVAS, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
-import { INSTRUCTIONS as CODEX_INSTRUCTIONS } from '../../codex/lib/bridge.mjs'
+import { EMPTY_CANVAS, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 import { INSTRUCTIONS as ZCODE_INSTRUCTIONS } from '../../zcode/lib/bridge.mjs'
 
@@ -37,21 +36,23 @@ const record = async (id) => JSON.parse(await readFile(join(await itemDir(id), '
 await stopTestService(PORT)
 const claude = cliSession({ cwd: projectDir, port: PORT, session: 'fb-claude', env })
 const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-zcode', env, entry: ZCODE_BRIDGE })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'fb-codex', env, entry: CODEX_BRIDGE })
-// Claude Code reads when to record feedback in the cowart skill.
+const codex = cliSession({ cwd: projectDir, port: PORT, session: 'fb-codex', env: { ...env, COWART_HOST: 'codex' } })
+// Claude Code and Codex read when to record feedback in their cowart skill.
 const CLAUDE_INSTRUCTIONS = await readFile(join(ADAPTERS_DIR, 'claude', 'skills', 'cowart', 'SKILL.md'), 'utf8')
+const CODEX_INSTRUCTIONS = await readFile(join(ADAPTERS_DIR, 'claude', 'codex-skill', 'cowart', 'SKILL.md'), 'utf8')
 
 try {
   await step('every host lists send_cowart_feedback, and its instructions say when to use it', async () => {
-    for (const [host, bridge, instructions] of [
+    // Codex's skill names the command it runs for it (cowart feedback).
+    for (const [host, bridge, instructions, named = /send_cowart_feedback/] of [
       ['Claude Code', claude, CLAUDE_INSTRUCTIONS],
       ['ZCode', zcode, ZCODE_INSTRUCTIONS],
-      ['Codex', codex, CODEX_INSTRUCTIONS]
+      ['Codex', codex, CODEX_INSTRUCTIONS, /`cowart feedback`/]
     ]) {
       const tool = (await bridge.listTools()).tools.find((entry) => entry.name === 'send_cowart_feedback')
-      assert.ok(tool, `the ${host} bridge does not list send_cowart_feedback`)
+      assert.ok(tool, `${host} does not list send_cowart_feedback`)
       assert.deepEqual(tool.inputSchema.required, ['text'])
-      assert.match(instructions, /send_cowart_feedback/, `the ${host} instructions do not mention send_cowart_feedback`)
+      assert.match(instructions, named, `the ${host} instructions do not mention send_cowart_feedback`)
     }
   })
 

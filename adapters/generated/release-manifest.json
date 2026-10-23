@@ -2,19 +2,16 @@
   "version": "0.3.0",
   "generatedBy": "adapters/scripts/build-artifacts.mjs",
   "node": ">=22.12.0",
-  "serviceBuild": "bc5ecc050e6e3269",
+  "serviceBuild": "d312f53b1b00b845",
   "artifacts": {
-    "cowart-service.mjs": "d3772c3a46df11a9baa4641e259078b2a56ba1cde184ab45dd0438770a3f3f28",
-    "cowart-codex-mcp.mjs": "c1c1f33bf03b6cbaee11851ed8de8a894eb5028e166fa618b3f9234942d8c798",
-    "cowart.mjs": "57cfc309579ee6b8ee98fb5e41a1afecddd48d65f30fca7b87f089c57fc371fe"
+    "cowart-service.mjs": "bf5d8b0920e9b9dc6ec2d62a65eae7aa629542e040255e2fbdcd0ba78096be59",
+    "cowart.mjs": "a36a021ee631dd5ec04c5cc1fb2334eb63ff34552390fa2639db686d9ad5281d"
   },
   "resources": {
-    ".codex-plugin/plugin.json": "bddd26bae6ea9c6d8a3ac39c7067858e57f6471be9a65952c9f98ae2ba58555c",
+    ".codex-plugin/plugin.json": "dd0715519d22c61543a81dbcc0806843c6e4ea2cde3dc3e409b59214f54c61fd",
     "adapters/claude/codex-skill/cowart/SKILL.md": "6fc72e6c891e3d2cbcc0e896b051faf46e2c42069c92dbd7e59df849fe95ac57",
     "adapters/claude/web/bridge.js": "4250813ca4f0af7a62bf38c22c50207c72da4ebfff514c3a357542d30fb7a573",
-    "adapters/codex/web/asset-cache.js": "d0abf5db02c7ba6a50ca788c85bba48655bd4feb6d01e7d806b9d4ca21de5d3d",
-    "adapters/codex/web/transport.js": "f639f2a3c449686ac8172a48b7765994e2e34b839b0c2f48dfa78dce4d075f73",
-    "adapters/package.json": "b536ddba92919b4cdcc65f17eaf0d0dbb3dc926e5b73cacfe7df6a6b5b6ad2d4",
+    "adapters/package.json": "d1fb62dd6bce7e8752d98e2454fe0641efe474b7d72ac40049911ad6f782ae5a",
     "adapters/shared/empty-canvas.json": "6bddaf12509f149623013b0b7566cfd917c994be1dc35f008603833dc04b3f31",
     "adapters/shared/web/ai-image.js": "fbed408cd27f9f5bf14a35aa6a349dda005c9148edf43c25cc31feecf35ef389",
     "adapters/shared/web/ai-video.js": "fa84e2bb31979a5bc3df92668301a33d044465ba650898e7fb62e417c0cf6619",

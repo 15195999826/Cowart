@@ -1,7 +1,7 @@
-// Helpers for the adapters' end-to-end checks: Claude sessions run cowart commands the way
-// Claude Code runs them (a process per command, from its Bash tool), ZCode's and Codex's session
-// bridges run over stdio the way their hosts run them (MCP), a small SSE reader, and cleanup of
-// test services.
+// Helpers for the adapters' end-to-end checks: Claude and Codex sessions run cowart commands the
+// way their hosts run them (a process per command, from the host's shell tool), ZCode's session
+// bridge runs over stdio the way ZCode runs it (MCP), a small SSE reader, and cleanup of test
+// services.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
@@ -23,7 +23,6 @@ export const FIXTURES = join(ADAPTERS_DIR, 'claude', 'test', 'fixtures')
 export const EMPTY_CANVAS = join(ADAPTERS_DIR, 'shared', 'empty-canvas.json')
 export const CLI_ENTRY = join(ADAPTERS_DIR, 'claude', 'bin', 'cowart.mjs')
 export const ZCODE_BRIDGE = join(ADAPTERS_DIR, 'zcode', 'bin', 'cowart-zcode-mcp.mjs')
-export const CODEX_BRIDGE = join(ADAPTERS_DIR, 'codex', 'bin', 'cowart-codex-mcp.mjs')
 // Session names the checks give out stay out of the user's own list (~/.cowart-claude),
 // and each run starts from an empty list.
 const NAMES_FILE = join(tmpdir(), `cowart-check-session-names-${process.pid}.json`)
@@ -207,9 +206,9 @@ function sessionEnv({ cwd, port, session, env }) {
 }
 
 // A Claude session the way Claude Code runs it: cowart commands from its Bash tool, a process
-// each, with the session id the desktop gives them. call() runs a tool as the model would and
-// gives its result as the MCP tools gave theirs ({ content, structuredContent, isError }).
-// entry runs another checkout's command.
+// each, with the session id the desktop gives them (a Codex one: env COWART_HOST=codex). call()
+// runs a tool as the model would and gives its result as the MCP tools gave theirs
+// ({ content, structuredContent, isError }). entry runs another checkout's command.
 export function cliSession({ cwd, port, session, env = {}, entry = CLI_ENTRY }) {
   const fullEnv = sessionEnv({ cwd, port, session, env })
   const start = (argv) => spawn(process.execPath, [entry, ...argv], { cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
@@ -261,7 +260,7 @@ export function cliSession({ cwd, port, session, env = {}, entry = CLI_ENTRY }) 
   }
 }
 
-// A session bridge the way ZCode or Codex runs it (entry): MCP over stdio, with its own session id.
+// A session bridge the way ZCode runs it (entry): MCP over stdio, with its own session id.
 export async function startBridge({ cwd, port, session, env = {}, entry }) {
   const transport = new StdioClientTransport({
     command: process.execPath,

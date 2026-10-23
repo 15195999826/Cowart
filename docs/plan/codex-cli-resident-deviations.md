@@ -46,7 +46,16 @@
 
 ## S5 删掉 Codex widget + MCP
 
-- 
+- S5-1 / build-artifacts 保留 `.codex-plugin/plugin.json` 资源（计划 ④ 写删）/ 上游 MCP 子进程启动时就读它（`mcp/server.mjs` 的 `pluginManifest`），发布副本缺了它上游起不来，probe:cold 和省心版都会坏；文件本身照 D15 恢复成上游原样。
+- S5-2 / [假设] `media-assets-test` 从删掉的 `test:codex` 挪进 `test:claude` 的 `node --test` / 它测的 `media-assets.mjs` 按 §4 保留，不挪就没人跑。
+- S5-3 / [假设] 搬来的撤销 410 用例改走 HTTP 页面接口（`/api/messages` 带 session）；requests-test 先设临时 `COWART_SESSION_NAMES_FILE` / `COWART_RUNTIME_DIR` 再动态 import / 起 CanvasServer 会读写会话名字文件，静态 import 时它已指向真的 `~/.cowart-claude`。
+- S5-4 / [假设] hello 用例搬进 resident-test 时 host 写 zcode / 会话流只剩 ZCode 的桥在用；计划只说把 `widget-poll` 换成 `pages`。
+- S5-5 / 补了一个行为用例：服务不再接 `/api/requests/claim|delivered|release`（旧代码 403、新代码 404，先红后绿）/ 计划没列 S5 的新行为用例；没写 widget 那两个操作名，免得撞完成定义的 rg。
+- S5-6 / feedback-test 的 Codex 腿查 Codex skill 里的 `` `cowart feedback` ``，Claude / ZCode 照旧查 `send_cowart_feedback` / S4 的 Codex skill 只写命令不写工具名，原断言在旧代码上就红。
+- S5-7 / [假设] context-menu 的 Codex 步：Codex 命令会话 open 后用它的会话 + pane 开页面事件流，带 `x-cowart-pane` 调页面接口，另断言服务里该会话 host 为 codex / 计划只写「改走 host codex 的 HTTP 页面」。
+- S5-8 / [假设] multi-session 的「别的代码目录」先起 1 个 listen、等它的服务起来再起其余 9 个，步名 bridges → listeners / 10 个同时首拉起会各经 WMI 起一个服务抢端口；原来的桥也是一个个起的。
+- S5-9 / [假设] probe:cold 去掉 Codex 段后由 `call render_cowart_canvas_widget` 拉起服务，断言改成页是新建的、listen 后服务 pid 不变；环境另删 `CODEX_THREAD_ID` / 在 Codex 任务里跑检查时命令会被认成 Codex 会话。
+- S5-10 / [假设] 顺手改了说已删的 Codex 桥 / widget 投递的 4 处代码注释（`request-notice` `requests` `feedback` `generation-requests`）和 `adapters/package.json` 的 description / 写的正是本阶段删掉的东西。
 
 ## S6 文档
 

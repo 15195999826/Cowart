@@ -1,14 +1,12 @@
 #!/usr/bin/env node
-// Makes a local release copy for Codex to run (FORK.md, Codex 任务切换与恢复):
-// ~/.cowart/releases/<adapters version>-<short commit>, taken from a commit's git objects rather
-// than the working tree, so uncommitted or in-progress changes never reach it. It holds the
-// resources and artifacts of adapters/generated/release-manifest.json, the manifest, the Codex
-// start script and release-origin.json; every file is checked against the manifest's sha256
-// before and after it is written. An existing copy is never touched.
+// Makes a local release copy (FORK.md, 分支与同步; publish-beast-library.mjs packs one for
+// colleagues): ~/.cowart/releases/<adapters version>-<short commit>, taken from a commit's git
+// objects rather than the working tree, so uncommitted or in-progress changes never reach it. It
+// holds the resources and artifacts of adapters/generated/release-manifest.json, the manifest and
+// release-origin.json; every file is checked against the manifest's sha256 before and after it is
+// written. An existing copy is never touched.
 //
 //   node adapters/scripts/make-release-copy.mjs [<commit>]     (default HEAD)
-//
-// Then verify-release.mjs the copy and switch-codex-entry.mjs to it.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -32,7 +30,7 @@ const expected = {
   ...manifest.resources,
   ...Object.fromEntries(Object.entries(manifest.artifacts).map(([name, hash]) => [`adapters/generated/${name}`, hash]))
 }
-const extra = ['adapters/generated/release-manifest.json', 'adapters/codex/bin/start.mjs']
+const extra = ['adapters/generated/release-manifest.json']
 const target = join(RELEASES_DIR, `${manifest.version}-${full.slice(0, 7)}`)
 if (existsSync(target)) throw new Error(`${target} already exists`)
 

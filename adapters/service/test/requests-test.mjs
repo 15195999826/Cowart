@@ -1,20 +1,26 @@
 // What Claude Code / ZCode hear about a canvas request before asking the user, and the host
 // notes they read after: 按标注修改 comes with its 标注 word for word and may be handled as
 // remarks instead of a new picture; AI HTML / Slides are not asked about image models. The
-// queue keeps its requests across a service restart.
+// queue keeps its requests across a service restart, and a page withdrawing a request hears
+// when it is gone (a replaced service) or already started.
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { hostNotes as claudeHostNotes } from '../../claude/lib/cli.mjs'
-import { requestNotice } from '../../claude/lib/request-notice.mjs'
-import { requestText as codexRequestText } from '../../codex/lib/bridge.mjs'
-import { UPSTREAM_WIDGET_HTML } from '../../shared/paths.mjs'
-import { hostNotes as zcodeHostNotes } from '../../zcode/lib/bridge.mjs'
-import { CanvasRequestQueue, REQUESTS_FILE_NAME, requestAnnotations, requestTask } from '../lib/requests.mjs'
-import { agentEventPayload } from '../lib/server.mjs'
+// Before the service's modules load: the canvas server a check starts keeps its session names
+// and runtime files here, never in the user's ~/.cowart-claude.
+const scratch = await mkdtemp(join(tmpdir(), 'cowart-requests-check-'))
+process.env.COWART_SESSION_NAMES_FILE = join(scratch, 'names.json')
+process.env.COWART_RUNTIME_DIR = join(scratch, 'runtime')
+const { hostNotes: claudeHostNotes } = await import('../../claude/lib/cli.mjs')
+const { requestNotice } = await import('../../claude/lib/request-notice.mjs')
+const { UPSTREAM_WIDGET_HTML } = await import('../../shared/paths.mjs')
+const { hostNotes: zcodeHostNotes } = await import('../../zcode/lib/bridge.mjs')
+const { CanvasRequestQueue, REQUESTS_FILE_NAME, requestAnnotations, requestTask } = await import('../lib/requests.mjs')
+const { CanvasServer, agentEventPayload } = await import('../lib/server.mjs')
 
 const MENTION = '[@Cowart](plugin://cowart@cowart-github)'
 
@@ -131,9 +137,11 @@ test('host notes say what to do with either choice, on all three hosts', () => {
     assert.doesNotMatch(htmlNotes, /免费本地模型|insert_cowart_image|put image/)
     assert.match(hostNotes(image).join('\n'), /「执行（免费本地模型）」「执行（云端模型，消耗团队额度）」「跳过」/)
   }
-  assert.match(codexRequestText(edit), /先读标注：是对图里界面、功能、设计的意见或问题.*不生图、不往画布放图/)
-  assert.match(codexRequestText(edit), /结果放回 pageId=page:kards。/)
-  assert.doesNotMatch(codexRequestText(html), /先读标注/)
+  // Codex runs the cowart command too, and asks nothing in a dialog.
+  const codexNotes = (request) => claudeHostNotes(request, 'cowart', 'codex').join('\n')
+  assert.match(codexNotes(edit), /先读标注：是对图里界面、功能、设计的意见或问题.*不生图、不往画布放图/)
+  assert.match(codexNotes(edit), /结果放进发出请求的那一页：put 带上 --page page:kards/)
+  assert.doesNotMatch(codexNotes(html), /先读标注/)
 })
 
 test('the queue keeps its requests, numbers and statuses across a restart', async () => {
@@ -169,4 +177,71 @@ test('the queue keeps its requests, numbers and statuses across a restart', asyn
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a withdrawal says when the request is gone or already started', async () => {
+  const queue = new CanvasRequestQueue()
+  const ops = new EventEmitter()
+  ops.canvasPages = async () => [{ id: 'page:second', name: 'Second' }]
+  const server = new CanvasServer({
+    token: 'isolated-test-token', identity: { service: 'cowart-canvas', protocol: 3, version: 'test', build: 'test' },
+    canvasDir: join(scratch, 'canvas'), queue, ops, renderPage: async () => '<html></html>'
+  })
+  await server.start({ port: 0 })
+  // What a canvas page posts (the page API over HTTP).
+  const action = async (path, body) => {
+    const response = await fetch(server.origin + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cowart-token': 'isolated-test-token' }, body: JSON.stringify(body) })
+    return { status: response.status, payload: await response.json() }
+  }
+  try {
+    const sent = await action('/api/messages', { text: 'withdraw me', session: 'withdraw-a', pageId: 'page:second', pageName: 'Second' })
+    assert.equal(sent.status, 200, JSON.stringify(sent))
+    const { id, requestKey } = sent.payload.request
+    // A page still showing a request from before a replaced service: nothing has its number,
+    // or the number now belongs to another request.
+    for (const body of [{ id: 9999 }, { id, requestKey: 'old-service-request' }]) {
+      const gone = await action('/api/requests/cancel', body)
+      assert.equal(gone.status, 410)
+      assert.equal(gone.payload.gone, true)
+    }
+    queue.update(id, { status: 'running' })
+    const late = await action('/api/requests/cancel', { id, requestKey })
+    assert.equal(late.status, 409)
+    assert.match(late.payload.error, /撤销不了/)
+    assert.equal(late.payload.request.status, 'running')
+    queue.update(id, { status: 'done' })
+  } finally {
+    await server.close()
+  }
+})
+
+// Codex reads its requests with the cowart command (requests / request), as Claude Code does: the
+// native widget's delivery (claim, acknowledge, release) is gone.
+test('the service takes no Codex widget delivery', async () => {
+  const queue = new CanvasRequestQueue()
+  const ops = new EventEmitter()
+  ops.canvasPages = async () => []
+  const server = new CanvasServer({
+    token: 'isolated-test-token', identity: { service: 'cowart-canvas', protocol: 3, version: 'test', build: 'test' },
+    canvasDir: join(scratch, 'canvas'), queue, ops, renderPage: async () => '<html></html>'
+  })
+  await server.start({ port: 0 })
+  const post = async (path, body) => {
+    const response = await fetch(server.origin + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-cowart-token': 'isolated-test-token' }, body: JSON.stringify(body) })
+    return { status: response.status, payload: await response.json() }
+  }
+  try {
+    const request = queue.create({ text: 'for a widget', session: 'widget-gone' })
+    for (const path of ['/api/requests/claim', '/api/requests/delivered', '/api/requests/release']) {
+      assert.equal((await post(path, { id: request.id, pane: 'pane-gone' })).status, 404, path)
+    }
+    assert.equal(queue.get(request.id).delivered, false)
+    assert.equal(server.pageCount, 0)
+  } finally {
+    await server.close()
+  }
+})
+
+test.after(async () => {
+  await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })

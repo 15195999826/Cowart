@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { loadOrCreateToken } from '../lib/token.mjs'
-import { CODEX_BRIDGE, EMPTY_CANVAS, FIXTURES, cliSession, finish, startBridge, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, cliSession, finish, openEvents, serviceStatus, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 const PORT = Number(process.env.COWART_MENU_TEST_PORT) || 43386
@@ -26,25 +26,20 @@ await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.jso
 
 await stopTestService(PORT)
 const claude = cliSession({ cwd: projectDir, port: PORT, session: 'menu-claude' })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'menu-codex', entry: CODEX_BRIDGE })
+const codex = cliSession({ cwd: projectDir, port: PORT, session: 'menu-codex', env: { COWART_HOST: 'codex' } })
 
 function ok(result) {
   assert.ok(!result.isError, text(result))
   return result
 }
-// What a canvas page calls: the Claude and ZCode pages over HTTP, the Codex widget through
-// its bridge's private transport.
-const pageCall = (name, args) =>
+// What a canvas page calls, over HTTP on every host (Codex shows the page in its built-in
+// browser); a page that names its pane works for that pane's session.
+const pageCall = (name, args, pane = null) =>
   fetch(`http://127.0.0.1:${PORT}/api/tools/call`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-cowart-token': token },
+    headers: { 'content-type': 'application/json', 'x-cowart-token': token, ...(pane ? { 'x-cowart-pane': pane } : {}) },
     body: JSON.stringify({ name, arguments: { projectDir, canvasDir, ...args } })
   }).then((response) => response.json())
-const widgetCall = async (name, args) => {
-  const result = ok(await codex.call('cowart_canvas_app', { op: 'call', pane: 'menu-pane', path: '/api/tools/call', body: { name, arguments: { projectDir, canvasDir, ...args } } }))
-  // The widget transport wraps the page API response: { status, payload }.
-  return result.structuredContent.payload
-}
 const copyReference = (shapeIds) => pageCall('copy_cowart_reference', { shapeIds })
 const snapshot = async () => ok(await claude.call('get_cowart_canvas_state', { includeSnapshot: true })).structuredContent.snapshot
 
@@ -132,9 +127,17 @@ try {
     assert.equal(lines[2], `- ${stillId} 视频截帧「tiny 1.2s.png」 ${still.assetPath}`)
   })
 
-  await step('the Codex widget copies the same reference', async () => {
-    const copied = await widgetCall('copy_cowart_reference', { shapeIds: [stillId] })
-    assert.equal(copied.structuredContent.text, `Cowart 画布 页面「截帧」 ${stillId} 视频截帧「tiny 1.2s.png」 ${still.assetPath}`)
+  await step("a Codex session's canvas page copies the same reference", async () => {
+    ok(await codex.call('render_cowart_canvas_widget', { sessionName: '阿码' }))
+    const page = openEvents(`http://127.0.0.1:${PORT}/api/page-events?${new URLSearchParams({ token, session: 'menu-codex', pane: 'menu-pane' })}`)
+    try {
+      await page.ready
+      assert.equal((await serviceStatus(PORT)).sessions.find((session) => session.id === 'menu-codex')?.host, 'codex')
+      const copied = await pageCall('copy_cowart_reference', { shapeIds: [stillId] }, 'menu-pane')
+      assert.equal(copied.structuredContent.text, `Cowart 画布 页面「截帧」 ${stillId} 视频截帧「tiny 1.2s.png」 ${still.assetPath}`)
+    } finally {
+      page.close()
+    }
   })
 
   await step('a shape the canvas does not have is refused', async () => {

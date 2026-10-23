@@ -10,9 +10,6 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-
 const ADAPTERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(ADAPTERS_DIR, '..')
 const sandbox = await mkdtemp(join(tmpdir(), 'cowart-adapters-cold-'))
@@ -23,9 +20,7 @@ const canvasDir = join(homeDir, '.cowart', 'canvas')
 const sentinelDir = join(sandbox, 'bin')
 const sentinelFile = join(sandbox, 'npm-was-called')
 const manifest = JSON.parse(await readFile(join(ADAPTERS_DIR, 'generated/release-manifest.json'), 'utf8'))
-const clients = []
 const children = []
-const logs = []
 let servicePort
 let token
 let fixture
@@ -69,45 +64,11 @@ try {
     NODE_PATH: '',
     PATH: `${sentinelDir}${delimiter}${process.env.PATH || ''}`
   }
-  for (const key of ['COWART_ADAPTERS_ROOT', 'COWART_SERVICE_BUILD_SALT', 'COWART_SERVICE_ENTRY', 'COWART_PROJECT_DIR', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID']) delete env[key]
+  // A check run from a Codex task: its thread would make the command a Codex session.
+  for (const key of ['COWART_ADAPTERS_ROOT', 'COWART_SERVICE_BUILD_SALT', 'COWART_SERVICE_ENTRY', 'COWART_PROJECT_DIR', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_HOST_SESSION_ID', 'CODEX_THREAD_ID']) delete env[key]
 
-  async function connect(host) {
-    const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [join(pluginDir, 'adapters/generated', `cowart-${host}-mcp.mjs`)],
-      cwd: pluginDir,
-      env: { ...env, COWART_SESSION_ID: `cold-${host}` },
-      stderr: 'pipe'
-    })
-    transport.stderr?.on('data', (chunk) => logs.push(String(chunk)))
-    const client = new Client({ name: `cowart-cold-${host}`, version: '0.0.0' })
-    clients.push(client)
-    await client.connect(transport)
-    return client
-  }
-
-  const codex = await connect('codex')
-  const codexTools = (await codex.listTools()).tools
-  for (const name of ['render_cowart_canvas_widget', 'get_cowart_canvas_state', 'insert_cowart_video', 'cowart_canvas_app']) {
-    assert.ok(codexTools.some((tool) => tool.name === name), `Cold Codex bundle exposes ${name}`)
-  }
-  const openedCodex = payload(await codex.callTool({ name: 'render_cowart_canvas_widget', arguments: { page: '冷安装共享页', sessionName: '小冷' } }))
-  token = (await readFile(join(runtimeDir, 'token'), 'utf8')).trim()
-  const started = await serviceStatus()
-  assert.equal(started.build, manifest.serviceBuild, 'A bundle must advertise the source build identity')
-  assert.equal(resolve(started.root), resolve(pluginDir), 'Service identity uses the installed plugin root')
-  assert.equal(resolve(started.canvasDir), resolve(canvasDir), 'The cold install uses only the isolated canvas')
-  console.log('PASS  Cold Codex MCP bundle starts the bundled shared service without dependencies.')
-
-  const resources = (await codex.listResources()).resources
-  const widget = resources.find((resource) => resource.mimeType?.includes('text/html') || resource.uri.startsWith('ui://'))
-  assert.ok(widget, 'Codex publishes its native MCP Apps widget')
-  const widgetContents = (await codex.readResource({ uri: widget.uri })).contents
-  assert.ok(widgetContents.some((item) => item.text?.includes('Cowart')), 'The published widget reads its installed runtime resources')
-  console.log('PASS  Native MCP Apps widget loads from the cold install.')
-
-  // The Claude Code command, the way a session runs it from its Bash tool: a process per
-  // command, through the file `install` writes.
+  // The cowart command, the way a session runs it from its shell tool: a process per command,
+  // through the file `install` writes. Nothing runs yet: the command starts the bundled service.
   const commandLink = join(homeDir, '.cowart', 'bin', 'cowart.mjs')
   const claudeEnv = {
     ...env,
@@ -142,8 +103,14 @@ try {
   assert.deepEqual(codexHooks.map((hook) => hook.command), [`"${process.execPath}" "${commandLink}" hook prompt`], 'Codex runs the installed command as its prompt hook')
   const opening = await runNode(commandLink, ['call', 'render_cowart_canvas_widget', '--json', '-', '--out', 'json'], JSON.stringify({ page: '冷安装共享页', sessionName: '小暖' }))
   const openedClaude = payload(JSON.parse(opening.stdout || '{}'))
-  assert.equal((await serviceStatus()).pid, started.pid, 'Both bundled hosts must reuse one service')
-  assert.equal(openedClaude.pageCreated, false, 'Claude sees the page Codex already created')
+  token = (await readFile(join(runtimeDir, 'token'), 'utf8')).trim()
+  const started = await serviceStatus()
+  assert.equal(started.build, manifest.serviceBuild, 'A bundle must advertise the source build identity')
+  assert.equal(resolve(started.root), resolve(pluginDir), 'Service identity uses the installed plugin root')
+  assert.equal(resolve(started.canvasDir), resolve(canvasDir), 'The cold install uses only the isolated canvas')
+  assert.equal(openedClaude.pageCreated, true, 'The command made the page on the isolated canvas')
+  console.log('PASS  Cold cowart command bundle starts the bundled shared service without dependencies.')
+
   assert.equal(openedClaude.listenCommand, `node ${commandLink.replaceAll('\\', '/')} listen`, 'Claude is told to run the installed command')
   const html = await fetch(openedClaude.url).then((response) => {
     assert.equal(response.status, 200)
@@ -155,7 +122,8 @@ try {
   await waitUntil(async () => (await serviceStatus()).sessions.some((session) => session.id === 'cold-claude' && session.listener), 10000)
   children.at(-1).kill()
   await listening
-  console.log('PASS  Cold Claude command bundle reuses the same service and page with all extensions, and listens.')
+  assert.equal((await serviceStatus()).pid, started.pid, 'Every command must reuse one service')
+  console.log('PASS  Cold Claude command bundle serves the page with all extensions, and listens.')
 
   // Puppeteer is bundled too: exercising a real screenshot catches dependency or
   // browser-side source serialization failures that importing the service cannot.
@@ -164,7 +132,7 @@ try {
     res.end('<!doctype html><title>Cowart cold install</title><h1>Offline adapter fixture</h1><p>Shared page, installed resources.</p>')
   })
   await new Promise((done) => fixture.listen(0, '127.0.0.1', done))
-  const pageId = openedClaude.pages.find((page) => page.name === '冷安装共享页')?.id || openedCodex.pageId
+  const pageId = openedClaude.heldPageId
   assert.ok(pageId, 'The shared page has an id')
   const captureResponse = await fetch(`http://127.0.0.1:${servicePort}/api/tools/call`, {
     method: 'POST',
@@ -181,14 +149,12 @@ try {
 
   assert.equal(await exists(sentinelFile), false, 'Cold startup must never invoke npm')
   assert.equal(await hasNodeModules(pluginDir), false, 'Cold startup must never create node_modules')
-  console.log('OK: Both adapters and the shared service work from the dependency-free release files.')
+  console.log('OK: The cowart command and the shared service work from the dependency-free release files.')
 } catch (error) {
-  if (logs.length) process.stderr.write(logs.join(''))
   const serviceLog = await readFile(join(runtimeDir, 'service.log'), 'utf8').catch(() => '')
   if (serviceLog) process.stderr.write(serviceLog)
   throw error
 } finally {
-  await Promise.all(clients.map((client) => client.close().catch(() => {})))
   for (const child of children) child.kill()
   if (servicePort) {
     token ||= (await readFile(join(runtimeDir, 'token'), 'utf8').catch(() => '')).trim()

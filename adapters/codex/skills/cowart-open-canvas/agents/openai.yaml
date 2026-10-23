@@ -1,4 +1,0 @@
-interface:
-  display_name: "Cowart Open Canvas"
-  short_description: "Open the shared Cowart native canvas and choose a page"
-  default_prompt: "Use $cowart-open-canvas to open the native Cowart canvas."

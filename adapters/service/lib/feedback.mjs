@@ -1,6 +1,6 @@
 // The user's feedback on Cowart itself (FORK.md 反馈). A session on any host records it with
-// send_cowart_feedback: the canvas service lists that tool next to upstream's, so the Claude
-// Code, ZCode and Codex bridges forward it like the others. It is worked through in the Cowart
+// send_cowart_feedback: the canvas service lists that tool next to upstream's, so the cowart
+// command (Claude Code, Codex) and the ZCode bridge forward it like the others. It is worked through in the Cowart
 // repository with the inbox command (service/bin/cowart-feedback.mjs). One folder per item
 // under ~/.cowart/feedback, kept on this machine like the canvas:
 //   feedback.json    the record; the inbox command updates its status

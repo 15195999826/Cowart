@@ -3,10 +3,10 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Host adapters for the Cowart fork (Claude Code, ZCode, Codex). See ../FORK.md.",
+  "description": "Host adapters for the Cowart fork: the cowart command (Claude Code, Codex), the ZCode bridge and the canvas service they share. See ../FORK.md.",
   "scripts": {
     "check:contract": "node ./claude/scripts/check-contract.mjs",
-    "test:claude": "node ./claude/scripts/smoke-test.mjs && node ./claude/scripts/multi-session-test.mjs && node ./claude/scripts/generation-test.mjs && node ./service/test/feedback-test.mjs && node ./service/test/canvas-edit-test.mjs && node ./service/test/context-menu-test.mjs && node ./service/test/page-folders-test.mjs && node --test ./service/test/requests-test.mjs && node ./service/test/stop-test.mjs && node ./service/test/address-test.mjs && node ./service/test/upstream-test.mjs && node ./service/test/resident-test.mjs && node ./claude/scripts/codex-cli-test.mjs",
+    "test:claude": "node ./claude/scripts/smoke-test.mjs && node ./claude/scripts/multi-session-test.mjs && node ./claude/scripts/generation-test.mjs && node ./service/test/feedback-test.mjs && node ./service/test/canvas-edit-test.mjs && node ./service/test/context-menu-test.mjs && node ./service/test/page-folders-test.mjs && node --test ./service/test/requests-test.mjs ./service/test/page-client-test.mjs ./service/test/media-assets-test.mjs && node ./service/test/stop-test.mjs && node ./service/test/address-test.mjs && node ./service/test/upstream-test.mjs && node ./service/test/resident-test.mjs && node ./claude/scripts/codex-cli-test.mjs",
     "test:multi": "node ./claude/scripts/multi-session-test.mjs",
     "test:generation": "node ./claude/scripts/generation-test.mjs",
     "test:feedback": "node ./service/test/feedback-test.mjs",
@@ -33,8 +33,7 @@
     "build:artifacts": "node ./scripts/build-artifacts.mjs",
     "check:artifacts": "node ./scripts/build-artifacts.mjs --check",
     "probe:cold": "node ./scripts/probe-cold-install.mjs",
-    "probe:memory": "node ./service/test/memory-probe.mjs",
-    "test:codex": "node --test ./codex/scripts/client-test.mjs ./codex/scripts/asset-cache-test.mjs ./service/test/widget-transport-test.mjs ./service/test/media-assets-test.mjs && node ./codex/scripts/smoke-test.mjs"
+    "probe:memory": "node ./service/test/memory-probe.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

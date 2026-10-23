@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The layout tools end to end (service/lib/canvas-edit.mjs): a Claude Code session lays a page
 // out with images placed at x, y and above, text labels, a group frame, moves, resizes and
-// deletes, through its bridge, the canvas service and upstream's real saves. Every host's
-// bridge lists the tools; a page another session is responsible for is refused; a record the
+// deletes, through its cowart commands, the canvas service and upstream's real saves. Every host
+// lists the tools; a page another session is responsible for is refused; a record the
 // canvas page could not show is refused before anything is written and marked in the summary.
 import assert from 'node:assert/strict'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { loadOrCreateToken } from '../lib/token.mjs'
-import { CODEX_BRIDGE, EMPTY_CANVAS, FIXTURES, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text, writePng } from '../../claude/scripts/test-kit.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 const PORT = Number(process.env.COWART_EDIT_TEST_PORT) || 43385
@@ -25,7 +25,7 @@ await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.jso
 await stopTestService(PORT)
 const claude = cliSession({ cwd: projectDir, port: PORT, session: 'edit-claude' })
 const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-zcode', entry: ZCODE_BRIDGE })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'edit-codex', entry: CODEX_BRIDGE })
+const codex = cliSession({ cwd: projectDir, port: PORT, session: 'edit-codex', env: { COWART_HOST: 'codex' } })
 
 function ok(result) {
   assert.ok(!result.isError, text(result))

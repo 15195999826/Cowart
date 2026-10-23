@@ -8,10 +8,10 @@
 // command; its page back when nobody took it), ended sessions forgotten once nothing waits
 // for them (and still hearing their requests when they come back), a changed checkout replacing
 // the service (with more sessions starting meanwhile, all ending up on one service), another
-// checkout's older bridges coming back during a replacement staying with the newer service, an
+// checkout's older listeners coming back during a replacement staying with the newer service, an
 // old service that does not stop keeping the canvas, one service per canvas, ports that do not
 // answer yet waited for rather than skipped, idle exit, and the desktop-only switch. Sessions
-// run cowart commands like Claude Code runs them (Codex bridges over stdio); canvas pages and
+// run cowart commands like Claude Code runs them (the older checkout's too); canvas pages and
 // listeners are played by event streams and the page API, on a test port.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -28,7 +28,7 @@ import { EXIT_CANVAS_BUSY, EXIT_REPLACED_STUCK, samePath } from '../../service/l
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
 import { pageRecords } from '../../shared/canvas-model.mjs'
 import { ADAPTERS_DIR, REPO_ROOT } from '../../shared/paths.mjs'
-import { EMPTY_CANVAS, FIXTURES, cliSession, delay, finish, openEvents, serviceStatus, startBridge, step, stopTestService, text, waitFor } from './test-kit.mjs'
+import { EMPTY_CANVAS, FIXTURES, cliSession, delay, finish, openEvents, serviceStatus, step, stopTestService, text, waitFor } from './test-kit.mjs'
 
 const PORT = Number(process.env.COWART_MULTI_PORT) || 43295
 // Ports of their own for the checks of ports that do not answer and ports another program
@@ -155,9 +155,9 @@ async function runService(canvas, port) {
   }, { timeoutMs: 15_000, what: `the service started by hand on ${port}` })
 }
 
-// Another checkout older than this one, the way Codex installs a release: the published files
-// (bundled bridges, command and service) copied elsewhere, under a lower version. Returns its
-// Codex bridge.
+// Another checkout older than this one, the way a release copy is installed: the published files
+// (bundled command and service) copied elsewhere, under a lower version. Returns its cowart
+// command.
 async function olderCheckout(dir) {
   const manifest = JSON.parse(await readFile(join(ADAPTERS_DIR, 'generated', 'release-manifest.json'), 'utf8'))
   const files = [...Object.keys(manifest.resources), ...Object.keys(manifest.artifacts).map((name) => `adapters/generated/${name}`)]
@@ -167,7 +167,7 @@ async function olderCheckout(dir) {
   }
   const pkg = JSON.parse(await readFile(join(dir, 'adapters', 'package.json'), 'utf8'))
   await writeFile(join(dir, 'adapters', 'package.json'), JSON.stringify({ ...pkg, version: '0.0.1' }))
-  return join(dir, 'adapters', 'generated', 'cowart-codex-mcp.mjs')
+  return join(dir, 'adapters', 'generated', 'cowart.mjs')
 }
 
 const listen = (server, port) => new Promise((resolve, reject) => server.once('error', reject).listen(port, '127.0.0.1', resolve))
@@ -713,10 +713,11 @@ try {
     assert.equal(canvasOwner(canvasDir)?.pid, after.pid, 'the canvas lock does not name the service')
   })
 
-  await step("another checkout's older bridges that come back while this checkout replaces their service wait for the new one instead of starting their own", async () => {
+  await step("another checkout's older listeners that come back while this checkout replaces their service wait for the new one instead of starting their own", async () => {
     // On 2026-10-10 the Codex release (0.2.10, bundled, many sessions) and this checkout (0.2.11)
     // took turns: each Claude session stopped the 0.2.10 service, and the Codex bridges coming back
-    // started 0.2.10 again before the new service had the canvas.
+    // started 0.2.10 again before the new service had the canvas. A release copy's sessions now
+    // stay connected through their listeners (`cowart listen`), which come back the same way.
     const project = await mkdtemp(join(tmpdir(), 'cowart-claude-checkouts-'))
     const older = await olderCheckout(join(project, 'older'))
     const canvas = join(project, 'canvas')
@@ -726,15 +727,20 @@ try {
     const olders = []
     let newer = null
     try {
-      for (let index = 0; index < 10; index += 1) {
-        // Other code, too: the same build would be reused whichever checkout runs it.
-        olders.push(await startBridge({ cwd: project, port: CHECKOUTS_PORT, session: `multi-older-${index}`, env: { ...FAST, COWART_SERVICE_BUILD_SALT: 'older' }, entry: older }))
+      // Other code, too: the same build would be reused whichever checkout runs it. The first
+      // listener starts the older checkout's service, the others join it.
+      const olderSession = (index) => {
+        const session = cliSession({ cwd: project, port: CHECKOUTS_PORT, session: `multi-older-${index}`, env: { ...FAST, COWART_SERVICE_BUILD_SALT: 'older' }, entry: older })
+        olders.push(session)
+        session.listen()
       }
-      await Promise.all(olders.map((bridge) => bridge.client.listTools()))
+      olderSession(0)
+      await waitFor(async () => connected(await serviceStatus(CHECKOUTS_PORT)) === 1, { timeoutMs: 20_000, what: "the older checkout's service with its first listener" })
+      for (let index = 1; index < 10; index += 1) olderSession(index)
       const before = await waitFor(async () => {
         const status = await serviceStatus(CHECKOUTS_PORT)
         return connected(status) === olders.length && status
-      }, { timeoutMs: 15_000, what: "the older checkout's service with its bridges" })
+      }, { timeoutMs: 15_000, what: "the older checkout's service with its listeners" })
       assert.equal(before.version, '0.0.1')
       assert.ok(samePath(before.root, join(project, 'older')), before.root)
 
@@ -754,7 +760,7 @@ try {
       assert.deepEqual((await servicesOn(canvas, CHECKOUTS_PORT)).map((status) => status.pid), [after.pid], 'a second service runs on the canvas')
       assert.equal(canvasOwner(canvas)?.pid, after.pid, 'the canvas lock does not name the service')
     } finally {
-      for (const bridge of [...olders, newer]) await bridge?.close()
+      for (const session of [...olders, newer]) await session?.close()
       for (const status of await servicesOn(canvas, CHECKOUTS_PORT)) await stopTestService(status.port)
       await rm(project, { recursive: true, force: true }).catch(() => {})
     }

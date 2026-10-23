@@ -1,6 +1,6 @@
-// In-memory queue of requests from canvas pages. Most go to a Claude session (the Codex host
-// receives them as ui/message chat turns instead): the one responsible for the page they came
-// from. AI 图片 / AI 视频 ones the canvas service runs itself (executor "service",
+// In-memory queue of requests from canvas pages. Most go to a session (a Claude Code one hears
+// them through its listener, a Codex one reads them when the user asks): the one responsible for
+// the page they came from. AI 图片 / AI 视频 ones the canvas service runs itself (executor "service",
 // generation-jobs.mjs): they belong to no session and report their steps as they go. Ids
 // are unique across sessions.
 import { EventEmitter } from 'node:events'

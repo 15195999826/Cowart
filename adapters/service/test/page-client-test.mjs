@@ -1,7 +1,8 @@
+// The canvas page's first read (src/cowartClient.js, a fork patch point): it waits for valid
+// storage arguments, takes the adapter's storage target over whatever the host's tool output
+// says, and an aborted read never reaches the service. Plain Node with a stand-in window.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import vm from 'node:vm'
-import { inlineWidget } from '../../../mcp/lib/widget-resource.mjs'
 import { loadCowartCanvasState } from '../../../src/cowartClient.js'
 
 function host({ target, read = async () => ({ structuredContent: { snapshot: { store: {} } } }) } = {}) {
@@ -42,26 +43,4 @@ test('aborted initial reads never call the server', async () => {
   const loading = loadCowartCanvasState(controller.signal)
   controller.abort()
   await assert.rejects(loading, { name: 'AbortError' })
-})
-
-test('partial native host updates preserve the active display mode and widget identity', async () => {
-  const listeners = new Map()
-  class App {
-    addEventListener(name, callback) { listeners.set(name, callback) }
-    async connect() {}
-    getHostContext() { return { displayMode: 'fullscreen', availableDisplayModes: ['inline', 'fullscreen'], widgetInstanceId: 'native-one', theme: 'light' } }
-  }
-  const window = new EventTarget()
-  const context = vm.createContext({ window, document: { documentElement: {}, body: {} }, setTimeout, clearTimeout, CustomEvent, __COWART_MCP_APPS__: { App } })
-  const html = inlineWidget({ html: '<html><head></head></html>', appVersion: 'test' })
-  const script = html.match(/<script id="cowartMcpHostBridge">([\s\S]*?)<\/script>/)[1]
-  vm.runInContext(script, context)
-  await context.__COWART_MCP_APP__.ready
-  listeners.get('hostcontextchanged')({ theme: 'dark', containerDimensions: { width: 1200 } })
-  assert.equal(window.openai.displayMode, 'fullscreen')
-  assert.equal(window.openai.widgetInstanceId, 'native-one')
-  assert.equal(window.openai.hostContext.theme, 'dark')
-  assert.equal(window.openai.hostContext.displayMode, 'fullscreen')
-  listeners.get('hostcontextchanged')({ displayMode: 'inline' })
-  assert.equal(window.openai.displayMode, 'inline', 'an explicit collapse still suspends the canvas')
 })

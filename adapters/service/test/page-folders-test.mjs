@@ -10,7 +10,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { CODEX_BRIDGE, EMPTY_CANVAS, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
+import { EMPTY_CANVAS, ZCODE_BRIDGE, cliSession, finish, startBridge, step, stopTestService, text } from '../../claude/scripts/test-kit.mjs'
 import { PAGE_ACTIVITY_FILE_NAME } from '../lib/page-activity.mjs'
 import { normalizeFolder, pageTreeLines, planPageMoves } from '../lib/page-folders.mjs'
 import { loadOrCreateToken } from '../lib/token.mjs'
@@ -25,7 +25,7 @@ await copyFile(EMPTY_CANVAS, join(canvasDir, 'pages', 'page', 'cowart-canvas.jso
 await stopTestService(PORT)
 const claude = cliSession({ cwd: projectDir, port: PORT, session: 'folders-claude' })
 const zcode = await startBridge({ cwd: projectDir, port: PORT, session: 'folders-zcode', entry: ZCODE_BRIDGE })
-const codex = await startBridge({ cwd: projectDir, port: PORT, session: 'folders-codex', entry: CODEX_BRIDGE })
+const codex = cliSession({ cwd: projectDir, port: PORT, session: 'folders-codex', env: { COWART_HOST: 'codex' } })
 
 function ok(result) {
   assert.ok(!result.isError, text(result))

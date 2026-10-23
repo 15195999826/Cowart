@@ -180,7 +180,7 @@ npm --prefix adapters run probe:cold
 | S2 脱离宿主拉起 + 开机自启 | 已完成 | d943341 | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 110 PASS + 6 node:test（+4：resident g / h / i / j）、zcode 12、codex 25 + 26、build / check OK、cold 4（install 写进沙箱，另断言打包的服务入口和 lnk）；服务日志里没有退回 detached 的；守卫空；两问自查：退出码文件读后删、拉起前删一天前的、stopTestService 也删，安装三样 uninstall 全删、测试都写临时目录；新循环遍历的都是 readdirSync / Object.entries 的数组 |
 | S3 命令认 Codex 会话 | 已完成 | a30b506 | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 119 PASS + 6 node:test（+9：codex-cli D7 单元 / k ×2 / l ×4 / n / m）、zcode 12、codex 25 + 26、build / check OK、cold 4；⓪ 实测 thread_id = shell 的 CODEX_THREAD_ID = hook stdin 的 session_id，hook 进程没有 CODEX_THREAD_ID；守卫空；两问自查：关页续租用已有的 session.timer（`close()` 清、关服务时不续），测试的服务、临时目录在 finally 清掉；新循环遍历的都是 Object.keys 的数组 |
 | S4 Codex 的 hook、skill 与安装 | 已完成 | 907768a | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 126 PASS + 6 node:test（+7：codex-cli o ×5 / p ×2）、zcode 12、codex 25 + 26、build / check OK、cold 4（install 另断言 Codex skill 链到发布副本、hook 跑装好的命令）；test:codex-cli 另连跑 2 次绿；守卫空；两问自查：hook 的 2.5 秒定时器随进程退出，服务没加表或定时器（hook-check 不建会话，续租用已有的 session.timer）；skill 链接、hook 条目 uninstall 删，cowart_mcp 按计划不恢复，备份留给用户；测试的 Codex 主目录、占端口的服务在 finally 清掉；新循环遍历的都是解析出的数组或 queue.list 的拷贝 |
-| S5 删掉 Codex widget + MCP | 未开始 | | |
+| S5 删掉 Codex widget + MCP | 已完成 | | 全量组全绿（第 1 关一轮过，test:codex 已删）：contract OK、test:claude 127 PASS + 13 node:test（+1 PASS：搬来的 hello；+7 node:test：搬来的撤销 410、page-client ×3、从 test:codex 挪来的 media-assets ×2、新的「不再接 widget 投递」先红后绿）、zcode 12、build / check OK、cold 3（去掉 Codex 桥、widget 两步，改由命令拉起服务）；少掉的只有 Codex 桥 / widget 专用的：test:codex 的 node:test 19 个（asset-cache 2 + 3 子、partial native host updates、widget event cursors、mixed-host 1 + 10 子、restarted service）和 Codex smoke 25 个；守卫空；两问自查：删掉的 widget 表、投递租约定时器连同 `close()` 里的清理一起去掉，没加新的表或定时器；新测试的服务、页面流、listen 子进程、临时目录在 finally / after 清掉；新循环遍历的都是数组字面量或拷贝 |
 | S6 文档 | 未开始 | | |
 | S7 整体审与收口 | 未开始 | | |
 
@@ -195,3 +195,5 @@ npm --prefix adapters run probe:cold
 - （S3）D7 把 `CLAUDE_CODE_*` 排在 `CODEX_THREAD_ID` 前：从 Claude Code 会话里起的 Codex（⓪ 实测就是）跑命令会被认成 Claude 会话，桌面版门禁也照查；只影响这种嵌套。
 - （S4）会话只记在服务进程里：服务重启（换版本）后，Codex 会话再跑一条 cowart 命令之前 hook 认不得它，它排着的请求这段时间不提醒（D8「没跑过命令的 thread 不建会话」按服务进程算）。
 - （S4）命令给 Codex 的文字写 `node ~/.cowart/bin/cowart.mjs`：Windows PowerShell 5.1 不展开 `~`（pwsh 7.6 展开，Codex 优先用 pwsh）；Codex skill 里写了换成 `$HOME` 的写法，命令自己的文字没改。
+- （S5）根目录上游的 `scripts/check-plugin-metadata.mjs` 现在报根 `package.json` 版本（`0.1.28+codex.…`）≠ `.codex-plugin/plugin.json`（上游 0.1.27）：D15 只恢复后者、根版本不动；不在全量组里。
+- （S5）本机真安装还指着删掉的东西：`~/.codex/config.toml` 的 `cowart_mcp` 跑发布副本 0.2.16 的桥（协议同为 3，会沿用本仓库换上的服务，widget 的调用都报「不认识操作」）；`~/.codex/skills/` 下 4 个 junction 指向已删的 `adapters/codex/skills/*`。S7 人工验收第 1 条真装 install 会清掉。

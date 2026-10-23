@@ -1,5 +1,5 @@
 // Turns what the canvas "AI 图片" / "AI 视频" panels send into the request text the agent
-// receives (Claude Code: through the request queue; Codex: as a ui/message turn). Uploaded
+// receives (through the request queue, on every host). Uploaded
 // materials are saved next to the holder's page assets so the agent can read them locally.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
