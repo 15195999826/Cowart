@@ -25,12 +25,13 @@ import { CanvasRequestQueue, REQUESTS_FILE_NAME } from './requests.mjs'
 import { CanvasServer } from './server.mjs'
 import { loadOrCreateToken } from './token.mjs'
 
-// The canvas served to the browser is the local-server one (Claude Code desktop and ZCode
-// share it); its host bridge lives with the Claude adapter. `host` is the opening session's
-// host: it only changes the wording the page shows (hostLabel), not its behavior.
+// The canvas served to the browser is the local-server one (Claude Code desktop, Codex's
+// built-in browser and ZCode share it); its host bridge lives with the Claude adapter. `host` is
+// the opening session's host: it changes the wording the page shows (hostLabel) and, for Codex,
+// adds Codex imagegen to the image models; the page works the same.
 const PAGE_BRIDGE_SCRIPT = join(ADAPTERS_DIR, 'claude', 'web', 'bridge.js')
 const PAGE_HOST = 'claude'
-const PAGE_HOST_LABELS = { zcode: 'ZCode' }
+const PAGE_HOST_LABELS = { zcode: 'ZCode', codex: 'Codex' }
 // How long the service sits idle before it exits: COWART_SERVICE_IDLE_MS when above 0; else
 // never for the machine's canvas (COWART_CANVAS_DIR not set), 10 minutes for another canvas.
 export function serviceIdleMs(env = process.env) {
@@ -134,7 +135,8 @@ export async function startCanvasService({ port, replacing = null }) {
       hostName: hostLabel || undefined,
       videoModels: VIDEO_MODELS,
       defaultVideoModelId: DEFAULT_VIDEO_MODEL_ID,
-      imageModels: imageModelsForHost(PAGE_HOST),
+      // A Codex session's page offers Codex imagegen too (its session makes the picture).
+      imageModels: imageModelsForHost(host === 'codex' ? 'codex' : PAGE_HOST),
       defaultImageModelId: DEFAULT_IMAGE_MODEL_ID
     }
     const [widgetHtml, bridgeSource, pageRuntime, sharedScripts] = await Promise.all([

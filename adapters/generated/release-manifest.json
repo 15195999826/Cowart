@@ -2,18 +2,18 @@
   "version": "0.3.0",
   "generatedBy": "adapters/scripts/build-artifacts.mjs",
   "node": ">=22.12.0",
-  "serviceBuild": "08f58153ead04325",
+  "serviceBuild": "1453906b221a1c20",
   "artifacts": {
-    "cowart-service.mjs": "79ff0a6c20ebbede9d25ce4a037571211bd967ad950efc798143d282abd64263",
-    "cowart-codex-mcp.mjs": "359a6dd7e3cf17a63a1442d1b39677471d6a0f17f47bbb299b24bef1915b055c",
-    "cowart.mjs": "b7f5398e289ba1a833321cc9501888786c7f90cb3cd401658896146ee050cb3e"
+    "cowart-service.mjs": "2d6df600b90a9ee7e76a5d7ed0e6a0acea2e0dd5d0b3124c6fea49b1c49aa62f",
+    "cowart-codex-mcp.mjs": "b791dfbb6000c0d3de41e92896703ed5a01e8c10a2b15b1bb33637d56169612d",
+    "cowart.mjs": "62df33b477078c9b60baa1dcd2f6fa9ecc87c5ac2b8af9af95d5bfccdf8fbc35"
   },
   "resources": {
     ".codex-plugin/plugin.json": "bddd26bae6ea9c6d8a3ac39c7067858e57f6471be9a65952c9f98ae2ba58555c",
     "adapters/claude/web/bridge.js": "4250813ca4f0af7a62bf38c22c50207c72da4ebfff514c3a357542d30fb7a573",
     "adapters/codex/web/asset-cache.js": "d0abf5db02c7ba6a50ca788c85bba48655bd4feb6d01e7d806b9d4ca21de5d3d",
     "adapters/codex/web/transport.js": "f639f2a3c449686ac8172a48b7765994e2e34b839b0c2f48dfa78dce4d075f73",
-    "adapters/package.json": "4941e43c3d7bfc9a8840626dbd4f2de15e6329b1d4e9863f5df6fdf1f144831a",
+    "adapters/package.json": "b536ddba92919b4cdcc65f17eaf0d0dbb3dc926e5b73cacfe7df6a6b5b6ad2d4",
     "adapters/shared/empty-canvas.json": "6bddaf12509f149623013b0b7566cfd917c994be1dc35f008603833dc04b3f31",
     "adapters/shared/web/ai-image.js": "fbed408cd27f9f5bf14a35aa6a349dda005c9148edf43c25cc31feecf35ef389",
     "adapters/shared/web/ai-video.js": "fa84e2bb31979a5bc3df92668301a33d044465ba650898e7fb62e417c0cf6619",

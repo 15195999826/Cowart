@@ -724,9 +724,10 @@ export class CanvasServer {
     session.timer = setTimeout(() => this.#endSession(session), Math.max(0, ms))
   }
 
-  // Connected: its bridge, or the listener of a command session.
+  // Connected: its bridge, or the listener of a command session. A Codex command session runs no
+  // listener: its canvas page open keeps it.
   #held(session) {
-    return Boolean(session.bridge) || Boolean(session.listener && session.listenerKeeps)
+    return Boolean(session.bridge) || Boolean(session.listener && session.listenerKeeps) || (session.cli && session.host === 'codex' && session.pages.size > 0)
   }
 
   // A command session stays online at least ms longer (replace: exactly ms from now); with
@@ -885,7 +886,10 @@ export class CanvasServer {
     }
     req.on('close', () => {
       this.#pageStreams.delete(res)
+      // A command session its canvas page kept online (Codex): online a lease longer.
+      const held = session ? this.#held(session) : false
       session?.pages.delete(res)
+      if (session?.cli && held && !this.#held(session) && !this.#closing) this.#keepFor(session, LEASE_MS)
       if (pane && !this.#closing) {
         clearTimeout(this.#paneTimers.get(pane))
         this.#paneTimers.set(

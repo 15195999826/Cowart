@@ -188,6 +188,9 @@ export function rawGet(port, path, headers) {
 function sessionEnv({ cwd, port, session, env }) {
   const inherited = { ...process.env }
   delete inherited.CLAUDE_CODE_ENTRYPOINT
+  // Run from a Codex task, a check's Claude session would pass for a Codex one (cli.mjs
+  // hostFromEnv); a Codex session gives its thread in env.
+  delete inherited.CODEX_THREAD_ID
   return {
     ...inherited,
     COWART_CLAUDE_PORT: String(port),

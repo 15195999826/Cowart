@@ -16,6 +16,9 @@ const CIRCLED = '①②③④⑤⑥⑦⑧'
 export const ANNOTATION_EDIT_QUESTION =
   '先看标注：要改这张图本身（换背景、改颜色这类）就推荐出新图；是对图里界面、功能、设计的意见或问题（图多是项目截图、设计稿）就推荐照标注处理，问题里一句话说出你的理解。选项（推荐的放第一个）：照标注处理（答疑、改当前项目，不生图）/ 按标注出新图（免费本地模型）/ 按标注出新图（云端，消耗团队额度）/ 跳过'
 
+// The same for Codex, which asks nothing in a dialog (as its bridge has said it, codex/lib/bridge.mjs).
+export const ANNOTATION_EDIT_NOTE = '按标注修改的标注不一定是改图要求，先读标注：是对图里界面、功能、设计的意见或问题（图多是项目截图、设计稿），就在对话里逐条回答、在当前项目里改，不生图、不往画布放图，完成回 done 并写一句；是改这张图本身的要求（换背景、改颜色这类）才按上面的请求出新图。拿不准先问用户。'
+
 export const ANNOTATION_REMARKS_NOTE =
   '用户选「照标注处理」时：标注是对图里内容的意见或问题，不是改图要求——不生图、不往画布放图，原始请求里让你生成新图、放到原图旁边的那几句这时不适用。Read 带标注的截图，在对话里逐条回答问题，要改的地方在当前项目里改（改动大的先跟用户对一下），做完 reply done，message 写一句（比如「已在对话里逐条答复」）。'
 
@@ -47,10 +50,15 @@ function annotationWords(annotations) {
 // cowart command (cli.mjs passes its own).
 const MCP_DETAILS = (id) => `调 get_cowart_request {"id": ${id}}`
 
-export function requestNotice(request, { details = MCP_DETAILS } = {}) {
+// host 'codex': Codex has no dialog to ask in and no listener; its session reads the request when
+// the user said 看画布 or yes (cli.mjs).
+export function requestNotice(request, { details = MCP_DETAILS, host = null } = {}) {
   const page = request.page ? `（页「${request.page}」）` : ''
   const about = request.annotations?.length ? annotationWords(request.annotations) : request.summary
   const head = `Cowart 画布请求 #${request.id}「${request.title}」${page}${about ? `：${about}` : ''}`
+  if (host === 'codex') {
+    return `${head} → 用户说了「看画布」或答应要做时，${details(request.id)} 看详情照做；还没答应的，先答完用户的话，在回复末尾提一句这条请求、问要不要做`
+  }
   // Only a yes goes ahead: an option that does it, or the user's own words saying so. An answer
   // that picks nothing (AskUserQuestion can come back 「无偏好」) is no yes: on 10-22 a session
   // took it for one and did a request the user did not want. The request then stays as it is.

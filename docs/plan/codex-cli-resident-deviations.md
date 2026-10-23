@@ -26,7 +26,11 @@
 
 ## S3 cowart 命令认 Codex 会话
 
-- 
+- S3-1 / ⓪ 实测（`codex exec --json`，hook 用 `-c hooks.UserPromptSubmit=…` 给）：thread_id = shell 的 `CODEX_THREAD_ID` = hook stdin 的 `session_id`；hook 进程没有 `CODEX_THREAD_ID`。影响：S4 的 hook 必走 stdin 的 `session_id`（D9 已如此）。
+- S3-2 / [假设] 关页续 LEASE 只在「关前 held、关后不 held」时做（即只有 Codex 命令会话）/ 字面「cli 且不再 held」会让 Claude 命令会话关页时把监听断开后 2 分钟的宽限拉成 30 分钟，违背保住 Claude 今日行为。
+- S3-3 / [假设] codex 的 `requests` 行由 `requestNotice` 的新选项 `host` 给（Claude / ZCode 不传），`requests` / `reply` 不附「重启监听」，open 结果不带 `listenCommand` / D11 不许出现 AskUserQuestion 等，计划只点名 open / take / request。
+- S3-4 / [假设] `hostFromEnv` 把 `COWART_HOST` 去空白、转小写，只有 codex 换说法；host codex 的 `listen` 在会话检查之前就退出 2 / 计划没写到，取最小实现。
+- S3-5 / [假设] test-kit 的 `sessionEnv` 去掉继承的 `CODEX_THREAD_ID`；codex-cli-test 用临时 `COWART_RUNTIME_DIR`，(m) 先开页面流再 open，另加 D7 单元、不受门禁两个用例 / 在 Codex 任务里跑检查时 Claude 会话会被认成 Codex；LEASE 1 秒下 open 到开页可能超时。
 
 ## S4 Codex 的 hook、skill 与安装
 

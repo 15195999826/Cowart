@@ -6,6 +6,9 @@
 // makes one call and leaves; `cowart listen`, run in the background, brings the session its
 // canvas requests and keeps it online while it runs (server.mjs). It used to be an MCP server,
 // registered project by project, and the session was online only while that process lived.
+// Codex sessions run the same command (hostFromEnv): their texts link the canvas for Codex's
+// built-in browser and run no listener (their requests wait until the user asks, 看画布); their
+// canvas page keeps them online while it is open (server.mjs).
 //
 // The commands follow what a session does with the canvas, not the tools one by one: open it
 // and take pages (open, take, listen), look at it (pages, page, selection), put things on it
@@ -20,10 +23,9 @@ import { MOVE_PAGES_TOOL, folderWords, newPageFolderHint, normalizeFolder, pageT
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { COMMAND_LINK, COMMAND_LINK_SHOWN, ENTRY, installCowart, linkTarget, removeCowart } from './install.mjs'
 import { listenForRequests } from './listen.mjs'
-import { ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, requestLine, restartListenerNote } from './request-notice.mjs'
+import { ANNOTATION_EDIT_NOTE, ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, requestLine, restartListenerNote } from './request-notice.mjs'
 import { CANVAS_STATE_TOOL, GET_REQUEST_TOOL, INSERT_VIDEO_TOOL, LIST_REQUESTS_TOOL, OWN_TOOLS, RENDER_TOOL, REPLY_REQUEST_TOOL } from './tools.mjs'
 
-const HOST = 'claude'
 // What `install` writes and where (install.mjs), as this module has always offered them.
 export { COMMAND_LINK, ENTRY, installCommandLink, removeCommandLink } from './install.mjs'
 
@@ -38,10 +40,21 @@ export function isDesktopEntrypoint(entrypoint) {
 
 // The desktop gives the commands a session runs its session id (its Bash tool's environment, as
 // it gave its MCP servers): it outlives a resumed session, so the pages it opened reconnect to
-// it. Tests and the dev host set COWART_SESSION_ID.
+// it. Codex gives the commands of a task its thread (CODEX_THREAD_ID; codex-<thread>, as its
+// MCP bridge called the session). Tests and the dev host set COWART_SESSION_ID.
 export function sessionIdFromEnv(env = process.env) {
-  const raw = env.COWART_SESSION_ID || env.CLAUDE_CODE_HOST_SESSION_ID || env.CLAUDE_CODE_SESSION_ID || ''
+  const raw = env.COWART_SESSION_ID || env.CLAUDE_CODE_HOST_SESSION_ID || env.CLAUDE_CODE_SESSION_ID || (env.CODEX_THREAD_ID ? `codex-${env.CODEX_THREAD_ID}` : '')
   return String(raw).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 96) || null
+}
+
+// Which host runs the command: COWART_HOST when set (tests), else Claude Code when it gave the
+// command its variables, else Codex when it gave its thread, else Claude Code. The texts differ
+// by host (Codex has no Browser pane, no AskUserQuestion, no background listener).
+export function hostFromEnv(env = process.env) {
+  const given = String(env.COWART_HOST ?? '').trim().toLowerCase()
+  if (given) return given
+  if (Object.keys(env).some((key) => key.startsWith('CLAUDE_CODE_'))) return 'claude'
+  return env.CODEX_THREAD_ID ? 'codex' : 'claude'
 }
 
 // How texts tell the session to run cowart: through the file `install` wrote when it leads here.
@@ -296,6 +309,12 @@ const OTHER_COMMANDS = [
   ['其它', ['help'], 'help [<命令>]', '用法；给了命令就列出它的全部参数'],
   ['其它', ['install', 'uninstall'], 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart，并装上画布服务的开机自启（Windows）/ 删掉这些`]
 ]
+// Codex runs no listener: its requests wait until the user asks for them (看画布).
+const CODEX_LISTEN_ABOUT = 'Codex 不用：画布请求不会叫醒 Codex 会话，用户说「看画布」（或答应要做）时用 requests 取，request <编号> 看详情照做'
+
+function otherCommands(host) {
+  return host === 'codex' ? OTHER_COMMANDS.map((entry) => (entry[1].includes('listen') ? [entry[0], entry[1], entry[2], CODEX_LISTEN_ABOUT] : entry)) : OTHER_COMMANDS
+}
 
 // What the tool parameters a command has no flag of its own for do, for help (the tools'
 // definitions are upstream's, in English or without a word).
@@ -314,8 +333,8 @@ const PARAM_ABOUT = {
   font: '字体'
 }
 
-function otherCommandNamed(name) {
-  return OTHER_COMMANDS.find(([, names]) => names.includes(name)) ?? null
+function otherCommandNamed(name, host = 'claude') {
+  return otherCommands(host).find(([, names]) => names.includes(name)) ?? null
 }
 
 const GLOBAL_FLAGS = [
@@ -728,10 +747,62 @@ function generationNote(request, cli) {
   return imagegen
 }
 
-export function hostNotes(request, cli = cowartCommand()) {
+// Codex: no dialog, no listener. A request is read when the user said 看画布 or yes; one the
+// user has not agreed to yet is mentioned at the end of the answer to what the user said.
+const CODEX_ASK = '这条请求是用户在画布上点的，不是在对话里说的话：用户说了「看画布」、或答应要做，才照做；还没答应的，先答完用户的话，在回复末尾提一句这条请求、问要不要做，用户答应了再做，说不做就回 skipped。'
+
+function codexConfirmNote(request) {
+  if (request.kind === 'video' || request.kind === 'image') {
+    return `${CODEX_ASK}模型和参数用户已经在画布面板里选好了（见请求），照着做；云端模型消耗团队额度，用户还不知道要花钱的话先说一句。`
+  }
+  const task = requestTask(request)
+  if (task === 'canvas' || task === 'generate-image') {
+    return `${CODEX_ASK}要生图而请求没写明用哪个模型时，用 Codex 内置的图片生成或本地免费的 beast 模板；要用云端模型（消耗团队额度）先问用户。`
+  }
+  return CODEX_ASK
+}
+
+function codexGenerationNote(request, cli) {
+  const imagegen = `画布的提示词本来就是按 Codex 写的：要求用 Codex 内置 imagegen / 当前可用的图片生成能力的，就用 Codex 内置的图片生成；指定了猛兽（beast）模板的，照 beast-gen skill 提交（模板与参数以 beast gen templates 现查为准）。结果存到本地后，按请求里的要求放上画布（${cli} put image <本地路径> …，或照搬请求写的 insert_cowart_image 调用）。`
+  if (request.kind === 'video') {
+    return `这是视频请求：照 beast-gen skill，按请求里写好的模板和参数提交，素材按请求的顺序上传后填进对应参数；生成后下载到本地，按请求放进画布：${cli} put video <本地路径> --replace <AI 视频框的 id>。`
+  }
+  if (request.kind === 'image') {
+    return /^Model: Codex imagegen/m.test(request.text)
+      ? `这是图片请求，用户选的是 Codex imagegen：用 Codex 内置的图片生成出图（参考图按请求的顺序当视觉参考）；存到本地、看一眼没问题，再按请求放进画布：${cli} put image <本地路径> --replace <AI 图片框的 id>。`
+      : `这是图片请求：照 beast-gen skill，按请求里的模板和参数出图，按 skill 的要求先读对应参考（lib-image 2.5 系读 references/image-prompting.md，ideogram4 读 references/ideogram4-caption.md，透明底读 references/transparent-asset.md）；生成后下载到本地、看一眼没问题，再按请求放进画布：${cli} put image <本地路径> --replace <AI 图片框的 id>。`
+  }
+  if (request.kind === 'web') {
+    return `这是网页复刻请求：先看请求里的整页截图（很长时分段看），有标注的话逐张看标注的局部截图，再读渲染后的页面代码；要看真实的颜色、字体、间距，或按坐标找标注指的元素，可以在 Codex 的内置浏览器里打开原网址看。做成单文件 HTML 后按请求放进画布：${cli} put html <HTML 文件> --replace <AI HTML 框 id>。`
+  }
+  const task = requestTask(request)
+  if (task === 'annotation-edit') return `${ANNOTATION_EDIT_NOTE}要出新图时：${imagegen}`
+  if (task === 'html') {
+    return `AI HTML / AI Slides 请求：不生图；照请求写完整的单文件 HTML（CSS / JS 内联），按请求放进画布（${cli} put html <HTML 文件> …，或照搬请求写的 insert_cowart_html_draft 调用）。`
+  }
+  return imagegen
+}
+
+function codexHostNotes(request, cli) {
+  return [
+    codexConfirmNote(request),
+    '还没读过 cowart skill 的话，先读它：各类请求的做法、结果放哪一页、标注怎么读都在那里。',
+    codexGenerationNote(request, cli),
+    `请求里的工具调用（insert_cowart_… 和它们的参数）用 cowart 命令照搬最稳：${cli} call <工具名> --json '{…}'，参数原样放进去（路径写成 / 分隔）；也可以换成 ${cli} put 加统一的位置参数（${cli} help 看对应关系）。长 HTML 先写成文件，再传文件路径。`,
+    '请求里给出的截图、参考图等本地路径可以直接打开看。',
+    `请求开头的 [@Cowart](plugin://…) 是以前 Codex 插件的提及，忽略即可；请求说不要调用 render_cowart_canvas_widget 时，就是不要重新 ${cli} open。`,
+    ...(request.pageId
+      ? [`结果放进发出请求的那一页：put 带上 --page ${request.pageId}（call 就在参数里带 "pageId": "${request.pageId}"；请求里指定了卡片的就按卡片放；这一页后来换了别的会话负责也照样放得进去）。`]
+      : []),
+    `开始执行时运行 ${cli} reply ${request.id} running；完成后 ${cli} reply ${request.id} done "<一句结果>"；失败 ${cli} reply ${request.id} failed "<原因>"；用户说不做时 ${cli} reply ${request.id} skipped。画布上会显示这些状态；不回的话画布上一直等着、还能点撤销。`
+  ]
+}
+
+export function hostNotes(request, cli = cowartCommand(), host = 'claude') {
   if (request.status === 'cancelled') {
     return ['用户已经在画布上撤销了这条请求：不要执行，也不用再问用户；正在问的话直接结束。']
   }
+  if (host === 'codex') return codexHostNotes(request, cli)
   return [
     confirmNote(request),
     '还没加载过 cowart skill 的话，先用 Skill 工具加载它：各类请求的做法、结果放哪一页、标注怎么读都在那里。',
@@ -755,8 +826,36 @@ function dutyLine(opened) {
       : '你没负责任何页（用户说「打开 Cowart 画布 <页名>」或「接管 <页名>」时再进入）'
 }
 
+// Codex: a link the user opens in its built-in browser, and no listener (requests wait for 看画布).
+function codexOpenResult(opened, cli) {
+  const lines = [
+    `Cowart 画布已就绪：${opened.url}`,
+    `画布：${opened.canvasDir}（这台机器上所有会话、所有项目共用这一张，按页分工）`,
+    `你在画布上的名字：${opened.sessionName}。${dutyLine(opened)}。`,
+    '',
+    '接下来：',
+    opened.paneOpen
+      ? '1. 这个会话的画布页已经开着，它会自动跳到这一页，不用重新打开。'
+      : `1. 把网址写成可点的链接发给用户：[打开 Cowart 画布](${opened.url})。用户点开就在 Codex 的内置浏览器里看（也可以按 Ctrl+Shift+B 打开内置浏览器，再粘贴网址）。`,
+    `2. 画布里点 AI 按钮（AI HTML、按标注修改这类）发来的请求不会叫醒你，在画布服务里排队：用户说「看画布」或答应要做时，${cli} requests 取，${cli} request <N> 看详情照做。`,
+    `有哪些页：${cli} pages；你这页上有什么：${cli} page。不带 --page 的 put 放进你负责的页，没负责页时放进你的画布页正看着的页。`,
+    ...[newPageFolderHint(opened, `${cli} folder <文件夹> "${opened.page}"`)].filter(Boolean)
+  ]
+  return textResult(lines.join('\n'), opened)
+}
+
+function codexTakeResult(opened, cli) {
+  const lines = [
+    `${dutyLine(opened)}。`,
+    opened.paneOpen ? '你的画布页会自己跳到这一页。' : `这个会话还没打开画布：要看就 ${cli} open 拿网址，给用户可点的链接，在内置浏览器里打开。`,
+    newPageFolderHint(opened, `${cli} folder <文件夹> "${opened.page}"`)
+  ].filter(Boolean)
+  return textResult(lines.join('\n'), opened)
+}
+
 // open: the canvas address and what to do next. No page list: `pages` has it.
-function openResult(opened, cli) {
+function openResult(opened, cli, host = 'claude') {
+  if (host === 'codex') return codexOpenResult(opened, cli)
   const command = `${cli} listen`
   const lines = [
     `Cowart 画布已就绪：${opened.url}`,
@@ -778,7 +877,8 @@ function openResult(opened, cli) {
 }
 
 // take: whose page it is now; the pane follows (no address, no listener: open said those).
-function takeResult(opened, cli) {
+function takeResult(opened, cli, host = 'claude') {
+  if (host === 'codex') return codexTakeResult(opened, cli)
   const lines = [
     `${dutyLine(opened)}。`,
     opened.paneOpen ? '你的画布面板会自己跳到这一页。' : `这个会话还没开画布面板：要看就 ${cli} open 拿网址。`,
@@ -788,15 +888,15 @@ function takeResult(opened, cli) {
   return textResult(lines.join('\n'), { ...opened, listenCommand: `${cli} listen` })
 }
 
-function requestDetails(request, cli) {
-  const notes = hostNotes(request, cli)
+function requestDetails(request, cli, host = 'claude') {
+  const notes = hostNotes(request, cli, host)
   const text = [
     `画布请求 #${request.id}「${request.title}」 状态：${request.status}${request.pageName ? `，来自「${request.pageName}」这一页` : ''}`,
     '',
     '—— 画布发来的原始请求 ——',
     request.text,
     '',
-    '—— Claude Code 宿主说明 ——',
+    host === 'codex' ? '—— Codex 宿主说明 ——' : '—— Claude Code 宿主说明 ——',
     ...notes.map((note) => `- ${note}`)
   ].join('\n')
   return textResult(text, { ...request, hostNotes: notes })
@@ -839,9 +939,9 @@ const detailsCommand = (cli) => (id) => `运行 ${cli} request ${id}`
 
 // ---- Running --------------------------------------------------------------------------
 
-function newClient(session) {
+function newClient(session, host) {
   return new CanvasServiceClient({
-    host: HOST,
+    host,
     session,
     cwd: process.cwd(),
     port: Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT,
@@ -894,23 +994,25 @@ async function pageSummary(client, wanted, cli) {
   return client.call('canvas-state', { pageId })
 }
 
-export async function callTool(client, name, args, cli = cowartCommand(), { as = 'open', ownAnchor = false } = {}) {
+export async function callTool(client, name, args, cli = cowartCommand(), { as = 'open', ownAnchor = false, host = 'claude' } = {}) {
+  // Codex runs no listener, so nothing tells it to start one again.
+  const listenerNote = (listenerConnected) => (host !== 'codex' && listenerConnected === false ? restartListenerNote(`${cli} listen`) : null)
   switch (name) {
     case RENDER_TOOL: {
       const opened = await client.call('open-canvas', args)
-      return as === 'take' ? takeResult(opened, cli) : openResult(opened, cli)
+      return as === 'take' ? takeResult(opened, cli, host) : openResult(opened, cli, host)
     }
     case CANVAS_STATE_TOOL:
       return client.call('canvas-state', args)
     case INSERT_VIDEO_TOOL:
       return client.call('insert-video', args)
     case GET_REQUEST_TOOL:
-      return requestDetails((await client.call('request-get', { id: args.id })).request, cli)
+      return requestDetails((await client.call('request-get', { id: args.id })).request, cli, host)
     case REPLY_REQUEST_TOOL: {
       const { request: updated, listenerConnected } = await client.call('request-reply', { id: args.id, status: args.status, message: args.message })
       const lines = [`已把画布请求 #${updated.id} 标成 ${updated.status}${updated.message ? `：${updated.message}` : ''}`]
       // Done with this one: the next request needs the listener running again.
-      if (listenerConnected === false && updated.status !== 'running') lines.push(restartListenerNote(`${cli} listen`))
+      if (updated.status !== 'running' && listenerNote(listenerConnected)) lines.push(listenerNote(listenerConnected))
       return textResult(lines.join('\n'), updated)
     }
     case LIST_REQUESTS_TOOL: {
@@ -918,8 +1020,8 @@ export async function callTool(client, name, args, cli = cowartCommand(), { as =
       // and, when no listener runs, how to start it again.
       const { requests, listenerConnected } = await client.call('request-list', { includeFinished: args.includeFinished === true, acknowledge: true })
       const none = args.includeFinished === true ? '这个会话还没有画布请求。' : '没有待处理的画布请求。'
-      const lines = requests.length ? requests.map((request) => requestLine(request, { details: detailsCommand(cli) })) : [none]
-      if (listenerConnected === false) lines.push('', restartListenerNote(`${cli} listen`))
+      const lines = requests.length ? requests.map((request) => requestLine(request, { details: detailsCommand(cli), host })) : [none]
+      if (listenerNote(listenerConnected)) lines.push('', listenerNote(listenerConnected))
       return textResult(lines.join('\n'), { requests, listenerConnected })
     }
     case 'get_cowart_selection':
@@ -969,17 +1071,19 @@ export function formatResult(result, { command, out }) {
   return `${text}\n\n结构化结果：${JSON.stringify(structured)}`
 }
 
-function usage(cli) {
+function usage(cli, host = 'claude') {
   const entry = (name, about) => `  ${name}\n      ${about}`
   const groups = ['会话', '页', '看', '放', '整理', '请求', '其它']
   const lines = [
-    `cowart ${VERSION}：Claude Code 桌面版里的 Cowart 画布（用 Bash 工具运行；做画布上的事之前先加载 cowart skill）。`,
+    host === 'codex'
+      ? `cowart ${VERSION}：Codex 里的 Cowart 画布（在 Codex 的终端命令里运行；做画布上的事之前先读 cowart skill）。`
+      : `cowart ${VERSION}：Claude Code 桌面版里的 Cowart 画布（用 Bash 工具运行；做画布上的事之前先加载 cowart skill）。`,
     `用法：${cli} <命令> [参数]`
   ]
   for (const group of groups) {
     lines.push('', `${group}：`)
     for (const command of COMMANDS.filter((entry) => entry.group === group)) lines.push(entry(command.usage, command.about))
-    for (const [inGroup, , name, about] of OTHER_COMMANDS) if (inGroup === group) lines.push(entry(name, about))
+    for (const [inGroup, , name, about] of otherCommands(host)) if (inGroup === group) lines.push(entry(name, about))
   }
   lines.push(
     '',
@@ -1042,11 +1146,12 @@ export async function main(argv = process.argv.slice(2)) {
   // would end the process in the middle. Every way out is exit().
   setInterval(() => {}, 60_000)
   const cli = cowartCommand()
+  const host = hostFromEnv()
   // Set once a command (not call) has its arguments: its results speak in its words.
   let speaking = null
   try {
     const { name, rest } = splitCommand(argv)
-    if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli))
+    if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli, host))
     if (name === '--version') return exit(0, VERSION)
     if (name === 'install') {
       const { ok, lines } = await installCowart()
@@ -1058,15 +1163,22 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (name.startsWith('put ') && !commandNamed(name)) throw new UsageError(`没有 ${name}：put 能放 image / video / html / text。`)
 
+    // The desktop switch is Claude Code's: Codex opens the canvas in its built-in browser.
     const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
-    if (entrypoint && !isDesktopEntrypoint(entrypoint) && process.env.COWART_ALLOW_CLI !== '1') {
+    if (host === 'claude' && entrypoint && !isDesktopEntrypoint(entrypoint) && process.env.COWART_ALLOW_CLI !== '1') {
       return exit(2, `cowart（Cowart 画布）只在 Claude Code 桌面版里用：画布要在桌面版的 Browser 面板里打开。这个会话的入口是 ${entrypoint}，所以 cowart 不干活；要在这里用，设环境变量 COWART_ALLOW_CLI=1。`)
+    }
+    // Nothing wakes a Codex session: its requests wait until the user asks (看画布).
+    if (name === 'listen' && host === 'codex') {
+      return exit(2, `Codex 不用 listen：画布请求不会叫醒 Codex 会话，在画布服务里排队；用户说「看画布」或答应要做时，运行 ${cli} requests 取，${cli} request <编号> 看详情照做。`)
     }
     const session = sessionIdFromEnv()
     if (!session) {
-      return exit(2, 'cowart 找不到这个会话的标识（CLAUDE_CODE_HOST_SESSION_ID）：要在 Claude Code 桌面版会话的 Bash 工具里运行；手动试用时设 COWART_SESSION_ID=<随便一个名字>。')
+      return exit(2, host === 'codex'
+        ? 'cowart 找不到这个会话的标识（CODEX_THREAD_ID）：要在 Codex 会话的终端命令里运行；手动试用时设 COWART_SESSION_ID=<随便一个名字>。'
+        : 'cowart 找不到这个会话的标识（CLAUDE_CODE_HOST_SESSION_ID）：要在 Claude Code 桌面版会话的 Bash 工具里运行；手动试用时设 COWART_SESSION_ID=<随便一个名字>。')
     }
-    const client = newClient(session)
+    const client = newClient(session, host)
 
     if (name === 'listen') {
       let first = true
@@ -1079,7 +1191,7 @@ export async function main(argv = process.argv.slice(2)) {
           // After a drop: find the service again (a newer one may have replaced it).
           if (!first) await client.reconnect()
           first = false
-          const query = new URLSearchParams({ session, presence: '1', host: HOST })
+          const query = new URLSearchParams({ session, presence: '1', host })
           return { url: `${client.origin}/api/agent-events?${query}`, token: client.token }
         }
       })
@@ -1102,9 +1214,9 @@ export async function main(argv = process.argv.slice(2)) {
 
     if (name === 'help') {
       const command = commandNamed(rest[0])
-      if (!command && otherCommandNamed(rest[0])) return exit(0, describeOther(otherCommandNamed(rest[0]), cli))
+      if (!command && otherCommandNamed(rest[0], host)) return exit(0, describeOther(otherCommandNamed(rest[0], host), cli))
       if (rest[0] === 'put') return exit(0, COMMANDS.filter((entry) => entry.group === '放').map((entry) => `${cli} ${entry.usage}\n    ${entry.about}`).join('\n'))
-      if (!command) return exit(2, `没有 ${rest[0]} 这个命令。\n\n${usage(cli)}`)
+      if (!command) return exit(2, `没有 ${rest[0]} 这个命令。\n\n${usage(cli, host)}`)
       return exit(0, describeCommand(command, command.tool ? await toolSchema(client, command.tool) : {}, cli))
     }
 
@@ -1126,7 +1238,7 @@ export async function main(argv = process.argv.slice(2)) {
       // Called by its tool name, it takes the tool's own parameters only.
       command = { name: 'call', tool: toolName, usage: `call ${toolName} …`, structured: true }
     }
-    if (!toolName) throw new UsageError(`没有 ${name} 这个命令。\n\n${usage(cli)}`)
+    if (!toolName) throw new UsageError(`没有 ${name} 这个命令。\n\n${usage(cli, host)}`)
     // Only arguments need the parameters' definitions (the service has them for its tools).
     const needsSchema = toolArgv.some((arg) => arg !== '--out' && arg !== 'json') || name === 'call'
     const schema = needsSchema ? await toolSchema(client, toolName) : {}
@@ -1137,7 +1249,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (name !== 'call') speaking = { entries: command.item && Array.isArray(args[command.item]) ? args[command.item].length : 1 }
     // --page takes a page name too.
     if (typeof args.pageId === 'string' && !args.pageId.startsWith('page:')) args.pageId = await pageIdFor(client, args.pageId, cli)
-    const result = restate(toolName, await callTool(client, toolName, args, cli, { as: command.result, ownAnchor: command.ownAnchor === true }), speaking)
+    const result = restate(toolName, await callTool(client, toolName, args, cli, { as: command.result, ownAnchor: command.ownAnchor === true, host }), speaking)
     return exit(result.isError ? 1 : 0, formatResult(result, { command, out }), out === 'json' || !result.isError ? process.stdout : process.stderr)
   } catch (error) {
     const raw = localizeError(error instanceof Error ? error.message : String(error))
