@@ -4,7 +4,9 @@
 
 ## S0 钉子先行
 
-- 
+- S0-1 / upstream-test 的 `upstreamServers()` 排除查询自己的 PowerShell（`$PID`）/ 它是本进程的子进程、命令行也含 `cowart-mcp.mjs`，不排除就多数一个。影响：S1 加 (d)(e) 照用这个函数。
+- S0-2 / [假设] upstream-test 在非 Windows 用 `ps -A -o pid=,ppid=,args=` 找子进程 / 计划只写了 Win32_Process，取最小实现让测试在别的系统也能跑。
+- S0-3 / [假设] memory-probe 只在 Windows 量（别处打印跳过、退出 0）；「提交」取 `Get-Process` 的 PrivateMemorySize64；调用走 cowart 命令（`call get_cowart_canvas_state`、`pages`）；真画布只拷 pages 下的 JSON、跳过 assets / 计划没写到，取最直接的实现。
 
 ## S1 省内存、全机画布不空闲退出
 

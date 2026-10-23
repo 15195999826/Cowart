@@ -30,7 +30,10 @@ adapters/
                 画布整理（canvas-edit-test.mjs：三个宿主都列出整理工具，放文字 / 建框 / 移动 / 删除、别人负责的页被拒、无效记录）、
                 右键菜单（context-menu-test.mjs：三个宿主都拷得到索引，截帧存进页素材、写的卡片过 tldraw 校验）、
                 页的文件夹（page-folders-test.mjs：三个宿主都列出工具、能带 folder 进页，folder 命令挪页 / 挪整个文件夹、pages 按文件夹缩进、哪些改动记进页的改动时间）、
-                网址（address-test.mjs：门房把 cowart.localhost 转到服务时网址不带端口，没有门房、门房口是别的程序时带服务端口，别的主机名被拒）
+                网址（address-test.mjs：门房把 cowart.localhost 转到服务时网址不带端口，没有门房、门房口是别的程序时带服务端口，别的主机名被拒）、
+                上游子进程（upstream-test.mjs：子进程死了下次调用照样拉起、同时来的调用只起一个、close 后不留子进程）；
+                另有内存探针 memory-probe.mjs（probe:memory，不进 test:claude：空画布和真画布页文件的拷贝各起一个测试服务，
+                打出服务和上游子进程刚起、读过画布、杀掉子进程 15 秒后的工作集和提交内存）
     client.mjs  给各宿主的桥和 Claude 的 cowart 命令用：找服务 / 后台拉起 / 按版本替换 / 保持会话连接（命令不连，见「会话」）/ 调用
   shared/       两边共用：上游子进程连接、页面注入、画布摘要、视频探测与摆放、
                 图片 / 视频模型清单（image-models.mjs / video-models.mjs）、
