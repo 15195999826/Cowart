@@ -9,6 +9,9 @@ import { dirname, join } from 'node:path'
 export const RUNTIME_DIR = process.env.COWART_RUNTIME_DIR || join(homedir(), '.cowart-claude')
 export const TOKEN_FILE = join(RUNTIME_DIR, 'token')
 export const SERVICE_LOG = join(RUNTIME_DIR, 'service.log')
+// Where a service started with --log leaves its exit code (a file named after its pid) for the
+// command that started it, which has no other way to learn it (client.mjs).
+export const SERVICE_EXIT_DIR = join(RUNTIME_DIR, 'service-exit')
 const TOKEN_PATTERN = /^[0-9a-f]{32,}$/
 
 export async function readToken() {

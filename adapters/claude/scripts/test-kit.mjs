@@ -15,7 +15,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 import { probeService, stopService } from '../../service/client.mjs'
-import { loadOrCreateToken } from '../../service/lib/token.mjs'
+import { SERVICE_EXIT_DIR, loadOrCreateToken } from '../../service/lib/token.mjs'
 import { ADAPTERS_DIR } from '../../shared/paths.mjs'
 
 export const FIXTURES = join(ADAPTERS_DIR, 'claude', 'test', 'fixtures')
@@ -29,6 +29,9 @@ export const CODEX_BRIDGE = join(ADAPTERS_DIR, 'codex', 'bin', 'cowart-codex-mcp
 const NAMES_FILE = join(tmpdir(), `cowart-check-session-names-${process.pid}.json`)
 // The cowart command `install` writes: the checks' own, never the user's ~/.cowart/bin.
 export const COMMAND_LINK = join(tmpdir(), `cowart-check-command-${process.pid}.mjs`)
+// What else it writes (the canvas service's entry, its launcher beside it, the shortcut at logon):
+// never the user's ~/.cowart/bin or Startup folder either.
+export const INSTALL_DIR = join(tmpdir(), `cowart-check-install-${process.pid}`)
 
 let failures = 0
 export async function step(name, run) {
@@ -45,6 +48,7 @@ export async function step(name, run) {
 export function finish() {
   rmSync(NAMES_FILE, { force: true })
   rmSync(COMMAND_LINK, { force: true })
+  rmSync(INSTALL_DIR, { recursive: true, force: true })
   console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) failed.`)
   process.exit(failures === 0 ? 0 : 1)
 }
@@ -191,6 +195,8 @@ function sessionEnv({ cwd, port, session, env }) {
     COWART_SESSION_NAMES_FILE: NAMES_FILE,
     COWART_CANVAS_DIR: join(cwd, 'canvas'),
     COWART_COMMAND_LINK: COMMAND_LINK,
+    COWART_SERVICE_LINK: join(INSTALL_DIR, 'bin', 'cowart-service.mjs'),
+    COWART_STARTUP_DIR: join(INSTALL_DIR, 'Startup'),
     ...env
   }
 }
@@ -275,8 +281,12 @@ export async function serviceStatus(port) {
   return probe.kind === 'cowart' ? probe.status : null
 }
 
-// Stops the canvas service on exactly this port (a test's own, or one a failed run left).
+// Stops the canvas service on exactly this port (a test's own, or one a failed run left), and drops
+// the exit code it leaves for a command that started it (none is waiting for it).
 export async function stopTestService(port) {
   const token = await loadOrCreateToken()
-  if ((await probeService(port, token)).kind === 'cowart') await stopService(port, token, 'test cleanup')
+  const probe = await probeService(port, token)
+  if (probe.kind !== 'cowart') return
+  await stopService(port, token, 'test cleanup', { pid: probe.status.pid })
+  rmSync(join(SERVICE_EXIT_DIR, String(probe.status.pid)), { force: true })
 }

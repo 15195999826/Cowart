@@ -12,28 +12,20 @@
 // (put image / video / html / text, with one set of placement flags), arrange it (group, edit,
 // delete), and answer its requests. `call <tool>` runs any tool with its own parameters, the way
 // a canvas request (written for Codex) spells them.
-import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 
 import { CanvasServiceClient } from '../../service/client.mjs'
 import { DEFAULT_PORT, VERSION, samePath } from '../../service/lib/identity.mjs'
 import { MOVE_PAGES_TOOL, folderWords, newPageFolderHint, normalizeFolder, pageTreeLines } from '../../service/lib/page-folders.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
-import { ADAPTERS_DIR } from '../../shared/paths.mjs'
+import { COMMAND_LINK, COMMAND_LINK_SHOWN, ENTRY, installCowart, linkTarget, removeCowart } from './install.mjs'
 import { listenForRequests } from './listen.mjs'
 import { ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, requestLine, restartListenerNote } from './request-notice.mjs'
 import { CANVAS_STATE_TOOL, GET_REQUEST_TOOL, INSERT_VIDEO_TOOL, LIST_REQUESTS_TOOL, OWN_TOOLS, RENDER_TOOL, REPLY_REQUEST_TOOL } from './tools.mjs'
 
 const HOST = 'claude'
-export const ENTRY = process.env.COWART_BUNDLED === '1'
-  ? join(ADAPTERS_DIR, 'generated', 'cowart.mjs')
-  : join(ADAPTERS_DIR, 'claude', 'bin', 'cowart.mjs')
-// The command the skill names: a small file `cowart install` writes, leading to ENTRY (wherever
-// this checkout or release is). COWART_COMMAND_LINK moves it (tests).
-export const COMMAND_LINK = process.env.COWART_COMMAND_LINK || join(homedir(), '.cowart', 'bin', 'cowart.mjs')
-const COMMAND_LINK_SHOWN = process.env.COWART_COMMAND_LINK ? COMMAND_LINK.replaceAll('\\', '/') : '~/.cowart/bin/cowart.mjs'
+// What `install` writes and where (install.mjs), as this module has always offered them.
+export { COMMAND_LINK, ENTRY, installCommandLink, removeCommandLink } from './install.mjs'
 
 // The canvas needs the desktop's Browser pane; other entry points are turned away. Desktop
 // builds other than the official one add a suffix to the entry point (the relay build sends
@@ -52,50 +44,9 @@ export function sessionIdFromEnv(env = process.env) {
   return String(raw).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 96) || null
 }
 
-// The file `install` wrote leads to this entry.
-function linkTarget() {
-  try {
-    const match = /^const target = (".*")$/m.exec(readFileSync(COMMAND_LINK, 'utf8'))
-    return match ? JSON.parse(match[1]) : null
-  } catch {
-    return null
-  }
-}
-
-// How texts tell the session to run cowart.
+// How texts tell the session to run cowart: through the file `install` wrote when it leads here.
 export function cowartCommand() {
   return samePath(linkTarget(), ENTRY) ? `node ${COMMAND_LINK_SHOWN}` : `node "${ENTRY.replaceAll('\\', '/')}"`
-}
-
-export async function installCommandLink() {
-  const target = ENTRY.replaceAll('\\', '/')
-  const source = [
-    '#!/usr/bin/env node',
-    '// The cowart command of Claude Code sessions (see the cowart skill), written by `cowart install`.',
-    '// It runs the Cowart checkout or release below; installing another one rewrites this file.',
-    "import { existsSync } from 'node:fs'",
-    "import { pathToFileURL } from 'node:url'",
-    '',
-    `const target = ${JSON.stringify(target)}`,
-    'if (!existsSync(target)) {',
-    "  process.stderr.write(`cowart 命令指向的 ${target} 不在了：重新安装 Cowart（cowart skill 里写了怎么装）。\\n`)",
-    '  process.exit(2)',
-    '}',
-    'await import(pathToFileURL(target).href)',
-    ''
-  ].join('\n')
-  await mkdir(dirname(COMMAND_LINK), { recursive: true })
-  await writeFile(COMMAND_LINK, source)
-  return { link: COMMAND_LINK, target }
-}
-
-// Only the link to this entry: another checkout's is left alone.
-export async function removeCommandLink() {
-  const target = linkTarget()
-  if (!existsSync(COMMAND_LINK)) return { removed: false, reason: '没有安装过' }
-  if (!samePath(target, ENTRY)) return { removed: false, reason: `它指向的是 ${target ?? '别的东西'}，不是这一份` }
-  await rm(COMMAND_LINK, { force: true })
-  return { removed: true }
 }
 
 class UsageError extends Error {}
@@ -343,7 +294,7 @@ const OTHER_COMMANDS = [
   ['其它', ['call'], "call <工具名> [--json '{…}']", '照工具定义直接调一个工具（画布请求里按 Codex 写的工具调用照搬到这里）；参数也能写成 --kebab-case'],
   ['其它', ['tools'], 'tools [<工具名>]', '列出所有工具；给了工具名就打出它的参数定义'],
   ['其它', ['help'], 'help [<命令>]', '用法；给了命令就列出它的全部参数'],
-  ['其它', ['install', 'uninstall'], 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart / 删掉它`]
+  ['其它', ['install', 'uninstall'], 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart，并装上画布服务的开机自启（Windows）/ 删掉这些`]
 ]
 
 // What the tool parameters a command has no flag of its own for do, for help (the tools'
@@ -1098,12 +1049,12 @@ export async function main(argv = process.argv.slice(2)) {
     if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli))
     if (name === '--version') return exit(0, VERSION)
     if (name === 'install') {
-      const { link, target } = await installCommandLink()
-      return exit(0, `已安装 cowart 命令：${link} → ${target}\n会话里这样用：node ${COMMAND_LINK_SHOWN} <命令>（node ${COMMAND_LINK_SHOWN} help 看用法）。`)
+      const { ok, lines } = await installCowart()
+      return exit(ok ? 0 : 1, [...lines, `会话里这样用：node ${COMMAND_LINK_SHOWN} <命令>（node ${COMMAND_LINK_SHOWN} help 看用法）。`].join('\n'))
     }
     if (name === 'uninstall') {
-      const removed = await removeCommandLink()
-      return exit(0, removed.removed ? `已删掉 ${COMMAND_LINK}。` : `没删 ${COMMAND_LINK}：${removed.reason}。`)
+      const { ok, lines } = await removeCowart()
+      return exit(ok ? 0 : 1, lines.join('\n'))
     }
     if (name.startsWith('put ') && !commandNamed(name)) throw new UsageError(`没有 ${name}：put 能放 image / video / html / text。`)
 

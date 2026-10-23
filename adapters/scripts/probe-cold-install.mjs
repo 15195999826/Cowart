@@ -109,7 +109,14 @@ try {
   // The Claude Code command, the way a session runs it from its Bash tool: a process per
   // command, through the file `install` writes.
   const commandLink = join(homeDir, '.cowart', 'bin', 'cowart.mjs')
-  const claudeEnv = { ...env, COWART_SESSION_ID: 'cold-claude', COWART_COMMAND_LINK: commandLink }
+  const claudeEnv = {
+    ...env,
+    COWART_SESSION_ID: 'cold-claude',
+    COWART_COMMAND_LINK: commandLink,
+    // install also writes the service's entry and its start at logon: into the sandbox.
+    COWART_SERVICE_LINK: join(homeDir, '.cowart', 'bin', 'cowart-service.mjs'),
+    COWART_STARTUP_DIR: join(homeDir, 'Startup')
+  }
   const runNode = (script, args, input = '') => new Promise((done) => {
     const child = spawn(process.execPath, [script, ...args], { cwd: pluginDir, env: claudeEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     children.push(child)
@@ -123,6 +130,10 @@ try {
   const installed = await runNode(join(pluginDir, 'adapters/generated/cowart.mjs'), ['install'])
   assert.equal(installed.code, 0, installed.stderr)
   assert.ok((await readFile(commandLink, 'utf8')).includes('/adapters/generated/cowart.mjs"'), 'The command leads to the installed bundle')
+  if (process.platform === 'win32') {
+    assert.ok((await readFile(claudeEnv.COWART_SERVICE_LINK, 'utf8')).includes('/adapters/generated/cowart-service.mjs"'), 'The service started at logon is the installed bundle')
+    assert.ok(await exists(join(claudeEnv.COWART_STARTUP_DIR, 'CowartCanvas.lnk')), 'install puts the service in the Startup folder')
+  }
   const opening = await runNode(commandLink, ['call', 'render_cowart_canvas_widget', '--json', '-', '--out', 'json'], JSON.stringify({ page: '冷安装共享页', sessionName: '小暖' }))
   const openedClaude = payload(JSON.parse(opening.stdout || '{}'))
   assert.equal((await serviceStatus()).pid, started.pid, 'Both bundled hosts must reuse one service')

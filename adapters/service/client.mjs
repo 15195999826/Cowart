@@ -4,14 +4,15 @@
 // (the cowart CLI, command: true) only finds the service and calls it: its calls and its
 // listener keep the session online (server.mjs).
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import net from 'node:net'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { ADAPTERS_DIR, REPO_ROOT, SHARED_CANVAS_DIR } from '../shared/paths.mjs'
 import { canvasOwner, isAlive } from './lib/canvas-lock.mjs'
 import { DEFAULT_PORT, EXIT_CANVAS_BUSY, EXIT_PORT_TAKEN, EXIT_REPLACED_STUCK, REPLACE_WAIT_MS, SERVICE_NAME, localIdentity, serviceVerdict } from './lib/identity.mjs'
-import { RUNTIME_DIR, SERVICE_LOG, loadOrCreateToken } from './lib/token.mjs'
+import { launchDetached } from './lib/launch.mjs'
+import { SERVICE_EXIT_DIR, SERVICE_LOG, loadOrCreateToken } from './lib/token.mjs'
 
 export const SERVICE_ENTRY = process.env.COWART_BUNDLED === '1'
   ? join(ADAPTERS_DIR, 'generated', 'cowart-service.mjs')
@@ -30,6 +31,8 @@ const START_ATTEMPTS = 5
 const CALL_TIMEOUT_MS = 600_000
 const RECONNECT_MAX_MS = 5_000
 const LOG_LIMIT_BYTES = 5 * 1024 * 1024
+// Exit codes nobody came for (the command that started the service gave up or ended first).
+const EXIT_FILE_KEPT_MS = 24 * 3600_000
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
@@ -120,23 +123,74 @@ function serviceEnv() {
   )
 }
 
-function openServiceLog() {
-  mkdirSync(RUNTIME_DIR, { recursive: true })
+// Keeps the log under LOG_LIMIT_BYTES (and one older log): before a service starts writing to it.
+export function rotateServiceLog(file = SERVICE_LOG) {
+  mkdirSync(dirname(file), { recursive: true })
   try {
-    if (statSync(SERVICE_LOG).size > LOG_LIMIT_BYTES) renameSync(SERVICE_LOG, `${SERVICE_LOG}.1`)
+    if (statSync(file).size > LOG_LIMIT_BYTES) renameSync(file, `${file}.1`)
   } catch {
     // No log yet, or another service holds it.
   }
-  return openSync(SERVICE_LOG, 'a')
 }
 
-// Detached so the service is not tied to this bridge: the session ending must not end it.
+function logLine(message) {
+  try {
+    appendFileSync(SERVICE_LOG, `[cowart ${new Date().toISOString()}] ${message}\n`)
+  } catch {
+    // Nowhere to say it.
+  }
+}
+
+function clearOldExitCodes() {
+  try {
+    for (const name of readdirSync(SERVICE_EXIT_DIR)) {
+      const file = join(SERVICE_EXIT_DIR, name)
+      if (Date.now() - statSync(file).mtimeMs > EXIT_FILE_KEPT_MS) rmSync(file, { force: true })
+    }
+  } catch {
+    // None yet.
+  }
+}
+
+// A service started through WMI is no child of this process: its exit code is null while it
+// runs; once it is gone, the code it left in its exit file (read once, then removed), -1 when it
+// left none (it was killed).
+function launchedService(pid) {
+  let code = null
+  return {
+    pid,
+    get exitCode() {
+      if (code !== null || isAlive(pid)) return code
+      const file = join(SERVICE_EXIT_DIR, String(pid))
+      try {
+        code = Number.parseInt(readFileSync(file, 'utf8'), 10)
+        rmSync(file, { force: true })
+      } catch {
+        code = -1
+      }
+      if (!Number.isInteger(code)) code = -1
+      return code
+    }
+  }
+}
+
+// Not tied to this bridge or command: the session ending must not end it. On Windows the service
+// is started through WMI (launch.mjs), out of the job the host runs the session in, and keeps its
+// log itself (--log); where WMI does not start it, it is spawned detached as before (in the job).
 // exitCode stays null while the service runs (EXIT_* in identity.mjs say why one did not).
 // replacing: the pid of the service on the port that this one takes over from.
 export function spawnService(port, { entry = SERVICE_ENTRY, replacing = null } = {}) {
-  const out = openServiceLog()
+  rotateServiceLog()
+  const args = [entry, '--port', String(port), ...(replacing ? ['--replace', String(replacing)] : [])]
+  if (process.platform === 'win32') {
+    clearOldExitCodes()
+    let reason = ''
+    const launched = launchDetached({ execPath: process.execPath, args: [...args, '--log', SERVICE_LOG], cwd: REPO_ROOT, env: serviceEnv(), onFailure: (why) => (reason = why) })
+    if (launched) return launchedService(launched.pid)
+    logLine(`launch via WMI failed, spawned directly${reason ? ` (${reason})` : ''}`)
+  }
+  const out = openSync(SERVICE_LOG, 'a')
   try {
-    const args = [entry, '--port', String(port), ...(replacing ? ['--replace', String(replacing)] : [])]
     const child = spawn(process.execPath, args, {
       cwd: REPO_ROOT,
       detached: true,

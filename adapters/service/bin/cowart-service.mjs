@@ -2,7 +2,8 @@
 // The machine-wide Cowart canvas service. Session bridges start it in the background (see
 // adapters/service/client.mjs); by hand:
 //   node cowart-service.mjs --port 43240   run it in the foreground
-//   (bridges add --replace <pid> when it is to take over from the service running there)
+//   (bridges add --replace <pid> when it is to take over from the service running there, and
+//   --log <file> when they start it through WMI, as the launcher at logon does: see below)
 //   node cowart-service.mjs --status       show the running service and its sessions
 //   node cowart-service.mjs --stop         stop it (bridges start a new one when needed)
 //   node cowart-service.mjs --import <canvas or project dir> …
@@ -90,6 +91,43 @@ if (process.argv.includes('--import')) {
     process.exit(stopped ? 0 : 1)
   }
 } else {
+  // --log <file>: a service started through WMI (client.mjs) or by the launcher at logon has no
+  // output of its own anyone reads, so it appends what it writes to the file (Node's own report of
+  // a crash too), and leaves its exit code in SERVICE_EXIT_DIR/<pid>: the command that started it
+  // is not its parent and learns why it did not start (EXIT_* in identity.mjs) from there.
+  const logFile = option('log')
+  if (logFile) {
+    const { mkdirSync, openSync, writeFileSync, writeSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { rotateServiceLog } = await import('../client.mjs')
+    const { SERVICE_EXIT_DIR } = await import('../lib/token.mjs')
+    rotateServiceLog(logFile)
+    const fd = openSync(logFile, 'a')
+    const append = (chunk, encoding) => {
+      try {
+        writeSync(fd, typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : chunk)
+      } catch {
+        // The log went away: nothing to do about it.
+      }
+    }
+    for (const stream of [process.stdout, process.stderr]) {
+      stream.write = (chunk, encoding, callback) => {
+        append(chunk, encoding)
+        const done = typeof encoding === 'function' ? encoding : callback
+        if (typeof done === 'function') process.nextTick(done)
+        return true
+      }
+    }
+    process.on('uncaughtExceptionMonitor', (error) => append(`[cowart-service ${new Date().toISOString()}] crashed: ${error?.stack || error}\n`))
+    process.on('exit', (code) => {
+      try {
+        mkdirSync(SERVICE_EXIT_DIR, { recursive: true })
+        writeFileSync(join(SERVICE_EXIT_DIR, String(process.pid)), String(code ?? 0))
+      } catch {
+        // Its command reads -1 then.
+      }
+    })
+  }
   const { startCanvasService } = await import('../lib/service.mjs')
   await startCanvasService({ port, replacing: Number(option('replace')) || null }).catch((error) => {
     process.stderr.write(`[cowart-service] failed to start: ${error?.stack || error}\n`)
