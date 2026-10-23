@@ -213,7 +213,7 @@ export class CanvasRequestQueue extends EventEmitter {
   update(id, { status, message }) {
     const request = this.get(id)
     if (!request) throw new Error(`没有编号为 ${id} 的画布请求。`)
-    if (request.executor === 'service') throw new Error(`画布请求 #${request.id} 由画布服务直接生成，不用 Claude 处理。`)
+    if (request.executor === 'service') throw new Error(`画布请求 #${request.id} 由画布服务直接生成，不用会话处理。`)
     if (!AGENT_STATUSES.includes(status)) throw new Error(`不支持的状态：${status}`)
     if (request.status === 'cancelled') throw new Error(`画布请求 #${request.id} 已经在画布上撤销了，不要再处理。`)
     if (FINAL_STATUSES.has(request.status)) {

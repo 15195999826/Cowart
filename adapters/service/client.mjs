@@ -4,7 +4,7 @@
 // (the cowart CLI, command: true) only finds the service and calls it: its calls and its
 // listener keep the session online (server.mjs).
 import { spawn } from 'node:child_process'
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import net from 'node:net'
 import { dirname, join } from 'node:path'
 
@@ -30,7 +30,9 @@ const STOP_TIMEOUT_MS = 10_000
 const START_ATTEMPTS = 5
 const CALL_TIMEOUT_MS = 600_000
 const RECONNECT_MAX_MS = 5_000
-const LOG_LIMIT_BYTES = 5 * 1024 * 1024
+// A service's log (--log) is moved to <log>.1 (the older .1 goes) once it is over this: by the
+// service itself, as it writes (cowart-service.mjs). COWART_LOG_LIMIT_BYTES sets it (checks).
+export const LOG_LIMIT_BYTES = Number(process.env.COWART_LOG_LIMIT_BYTES) > 0 ? Number(process.env.COWART_LOG_LIMIT_BYTES) : 5 * 1024 * 1024
 // Exit codes nobody came for (the command that started the service gave up or ended first).
 const EXIT_FILE_KEPT_MS = 24 * 3600_000
 // A file's time and Date.now() may round differently (file systems keep coarser times).
@@ -125,18 +127,9 @@ function serviceEnv() {
   )
 }
 
-// Keeps the log under LOG_LIMIT_BYTES (and one older log): before a service starts writing to it.
-export function rotateServiceLog(file = SERVICE_LOG) {
-  mkdirSync(dirname(file), { recursive: true })
-  try {
-    if (statSync(file).size > LOG_LIMIT_BYTES) renameSync(file, `${file}.1`)
-  } catch {
-    // No log yet, or another service holds it.
-  }
-}
-
 function logLine(message) {
   try {
+    mkdirSync(dirname(SERVICE_LOG), { recursive: true })
     appendFileSync(SERVICE_LOG, `[cowart ${new Date().toISOString()}] ${message}\n`)
   } catch {
     // Nowhere to say it.
@@ -183,42 +176,44 @@ export function launchedService(pid, since) {
 }
 
 // Not tied to this bridge or command: the session ending must not end it. On Windows the service
-// is started through WMI (launch.mjs), out of the job the host runs the session in, and keeps its
-// log itself (--log); where WMI does not start it, it is spawned detached as before (in the job).
+// is started through WMI (launch.mjs), out of the job the host runs the session in; where WMI does
+// not start it, it is spawned detached as before (in the job). Either way it keeps its log itself
+// (--log), and moves it aside as it fills: a command starting a service does not touch the log,
+// which the service that runs may be writing (another one started meanwhile is turned away).
 // exitCode stays null while the service runs (EXIT_* in identity.mjs say why one did not).
 // replacing: the pid of the service on the port that this one takes over from.
 export function spawnService(port, { entry = SERVICE_ENTRY, replacing = null } = {}) {
-  rotateServiceLog()
-  const args = [entry, '--port', String(port), ...(replacing ? ['--replace', String(replacing)] : [])]
+  const args = [entry, '--port', String(port), ...(replacing ? ['--replace', String(replacing)] : []), '--log', SERVICE_LOG]
   if (process.platform === 'win32') {
     clearOldExitCodes()
     let reason = ''
     const since = Date.now()
-    const launched = launchDetached({ execPath: process.execPath, args: [...args, '--log', SERVICE_LOG], cwd: REPO_ROOT, env: serviceEnv(), onFailure: (why) => (reason = why) })
+    const launched = launchDetached({ execPath: process.execPath, args, cwd: REPO_ROOT, env: serviceEnv(), onFailure: (why) => (reason = why) })
     if (launched) return launchedService(launched.pid, since)
     logLine(`launch via WMI failed, spawned directly${reason ? ` (${reason})` : ''}`)
   }
-  const out = openSync(SERVICE_LOG, 'a')
-  try {
-    const child = spawn(process.execPath, args, {
-      cwd: REPO_ROOT,
-      detached: true,
-      windowsHide: true,
-      stdio: ['ignore', out, out],
-      env: serviceEnv()
-    })
-    const started = { pid: child.pid, exitCode: null }
-    child.on('error', () => {
-      started.exitCode ??= -1
-    })
-    child.on('exit', (code) => {
-      started.exitCode = code ?? -1
-    })
-    child.unref()
-    return started
-  } finally {
-    closeSync(out)
-  }
+  const child = spawn(process.execPath, args, {
+    cwd: REPO_ROOT,
+    detached: true,
+    windowsHide: true,
+    stdio: 'ignore',
+    env: serviceEnv()
+  })
+  const started = { pid: child.pid, exitCode: null }
+  child.on('error', () => {
+    started.exitCode ??= -1
+  })
+  child.on('exit', (code) => {
+    started.exitCode = code ?? -1
+    // A child's code comes here: the file it left for a command that is not its parent is not needed.
+    try {
+      if (child.pid) rmSync(join(SERVICE_EXIT_DIR, String(child.pid)), { force: true })
+    } catch {
+      // Left for the next service to clear in a day.
+    }
+  })
+  child.unref()
+  return started
 }
 
 // Calls back (event, data) for each server-sent event until the stream ends.

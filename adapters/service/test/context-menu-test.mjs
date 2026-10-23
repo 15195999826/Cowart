@@ -6,6 +6,9 @@
 // copies names the page, the shape, what it is and its local file (copy-reference.mjs), and
 // that a shape the canvas does not have is refused. The clipboard itself is left alone
 // (COWART_CLIPBOARD_DRY_RUN), so a check never takes over what the user copied.
+// First: the check's own runtime directory, before token.mjs reads it.
+import '../../claude/scripts/test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { copyFile, mkdir, mkdtemp, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

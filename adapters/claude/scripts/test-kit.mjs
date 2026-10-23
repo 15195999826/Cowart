@@ -1,7 +1,9 @@
 // Helpers for the adapters' end-to-end checks: Claude and Codex sessions run cowart commands the
 // way their hosts run them (a process per command, from the host's shell tool), ZCode's session
 // bridge runs over stdio the way ZCode runs it (MCP), a small SSE reader, and cleanup of test
-// services.
+// services. The checks run with a runtime directory of their own (test-runtime.mjs, first).
+import './test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'

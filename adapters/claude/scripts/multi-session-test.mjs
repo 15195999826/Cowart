@@ -13,6 +13,9 @@
 // answer yet waited for rather than skipped, idle exit, and the desktop-only switch. Sessions
 // run cowart commands like Claude Code runs them (the older checkout's too); canvas pages and
 // listeners are played by event streams and the page API, on a test port.
+// First: the check's own runtime directory, before token.mjs reads it.
+import './test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'

@@ -79,7 +79,15 @@
 
 ## TR1 A 桶 7 项
 
-- 
+- TR1-1 / [假设] 服务开始监听后才轮转日志（`startCanvasService` 加 `onListening`）；「启动时一次」即监听后第一笔写之前查一次 / 端口或画布被占、要退出的服务也写同一份日志，监听前就轮转会改名正在跑的服务的日志，(r) 断言的正是这个。
+- TR1-2 / [假设] 每笔写之前查，已有字节超过上限（`>`，同旧的 `rotateServiceLog`）才改名；改名失败（`.1` 被别处占着）就在原文件接着写、计数归零，写满再试 / 计划没写到，免得每一笔都去改名。
+- TR1-3 / [假设] 退回的 detached 拉起在子进程退出时删掉它的退出码文件；`logLine` 自己建目录 / 两条路都带 `--log` 后这条路也留退出码文件，父进程已从 exit 事件拿到码；拉起前不再轮转，原来建目录的那步没了。
+- TR1-4 / [假设] test-runtime 在检查失败（退出码非 0）时留下运行目录、打印路径，通过才删 / 失败时服务日志是唯一线索；计划写「退出时删掉」。
+- TR1-5 / [假设] 显式先 import test-runtime 的是起服务、没自己设运行目录的 9 个入口（smoke、multi-session、generation、address、canvas-edit、context-menu、feedback、page-folders、zcode smoke）/ 自己设了的（codex-cli、resident、stop 等）不受影响。
+- TR1-6 / [假设] Codex 的入口带引号写 `"$HOME/.cowart/bin/cowart.mjs"`（`commandLinkShown(host)`），help 的 install 说明、`tools` 报错、install 输出也按宿主；hook 提醒固定用 Codex 写法 / Codex skill 本就带引号，家目录有空格也对；hook 进程认不出 Codex。
+- TR1-7 / `requests.mjs`「不用 Claude 处理」改成「不用会话处理」，`generation-jobs.mjs` 没有 beast 命令行那句也改 / 计划改法只点名「这类请求要交给 Claude 处理」，完成定义的 rg 覆盖这两处。
+- TR1-8 / codex-cli-test 两个已有 hook 步骤（端口不回话、比 0.3.0 旧的服务）加一个指向那个假服务的画布锁（`standInLock`），断言没改 / hook 改按画布锁找服务，没有锁就立刻什么都不打，原步骤测不到「2.5 秒放弃」「不问旧服务」。
+- TR1-9 / [假设] (u) 只给那几条命令设临时的 `USERPROFILE` / `HOME`，在那里写一个指向本仓库命令的入口文件 / 测试不能读真 `~/.cowart/bin`（别的机器、冷探针上它不指向这里），`COWART_COMMAND_LINK` 又正是要不设的。
 
 ## TR2 B1 根版本恢复上游
 

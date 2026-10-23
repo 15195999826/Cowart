@@ -5,7 +5,10 @@
 // the user a link for Codex's built-in browser and never a listener (Codex has none); its canvas
 // page keeps it online while open; that page names Codex and offers Codex imagegen. Its prompt hook
 // (`cowart hook prompt`, D9 / D10) reminds the session of the requests waiting for it and says
-// nothing otherwise; `cowart install` sets Codex up (D13: the skill, the hook, no cowart_mcp server).
+// nothing otherwise: it finds the service through the canvas lock (whatever its port), and still
+// knows the requests queued for a session after the service restarted. `cowart install` sets
+// Codex up (D13: the skill, the hook, no cowart_mcp server). Without COWART_COMMAND_LINK, Codex is
+// told to run "$HOME/.cowart/bin/cowart.mjs" (Windows PowerShell 5.1 leaves ~ as it is).
 // The check runs with a runtime directory, a canvas, a Codex home and a port of its own.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
@@ -15,7 +18,7 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symli
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const root = await mkdtemp(join(tmpdir(), 'cowart-codex-cli-check-'))
@@ -24,9 +27,13 @@ const root = await mkdtemp(join(tmpdir(), 'cowart-codex-cli-check-'))
 process.env.COWART_RUNTIME_DIR = join(root, 'runtime')
 const { loadOrCreateToken } = await import('../../service/lib/token.mjs')
 const { ADAPTERS_DIR } = await import('../../shared/paths.mjs')
+const { canvasLockFile } = await import('../../service/lib/canvas-lock.mjs')
+const { REQUESTS_FILE_NAME } = await import('../../service/lib/requests.mjs')
 const { COMMAND_LINK, EMPTY_CANVAS, cliSession, delay, finish, openEvents, serviceStatus, step, stopTestService, waitFor } = await import('./test-kit.mjs')
 
 const PORT = Number(process.env.COWART_CODEX_CLI_TEST_PORT) || 43391
+// Past the ports a command looks through from PORT (20): only the canvas lock says it is there.
+const FAR_PORT = PORT + 30
 const run = promisify(execFile)
 
 const projectDir = join(root, 'project')
@@ -52,6 +59,14 @@ async function promptHook(thread) {
   const started = Date.now()
   const result = await hook.run(['hook', 'prompt'], { input: JSON.stringify(input) })
   return { ...result, ms: Date.now() - started }
+}
+
+// The lock a service writes on the canvas as it starts (canvas-lock.mjs), here for a stand-in on
+// `port` that is no canvas service, run by this check's process: the hook goes where it says.
+async function standInLock(port) {
+  const file = canvasLockFile(canvasDir)
+  await writeFile(file, `${JSON.stringify({ pid: process.pid, port, canvasDir, startedAt: new Date().toISOString(), id: randomUUID() })}\n`)
+  return () => rm(file, { force: true })
 }
 
 const BANNED = [/Browser 面板/, /run_in_background/, /AskUserQuestion/, /mcp__Claude_Browser__/]
@@ -126,12 +141,41 @@ try {
     assert.doesNotMatch(said, /listen|监听/, 'open names the listener')
   })
 
+  await step('(u) without COWART_COMMAND_LINK, Codex is told to run "$HOME/.cowart/bin/cowart.mjs" (Windows PowerShell 5.1 leaves ~ as it is); Claude Code still ~/.cowart', async () => {
+    // A home of the check's own, with the file install writes there leading to this checkout's command.
+    const home = join(root, 'home')
+    const link = join(home, '.cowart', 'bin', 'cowart.mjs')
+    await mkdir(dirname(link), { recursive: true })
+    await writeFile(link, `const target = ${JSON.stringify(join(ADAPTERS_DIR, 'claude', 'bin', 'cowart.mjs').replaceAll('\\', '/'))}\n`)
+    const homeEnv = { COWART_COMMAND_LINK: undefined, USERPROFILE: home, HOME: home }
+    const result = await codexSession(thread, homeEnv).run(['open'])
+    assert.equal(result.code, 0, result.stderr || result.stdout)
+    assert.match(result.stdout, /\$HOME\/\.cowart\/bin\/cowart\.mjs/, result.stdout)
+    assert.doesNotMatch(result.stdout, /~\/\.cowart/)
+    const help = await codexSession(thread, homeEnv).run(['help'])
+    assert.doesNotMatch(help.stdout, /~\/\.cowart/, 'help names ~/.cowart')
+    const claude = await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-claude-home', env: homeEnv }).run(['open'])
+    assert.equal(claude.code, 0, claude.stderr || claude.stdout)
+    assert.match(claude.stdout, /node ~\/\.cowart\/bin\/cowart\.mjs listen/)
+    assert.doesNotMatch(claude.stdout, /\$HOME/)
+  })
+
   await step('(l) take: the page, the pane follows, no listener', async () => {
     const result = await codex.run(['take', 'Codex 页'])
     assert.equal(result.code, 0, result.stderr || result.stdout)
     assert.match(result.stdout, /你现在负责「Codex 页」这一页/)
     noClaudeWords(result.stdout, 'take')
     assert.doesNotMatch(result.stdout, /listen/)
+  })
+
+  await step("(s) take --shown before the session opened the canvas: the error speaks of Codex's built-in browser; Claude Code's of the Browser pane, as before", async () => {
+    const fresh = await codexSession(randomUUID()).run(['take', '--shown'])
+    assert.notEqual(fresh.code, 0, fresh.stdout)
+    assert.match(fresh.stderr + fresh.stdout, /还没在 Codex 内置浏览器里打开这张画布/)
+    noClaudeWords(fresh.stderr + fresh.stdout, 'take --shown')
+    const claude = await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-claude-shown' }).run(['take', '--shown'])
+    assert.notEqual(claude.code, 0, claude.stdout)
+    assert.match(claude.stderr + claude.stdout, /这个会话还没在 Browser 面板里打开这张画布/)
   })
 
   await step('(l) listen is not for Codex: it says so and exits 2', async () => {
@@ -223,7 +267,8 @@ try {
     assert.equal(none.stdout + none.stderr, '')
     assert.ok(none.ms < 2500, `took ${none.ms} ms`)
     assert.equal(await serviceStatus(PORT), null, 'the hook started a service')
-    // A port that takes the connection and never answers: the hook gives up after 2.5 s.
+    // A port that takes the connection and never answers (the canvas lock leads there): the hook
+    // gives up after 2.5 s.
     const sockets = new Set()
     const mute = net.createServer((socket) => {
       sockets.add(socket)
@@ -231,12 +276,14 @@ try {
       socket.on('error', () => {})
     })
     await new Promise((resolve) => mute.listen(PORT, '127.0.0.1', resolve))
+    const unlock = await standInLock(PORT)
     try {
       const stuck = await promptHook(thread)
       assert.equal(stuck.code, 0, stuck.stderr)
       assert.equal(stuck.stdout + stuck.stderr, '')
       assert.ok(stuck.ms >= 2400 && stuck.ms < 4500, `took ${stuck.ms} ms`)
     } finally {
+      await unlock()
       for (const socket of sockets) socket.destroy()
       await new Promise((resolve) => mute.close(resolve))
     }
@@ -305,14 +352,61 @@ try {
       res.writeHead(422, { 'content-type': 'application/json' }).end(JSON.stringify({ error: '不认识的操作' }))
     })
     await new Promise((resolve) => older.listen(PORT, '127.0.0.1', resolve))
+    const unlock = await standInLock(PORT)
     try {
       const result = await promptHook(thread)
       assert.equal(result.code, 0, result.stderr)
       assert.equal(result.stdout + result.stderr, '')
       assert.deepEqual(asked, [], 'the hook asked a 0.2.16 service')
     } finally {
+      await unlock()
       older.closeAllConnections()
       await new Promise((resolve) => older.close(resolve))
+    }
+  })
+
+  await step('(t) after the service restarts, the hook still reminds a Codex session of the requests queued for it before, and knows the session again', async () => {
+    await stopTestService(PORT)
+    // A request the user sent the session before the restart, in the queue the service keeps on the canvas.
+    const waitingThread = randomUUID()
+    const file = join(canvasDir, REQUESTS_FILE_NAME)
+    const saved = existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : { version: 1, nextId: 1, requests: [] }
+    const id = Math.max(Number(saved.nextId) || 1, ...saved.requests.map((request) => request.id + 1))
+    const now = new Date().toISOString()
+    saved.requests.push({
+      id, requestKey: randomUUID(), session: `codex-${waitingThread}`, executor: 'session', pageId: null, pageName: '重启前', kind: 'canvas',
+      title: '重启前点的', summary: '', annotations: [], text: '重启前点的', projectDir, canvasDir, holderShapeId: null,
+      status: 'pending', message: '', delivered: false, finishing: false, createdAt: now, updatedAt: now
+    })
+    saved.nextId = id + 1
+    await writeFile(file, `${JSON.stringify(saved)}\n`)
+    // Another session's command starts the service again.
+    assert.equal((await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-restarter', env: lease }).run(['pages'])).code, 0)
+    assert.equal(await sessionOf(`codex-${waitingThread}`), null, 'the restarted service knew the session before the hook asked')
+    const told = await promptHook(waitingThread)
+    assert.equal(told.code, 0, told.stderr)
+    assert.match(told.stdout, new RegExp(`#${id}「重启前点的」`))
+    assert.match(told.stdout, /看画布/)
+    const known = await sessionOf(`codex-${waitingThread}`)
+    assert.equal(known?.host, 'codex', JSON.stringify(known))
+    assert.equal(known?.cli, true)
+  })
+
+  await step('(v) the hook finds the service where the canvas lock says, past the ports a command looks through', async () => {
+    await stopTestService(PORT)
+    const farThread = randomUUID()
+    const far = cliSession({ cwd: projectDir, port: FAR_PORT, session: `codex-${farThread}`, env: codexEnv(farThread) })
+    try {
+      const started = await far.run(['pages'])
+      assert.equal(started.code, 0, started.stderr || started.stdout)
+      assert.ok(await serviceStatus(FAR_PORT), `no service on ${FAR_PORT}`)
+      const created = await api(`http://127.0.0.1:${FAR_PORT}`, '/api/messages', { text: '[@Cowart](plugin://cowart@cowart-github) 生成 AI HTML\n\nPrompt:\n远处的页', session: far.session, projectDir, canvasDir })
+      // The hook runs with the port a command starts from (PORT): nothing answers there or in the 19 after it.
+      const told = await promptHook(farThread)
+      assert.equal(told.code, 0, told.stderr)
+      assert.match(told.stdout, new RegExp(`#${created.request.id}「`), `no reminder: ${told.stdout}`)
+    } finally {
+      await stopTestService(FAR_PORT)
     }
   })
 

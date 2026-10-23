@@ -400,7 +400,7 @@ export class CanvasServer {
     }
     if (!url.pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' })
     if (!this.#isAuthorized(req, url)) {
-      return sendJson(res, 403, { error: 'Cowart 本地服务令牌无效：回到 Claude Code 重新打开画布。' })
+      return sendJson(res, 403, { error: 'Cowart 本地服务令牌无效：回到你的会话重新打开画布。' })
     }
 
     // Bridges: who is running here, stop it, stay connected as a session, call canvas operations.
@@ -416,13 +416,13 @@ export class CanvasServer {
       const { session: id, cwd, op, args, cli, host } = await readJsonBody(req)
       if (!validId(id)) return sendJson(res, 400, { error: '缺少会话标识。' })
       // Codex's prompt hook (hook-check) asks for every thread the user talks in: one that never ran
-      // a command is no session here, and none is made for it.
+      // a command is no session here, and none is made for it (unless requests wait for it).
       const asking = op === 'hook-check'
       const session = asking ? this.#sessions.get(id) ?? null : this.#session(id)
       // A cowart command: the session is online for a while after it (no bridge keeps it).
       if (cli === true && !asking) this.#touchCommandSession(session, nonEmpty(host))
       try {
-        const result = await this.#bridgeCall(session, { cwd, op, args: args && typeof args === 'object' ? args : {} })
+        const result = await this.#bridgeCall(session, { id, cwd, op, args: args && typeof args === 'object' ? args : {} })
         return sendJson(res, 200, { result })
       } catch (error) {
         return sendJson(res, 422, { error: error instanceof Error ? error.message : String(error) })
@@ -732,7 +732,7 @@ export class CanvasServer {
   #openAgentStream(req, res, url) {
     const id = url.searchParams.get('session')
     if (!validId(id)) {
-      return sendJson(res, 400, { error: '监听命令缺少 --session：回到 Claude Code 重新打开画布，用新给的监听命令。' })
+      return sendJson(res, 400, { error: '监听命令缺少 --session：回到你的会话重新打开画布，用新给的监听命令。' })
     }
     const session = this.#session(id)
     if (session.listener) endStream(session.listener, 'replaced', {})
@@ -868,7 +868,8 @@ export class CanvasServer {
     return request
   }
 
-  async #bridgeCall(session, { cwd, op, args }) {
+  // id: the session asked for, when there is no session (hook-check).
+  async #bridgeCall(session, { id = session?.id, cwd, op, args }) {
     if (session) session.cwd = nonEmpty(cwd) ?? session.cwd
     switch (op) {
       case 'hook-check': {
@@ -876,10 +877,19 @@ export class CanvasServer {
         // (cowart hook prompt). Asking delivers nothing; a known Codex command session stays
         // online the way its commands keep it. A Codex started inside a Claude Code session asks
         // with that session's id (D7): it stays Claude Code's, kept online by its own commands.
-        if (!session) return { requests: [] }
-        if (session.cli && (session.host ?? 'codex') === 'codex') this.#touchCommandSession(session, 'codex')
-        const waiting = this.queue.list(session.id).filter((request) => !FINAL_STATUSES.has(request.status) && request.executor !== 'service')
-        return { requests: waiting.map(({ id, title, pageName, status }) => ({ id, title, pageName, status })) }
+        // A session this service does not know (it restarted since the session's last command)
+        // with requests queued for it before: they remind it all the same, and it is a Codex
+        // command session here again. One with none is not made (a thread that never ran one).
+        const waitingFor = (sessionId) => this.queue.list(sessionId).filter((request) => !FINAL_STATUSES.has(request.status) && request.executor !== 'service')
+        let asked = session
+        if (!asked) {
+          if (!validId(id) || waitingFor(id).length === 0) return { requests: [] }
+          asked = this.#session(id)
+          this.#touchCommandSession(asked, 'codex')
+        } else if (asked.cli && (asked.host ?? 'codex') === 'codex') {
+          this.#touchCommandSession(asked, 'codex')
+        }
+        return { requests: waitingFor(asked.id).map(({ id: requestId, title, pageName, status }) => ({ id: requestId, title, pageName, status })) }
       }
       case 'model-tools': {
         // Upstream's tools, the service's layout tools (canvas-edit.mjs), page folders
@@ -958,7 +968,7 @@ export class CanvasServer {
       entered = await this.ops.ensurePage(target, wanted, { folder: args.folder })
     } else if (args.shownPage === true) {
       const pane = this.presence.panesOf(session.id, target.canvasDir)[0]
-      if (!pane) throw new Error('这个会话还没在 Browser 面板里打开这张画布，不知道是哪一页：说「打开 Cowart 画布 <页名>」，或先打开画布。')
+      if (!pane) throw new Error(`这个会话还没在${session.host === 'codex' ? ' Codex 内置浏览器' : ' Browser 面板'}里打开这张画布，不知道是哪一页：说「打开 Cowart 画布 <页名>」，或先打开画布。`)
       entered = { id: pane.pageId, name: pane.pageName ?? pane.pageId, created: false }
     }
     if (entered) {

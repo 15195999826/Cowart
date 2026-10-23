@@ -3,8 +3,11 @@
 // the user's Claude Code skills directory (~/.claude/skills/cowart, or
 // $CLAUDE_CONFIG_DIR/skills/cowart) so every session can load it with the Skill tool, and writes
 // the rest `cowart install` installs (claude/lib/install.mjs): the cowart command the skill names
-// (~/.cowart/bin/cowart.mjs, leading to this checkout's adapters/claude/bin/cowart.mjs) and, on
-// Windows, the canvas service at logon. The skill link is a directory junction on Windows (no admin
+// (~/.cowart/bin/cowart.mjs, leading to this checkout's adapters/claude/bin/cowart.mjs), on
+// Windows the canvas service at logon, and on a machine with Codex (CODEX_HOME, else ~/.codex) its
+// cowart skill and the prompt hook that reminds a session of its canvas requests, without the
+// cowart_mcp server Codex had before (--remove takes the skill and the hook away again, and leaves
+// cowart_mcp out). The skill link is a directory junction on Windows (no admin
 // rights needed), a symlink elsewhere: the skill stays in the repo and follows the checked-out code.
 // Usage: node install-skill.mjs [--remove]
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmdirSync, symlinkSync, unlinkSync } from 'node:fs'

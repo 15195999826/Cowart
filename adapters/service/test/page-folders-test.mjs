@@ -5,6 +5,9 @@
 // whole folder, and takes one back to the top level. The folder is meta.cowartFolder on the
 // stored page record; nothing on the pages changes. The service remembers when each page last
 // changed (page-activity.mjs), for the page menu's 最近改过 order.
+// First: the check's own runtime directory, before token.mjs reads it.
+import '../../claude/scripts/test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

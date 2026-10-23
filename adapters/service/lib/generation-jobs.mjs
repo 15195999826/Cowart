@@ -200,9 +200,10 @@ export class GenerationJobs {
     return this.#jobs.size
   }
 
-  // Without the beast command line the page hands the request to Claude instead.
+  // Without the beast command line the page hands the request to the session that holds the page
+  // instead (Claude Code's, Codex's or ZCode's: the words name none).
   availability() {
-    return findBeastCli() ? { ok: true } : { ok: false, reason: '本机没有 beast 命令行（猛兽生成网关的客户端），这次交给 Claude 处理。' }
+    return findBeastCli() ? { ok: true } : { ok: false, reason: '本机没有 beast 命令行（猛兽生成网关的客户端），这次交给负责这一页的会话处理。' }
   }
 
   // Reads what the panel sent, queues a request the canvas shows, and starts the job.
@@ -213,7 +214,7 @@ export class GenerationJobs {
     const cli = findBeastCli()
     if (!cli) throw Object.assign(new Error(this.availability().reason), { fallback: true })
     const resolved = await resolveGeneration({ upstream: this.#upstream, host, args })
-    if (resolved.kind !== 'image' && resolved.kind !== 'video') throw new Error('这类请求要交给 Claude 处理。')
+    if (resolved.kind !== 'image' && resolved.kind !== 'video') throw new Error('这类请求要交给负责这一页的会话处理。')
     const label = resolved.kind === 'image' ? 'AI 图片' : 'AI 视频'
     const request = this.#queue.create({
       text: resolved.prompt,

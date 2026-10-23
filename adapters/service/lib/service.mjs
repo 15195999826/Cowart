@@ -67,8 +67,9 @@ async function retire({ port, pid, token, identity, log }) {
 }
 
 // replacing: the pid of the service on this port that this one replaces (a bridge found it
-// running older code); see retire.
-export async function startCanvasService({ port, replacing = null }) {
+// running older code); see retire. onListening: called once it has its port, before it says so
+// (cowart-service.mjs moves a full log aside from then on).
+export async function startCanvasService({ port, replacing = null, onListening = null }) {
   const log = (message) => process.stderr.write(`[cowart-service ${new Date().toISOString()}] ${message}\n`)
   const identity = localIdentity()
   const token = await loadOrCreateToken()
@@ -207,6 +208,7 @@ export async function startCanvasService({ port, replacing = null }) {
       process.exit(EXIT_PORT_TAKEN)
     }
   }
+  onListening?.()
   const pageOrigin = await server.refreshPageOrigin()
   const pages = pageOrigin === server.origin ? '' : `, pages at ${pageOrigin}`
   log(`listening on ${server.origin}${pages} (pid ${process.pid}, version ${identity.version}, build ${identity.build}, root ${identity.root}, canvas ${SHARED_CANVAS_DIR})`)

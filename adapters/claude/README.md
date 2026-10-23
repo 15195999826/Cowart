@@ -96,6 +96,7 @@ npm --prefix adapters run install:claude
 - `COWART_COMMAND_LINK`：`install` 写的入口放哪，默认 `~/.cowart/bin/cowart.mjs`（测试用）。
 - `COWART_SERVICE_LINK`：`install` 写的服务入口放哪，默认 `~/.cowart/bin/cowart-service.mjs`，`start-service.vbs` 写在它旁边；`COWART_STARTUP_DIR`：`CowartCanvas.lnk` 放进哪个启动文件夹，默认问 Windows（都是测试用）。
 - `CODEX_HOME`：Codex 的主目录，默认 `~/.codex`；`install` 往这里装 Codex 的 skill 和提醒 hook，目录不在就跳过。
+- `COWART_LOG_LIMIT_BYTES`：服务日志（`--log`）多大时改名成 `.1`、换一个新的，默认 5 MB（只管它拉起的服务；测试用）。
 - `COWART_SERVICE_IDLE_MS`：画布服务空闲多久退出，默认全机那张画布的服务不退出、别的画布（`COWART_CANVAS_DIR`）的 10 分钟；`COWART_UPSTREAM_IDLE_MS`：上游子进程多久没有调用就停掉（下次调用再拉起），默认 3 分钟。
 - `COWART_BEAST_CLI`：猛兽命令行的位置，默认 `~/.beast/bin/beast.mjs`；找不到时 AI 图片 / AI 视频退回发给会话。
 - `COWART_PROMPT_WRITER=off`：画布直接生成时不改写提示词，按原话（套上模板必需的结构）生成；`COWART_PROMPT_MODEL` 换写提示词的模型（默认 haiku），`COWART_CLAUDE_CLI` 指定 claude 可执行文件。
@@ -110,7 +111,7 @@ node adapters/service/bin/cowart-service.mjs --stop --port <端口>   # 只停�
 
 `service:status` / `service:stop` 像 cowart 命令一样从 43240 往后找；`service:stop` 只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停，要停就带上它的端口。给了端口（`--port` 或 `COWART_CLAUDE_PORT`），`--stop` 就只看这一个端口，不往后找；`--status` 找到的不是问的那个端口时会说。
 
-服务日志在 `~/.cowart-claude/service.log`（服务自己追加；它没起来时的退出码在 `~/.cowart-claude/service-exit/<pid>`，拉起它的命令读完就删，一天没人读的下次拉起服务时删）。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
+服务日志在 `~/.cowart-claude/service.log`（服务自己追加，超过 5 MB 自己改名成 `service.log.1`、换一个新的接着写；它没起来时的退出码在 `~/.cowart-claude/service-exit/<pid>`，拉起它的命令读完就删，一天没人读的下次拉起服务时删）。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
 
 ## 使用
 
@@ -154,7 +155,7 @@ node adapters/claude/scripts/dev-host.mjs --project <目录> [--session <标识>
 - **视频要画布服务在线才看得到**：视频不像图片那样缓存在页面内存里，服务不在时（比如手动停掉），已打开的画布上视频会变成空框；重新打开画布即可恢复。
 - **自动播放绕开了「减少动态效果」**：tldraw 遇到系统开了这个设置就不自动播放，看起来像静态图。适配层改为每段视频加载后自动静音循环播放一次。
 - **Claude Code 只在桌面版干活**：命令行版、VS Code 插件里跑 cowart 只提示入口不对（设 `COWART_ALLOW_CLI=1` 可放开）。公司中转版桌面版（`claude-desktop-3p`）也算桌面版。Codex 不受这条限制。
-- **Codex 要用户开口才处理请求**：Codex 没有监听，画布请求不会叫醒它；提醒 hook 只在用户发话时提一句，用户说「看画布」或答应才做。服务换版本重启后，Codex 会话要再跑一条 cowart 命令才认得回来，这之间它排着的请求不提醒。
+- **Codex 要用户开口才处理请求**：Codex 没有监听，画布请求不会叫醒它；提醒 hook 只在用户发话时提一句，用户说「看画布」或答应才做（服务换版本重启后也提醒：队列里有给它的请求，服务就把这个会话认回来）。
 - **开机自启只有 Windows**：Mac / Linux 上服务照旧由第一条命令在后台拉起。
 - **外部网站嵌入用不了**：页面安全策略只放行本地内容，tldraw 自带的「嵌入」（YouTube、Figma、GitHub Gist 等）会是空白，所以菜单入口已去掉；要参考网页请用「网页参考」截图卡片。
 - **长网页卡片放大看顶部时，工具栏会消失**：tldraw 的图片工具栏只在卡片中心在屏幕内时出现，「照这个做 HTML」也在这一排里；缩小一点让卡片中心回到屏幕里就有了。

@@ -4,6 +4,9 @@
 // fake-beast.mjs) that log what they were given. Checks what the gateway gets, that the
 // result takes the holder's place, that nothing reaches the session, failing and withdrawing,
 // the fallback to Claude without a beast CLI, and the prompt structure without a writer.
+// First: the check's own runtime directory, before token.mjs reads it.
+import './test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

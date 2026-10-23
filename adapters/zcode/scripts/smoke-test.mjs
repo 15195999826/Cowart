@@ -4,6 +4,9 @@
 // exercises the ZCode-specific parts — the host it registers as, the page wording, the
 // --once listener (Claude Code runs the same one), and a Claude Code session sharing the
 // same service. The shared canvas behavior is covered by the Claude adapter's checks.
+// First: the check's own runtime directory, before token.mjs reads it.
+import '../../claude/scripts/test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises'

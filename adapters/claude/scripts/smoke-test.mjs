@@ -2,6 +2,9 @@
 // End-to-end check of the Claude adapter without Claude Code: runs a session's cowart commands
 // against a throwaway project (the first one starts its own canvas service on a test port) and
 // exercises the commands, the page API, video support and canvas requests.
+// First: the check's own runtime directory, before token.mjs reads it.
+import './test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'

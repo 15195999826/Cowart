@@ -188,21 +188,23 @@ npm --prefix adapters run probe:cold
 
 **后续观察**（范围外发现记一行，不顺手修）：
 
-- （S2）常驻的服务日志只在服务启动时轮转（> 5 MB 改名 `.1`），一直不重启就一直长；要在运行中按大小轮转得另做。
-- （S2）test-kit 不隔离 `COWART_RUNTIME_DIR`：多数测试的服务日志和退出码文件写进真的 `~/.cowart-claude`（被替换、空闲退出的测试服务留下的退出码文件，要等之后某次拉起时满一天才删）。
+- （S2）常驻的服务日志只在服务启动时轮转（> 5 MB 改名 `.1`），一直不重启就一直长；要在运行中按大小轮转得另做。 → 已修（TR1，SHA 回填）
+- （S2）test-kit 不隔离 `COWART_RUNTIME_DIR`：多数测试的服务日志和退出码文件写进真的 `~/.cowart-claude`（被替换、空闲退出的测试服务留下的退出码文件，要等之后某次拉起时满一天才删）。 → 已修（TR1，SHA 回填）
 - （S2）`adapters/claude/README.md` 环境变量一节没有 `COWART_SERVICE_LINK` / `COWART_STARTUP_DIR`，S6 写「install 装什么」时一起补。→ S6 已补（另加 `CODEX_HOME`、`COWART_HOST`）。
-- （S6）`adapters/claude/scripts/install-skill.mjs` 文件头注释只说装 Claude skill、命令入口和开机自启，没提它（经 `installCowart`）也装 Codex 的 skill + hook；代码注释不在 S6 文档范围。
-- （S3）服务端给命令的文字还是 Claude 的说法，Codex 会话也会看到：`take --shown` 没开页时「还没在 Browser 面板里打开」（`server.mjs` 的 `#openCanvas`）、令牌无效「回到 Claude Code 重新打开画布」、没有 beast 命令行时「这次交给 Claude 处理」（`generation-jobs.mjs`）。
+- （S6）`adapters/claude/scripts/install-skill.mjs` 文件头注释只说装 Claude skill、命令入口和开机自启，没提它（经 `installCowart`）也装 Codex 的 skill + hook；代码注释不在 S6 文档范围。 → 已修（TR1，SHA 回填）
+- （S3）服务端给命令的文字还是 Claude 的说法，Codex 会话也会看到：`take --shown` 没开页时「还没在 Browser 面板里打开」（`server.mjs` 的 `#openCanvas`）、令牌无效「回到 Claude Code 重新打开画布」、没有 beast 命令行时「这次交给 Claude 处理」（`generation-jobs.mjs`）。 → 已修（TR1，SHA 回填）
 - （S3）D7 把 `CLAUDE_CODE_*` 排在 `CODEX_THREAD_ID` 前：从 Claude Code 会话里起的 Codex（⓪ 实测就是）跑命令会被认成 Claude 会话，桌面版门禁也照查；只影响这种嵌套。
-- （S4）会话只记在服务进程里：服务重启（换版本）后，Codex 会话再跑一条 cowart 命令之前 hook 认不得它，它排着的请求这段时间不提醒（D8「没跑过命令的 thread 不建会话」按服务进程算）。
-- （S4）命令给 Codex 的文字写 `node ~/.cowart/bin/cowart.mjs`：Windows PowerShell 5.1 不展开 `~`（pwsh 7.6 展开，Codex 优先用 pwsh）；Codex skill 里写了换成 `$HOME` 的写法，命令自己的文字没改。
+- （S4）会话只记在服务进程里：服务重启（换版本）后，Codex 会话再跑一条 cowart 命令之前 hook 认不得它，它排着的请求这段时间不提醒（D8「没跑过命令的 thread 不建会话」按服务进程算）。 → 已修（TR1，SHA 回填）
+- （S4）命令给 Codex 的文字写 `node ~/.cowart/bin/cowart.mjs`：Windows PowerShell 5.1 不展开 `~`（pwsh 7.6 展开，Codex 优先用 pwsh）；Codex skill 里写了换成 `$HOME` 的写法，命令自己的文字没改。 → 已修（TR1，SHA 回填）
 - （S5）根目录上游的 `scripts/check-plugin-metadata.mjs` 现在报根 `package.json` 版本（`0.1.28+codex.…`）≠ `.codex-plugin/plugin.json`（上游 0.1.27）：D15 只恢复后者、根版本不动；不在全量组里。
 - （S5）本机真安装还指着删掉的东西：`~/.codex/config.toml` 的 `cowart_mcp` 跑发布副本 0.2.16 的桥（协议同为 3，会沿用本仓库换上的服务，widget 的调用都报「不认识操作」）；`~/.codex/skills/` 下 4 个 junction 指向已删的 `adapters/codex/skills/*`。S7 人工验收第 1 条真装 install 会清掉。
-- （S7 审查）提醒 hook 找服务用的是命令的 `findService`：每句话都会短暂绑一下 43240（服务没跑时往后 20 个端口都绑一下）；正赶上开机自启的服务在起，它会以 3（端口被占）退出、vbs 就此结束。改成只连不绑在 Windows 上每个空端口要 1–2 秒，会顶满 2.5 秒，没改。
+- （S7 审查）提醒 hook 找服务用的是命令的 `findService`：每句话都会短暂绑一下 43240（服务没跑时往后 20 个端口都绑一下）；正赶上开机自启的服务在起，它会以 3（端口被占）退出、vbs 就此结束。改成只连不绑在 Windows 上每个空端口要 1–2 秒，会顶满 2.5 秒，没改。 → 已修（TR1，SHA 回填）
 - （S7 审查）config.toml 里紧挨在 `[mcp_servers.cowart_mcp]` 段后面、下一张表表头前的注释行会跟着这一段一起删（有备份）。
 - （S7 审查）经 WMI 拉起的服务死后，它的 pid 若在命令下次查看前就被别的活进程复用，`exitCode` 一直是 null，命令要等满 20 秒才报泛化的「没能启动」；要分开得比对进程创建时间。
 - （S7 审查）开机自启的 vbs 遇到持续失败（退出码不是 0 / 3 / 4，比如 43240 落进系统保留端口）每分钟重起一次、没有上限，每次轮转日志、留一个退出码文件。
 - （S7 审查，存疑）Codex 只在本机 `sandbox_mode = "danger-full-access"` 下验过：默认沙箱（workspace-write、不联网）里命令可能连不上 127.0.0.1、WMI 被拒退回 spawn 落进沙箱 Job；要在默认配置的 Codex 上跑一次 `open` / `put` 看服务日志。
 - （S7 审查）`launchDetached` 的 15 秒超时：WMI 其实已建好进程只是回话慢时，`spawnService` 会再 `detached` 起一个，靠端口和画布锁淘汰一个，留下的可能是在宿主 Job 里的那个。
-- （S7 审查）别的进程拉起服务前会轮转 `service.log`（> 5 MB 改名 `.1`）：常驻服务的 fd 跟着写进 `.1`，再轮转一次就写进已删的文件；运行中按路径重开日志得另做（不同于 S2 那条「只在启动时轮转」）。
+- （S7 审查）别的进程拉起服务前会轮转 `service.log`（> 5 MB 改名 `.1`）：常驻服务的 fd 跟着写进 `.1`，再轮转一次就写进已删的文件；运行中按路径重开日志得另做（不同于 S2 那条「只在启动时轮转」）。 → 已修（TR1，SHA 回填）
 - （S7 审查，存疑）Codex 命令会话的画布页开着就一直 held（D8）：Codex 关掉任务后内置浏览器的标签页若还留着、SSE 不断，这个会话永不结束、一直占着那一页；要在 Codex 里核实关任务时标签页是否销毁。
+- （TR1）测试的运行目录改成每个检查进程一个之后，检查中途崩掉留下的测试服务拿的是那次的令牌：下次同端口的检查 `stopTestService` 把它当别的程序（403）、停不掉，命令也换到下一个端口，要等它空闲退出（测试画布 10 分钟）。
+- （TR1）服务端还有两句跟现状不符：`server.mjs` 的 `#ownRequest` 说「请求只存在画布服务的内存里，服务重启后就没了」（队列早就存在画布目录里），`requests.mjs` 撤销不了时说「Claude 已经开始处理这条请求」（Codex、ZCode 的会话也这么说）。

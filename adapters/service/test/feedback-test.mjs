@@ -2,6 +2,9 @@
 // send_cowart_feedback end to end: a Claude Code and a Codex session (cowart commands) and a ZCode
 // session bridge share one test service and each records feedback into a throwaway inbox; then the inbox command
 // (service/bin/cowart-feedback.mjs) lists, shows and closes the items.
+// First: the check's own runtime directory, before token.mjs reads it.
+import '../../claude/scripts/test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'

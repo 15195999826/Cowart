@@ -28,6 +28,12 @@ export const ENTRY = process.env.COWART_BUNDLED === '1'
 // this checkout or release is). COWART_COMMAND_LINK moves it (tests).
 export const COMMAND_LINK = process.env.COWART_COMMAND_LINK || join(homedir(), '.cowart', 'bin', 'cowart.mjs')
 export const COMMAND_LINK_SHOWN = process.env.COWART_COMMAND_LINK ? COMMAND_LINK.replaceAll('\\', '/') : '~/.cowart/bin/cowart.mjs'
+// How the texts for a host name it. Codex runs its commands in Windows PowerShell 5.1 at times,
+// which leaves ~ as it is: "$HOME/…" works there, in pwsh and in sh alike (quoted for a home with a
+// space in it). Claude Code's Bash expands ~.
+export function commandLinkShown(host = 'claude') {
+  return host === 'codex' && !process.env.COWART_COMMAND_LINK ? '"$HOME/.cowart/bin/cowart.mjs"' : COMMAND_LINK_SHOWN
+}
 // The canvas service the launcher runs at logon, the same way: leading to SERVICE_ENTRY. The
 // launcher sits beside it.
 export const SERVICE_LINK = process.env.COWART_SERVICE_LINK || join(homedir(), '.cowart', 'bin', 'cowart-service.mjs')

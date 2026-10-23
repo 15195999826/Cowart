@@ -5,12 +5,14 @@
 // command starts the service through WMI, out of the job its host runs it in (a host that closes
 // its job ends everything in it), with no parent the host knows of; the service then keeps its
 // own log (--log) and leaves its exit code in a file for the command that started it. A bridge
-// (ZCode's) counts as connected once the service said hello on its session stream. The check
-// runs with a token, a runtime directory and canvases of its own on ports of its own.
+// (ZCode's) counts as connected once the service said hello on its session stream. The service
+// moves its log aside itself once it is full, and only the service that runs does: another one
+// started meanwhile (and turned away) leaves it where it is. The check runs with a token, a
+// runtime directory and canvases of its own on ports of its own.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -28,15 +30,17 @@ process.env.COWART_SERVICE_IDLE_MS = '60000'
 process.env.COWART_SERVICE_LINK = join(root, 'bin', 'cowart-service.mjs')
 process.env.COWART_STARTUP_DIR = join(root, 'Startup')
 delete process.env.COWART_CLAUDE_PORT
-const { CanvasServiceClient, SERVICE_ENTRY, spawnService } = await import('../client.mjs')
+const { CanvasServiceClient, SERVICE_ENTRY, probeService, spawnService } = await import('../client.mjs')
 const { finish, serviceStatus, step, stopTestService, waitFor } = await import('../../claude/scripts/test-kit.mjs')
 const { EXIT_PORT_TAKEN, localIdentity } = await import('../lib/identity.mjs')
 const { serviceIdleMs } = await import('../lib/service.mjs')
-const { RUNTIME_DIR, SERVICE_LOG } = await import('../lib/token.mjs')
+const { RUNTIME_DIR, SERVICE_LOG, loadOrCreateToken } = await import('../lib/token.mjs')
 
 const PORT = Number(process.env.COWART_RESIDENT_TEST_PORT) || 43392
 // Held by a plain server for the service that finds its port taken.
 const TAKEN_PORT = PORT + 1
+// The service whose log fills up.
+const LOG_PORT = PORT + 2
 const run = promisify(execFile)
 const WINDOWS = process.platform === 'win32'
 
@@ -186,6 +190,67 @@ await step("(i) an exit file an earlier process with the same pid left is not th
     await rm(file, { force: true })
   }
 })
+
+// A service at logon runs for weeks: its log is moved aside as it fills, by the service itself.
+let logService = null
+try {
+  await step('(q) a service with --log moves its log to .1 once it is over COWART_LOG_LIMIT_BYTES, and goes on in a new one', async () => {
+    await stopTestService(LOG_PORT)
+    // Nearly full as it starts (no other service writes it now): its first lines fill it.
+    await writeFile(SERVICE_LOG, `${'x'.repeat(1900)}\n`)
+    await rm(`${SERVICE_LOG}.1`, { force: true })
+    logService = spawn(process.execPath, [SERVICE_ENTRY, '--port', String(LOG_PORT), '--log', SERVICE_LOG], {
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...process.env, COWART_LOG_LIMIT_BYTES: '2000', COWART_CANVAS_DIR: join(root, 'canvas-log') }
+    })
+    const token = await loadOrCreateToken()
+    // Asked without binding its port: a test bind can take the port from a service starting.
+    await waitFor(async () => (await probeService(LOG_PORT, token, { bind: false })).kind === 'cowart', { timeoutMs: 20_000, what: 'the service on the log port' })
+    // Each new session's first command is a line in its log.
+    const command = (session) => fetch(`http://127.0.0.1:${LOG_PORT}/api/bridge/call`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cowart-token': token },
+      body: JSON.stringify({ session, op: 'pages', cli: true, host: 'claude' })
+    }).then((response) => assert.equal(response.status, 200))
+    for (let n = 1; n <= 30 && !existsSync(`${SERVICE_LOG}.1`); n += 1) await command(`log-fill-${n}`)
+    assert.ok(existsSync(`${SERVICE_LOG}.1`), 'the log went past 2000 bytes and was not moved to .1')
+    await command('log-after-move')
+    const moved = await readFile(`${SERVICE_LOG}.1`, 'utf8')
+    assert.ok(moved.startsWith('x'.repeat(1900)), 'the full log is not the one in .1')
+    assert.match(moved, new RegExp(`listening on http://127\\.0\\.0\\.1:${LOG_PORT}`))
+    const current = await readFile(SERVICE_LOG, 'utf8')
+    assert.match(current, /session log-after-move connected/, 'what it wrote next is not in the new log')
+    assert.doesNotMatch(current, /xxxx/, 'the new log has the old lines')
+    assert.ok(Buffer.byteLength(current) < 2000, `the new log is ${Buffer.byteLength(current)} bytes`)
+  })
+
+  await step('(r) a service started while another runs (its port taken: 3) leaves the log of the one that runs where it is', async () => {
+    assert.ok(await serviceStatus(LOG_PORT), `no service on ${LOG_PORT}`)
+    // Over the 5 MB a log is kept under by default: what was moved aside before a service started.
+    await appendFile(SERVICE_LOG, `${'y'.repeat(5 * 1024 * 1024 + 1024)}\n`)
+    const before = (await stat(SERVICE_LOG)).size
+    const older = 'the older log\n'
+    await writeFile(`${SERVICE_LOG}.1`, older)
+    // On a canvas of its own: the port is what stops it.
+    const canvas = process.env.COWART_CANVAS_DIR
+    process.env.COWART_CANVAS_DIR = join(root, 'canvas-log-second')
+    try {
+      const launched = spawnService(LOG_PORT)
+      const exitCode = await waitFor(() => launched.exitCode !== null && launched.exitCode, { timeoutMs: 20_000, what: 'the second service to exit' })
+      assert.equal(exitCode, EXIT_PORT_TAKEN)
+    } finally {
+      process.env.COWART_CANVAS_DIR = canvas
+    }
+    const after = (await stat(SERVICE_LOG)).size
+    assert.ok(after >= before, `the running service's log was moved away (${after} bytes now, ${before} before)`)
+    assert.equal(await readFile(`${SERVICE_LOG}.1`, 'utf8'), older, 'the older log in .1 was replaced')
+    assert.match(await readFile(SERVICE_LOG, 'utf8'), new RegExp(`port ${LOG_PORT} is taken`), 'the second service did not log beside the first')
+  })
+} finally {
+  await stopTestService(LOG_PORT)
+  logService?.kill()
+}
 
 await step('(j) installServiceAutostart writes the service entry, its launcher and the shortcut at logon; removeServiceAutostart takes them away', async () => {
   const { installServiceAutostart, removeServiceAutostart } = await import('../../claude/lib/install.mjs')

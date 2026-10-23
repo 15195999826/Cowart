@@ -7,6 +7,9 @@
 // machine's, so the check names another front door port through COWART_DOMAIN_PORT and plays
 // the front door with a small proxy. Node does not resolve *.localhost, so requests go to
 // 127.0.0.1 with the Host header set. Only loopback names on these ports are let in.
+// First: the check's own runtime directory, before token.mjs reads it.
+import '../../claude/scripts/test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'

@@ -4,6 +4,9 @@
 // deletes, through its cowart commands, the canvas service and upstream's real saves. Every host
 // lists the tools; a page another session is responsible for is refused; a record the
 // canvas page could not show is refused before anything is written and marked in the summary.
+// First: the check's own runtime directory, before token.mjs reads it.
+import '../../claude/scripts/test-runtime.mjs'
+
 import assert from 'node:assert/strict'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

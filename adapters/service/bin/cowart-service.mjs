@@ -91,27 +91,53 @@ if (process.argv.includes('--import')) {
     process.exit(stopped ? 0 : 1)
   }
 } else {
-  // --log <file>: a service started through WMI (client.mjs) or by the launcher at logon has no
+  // --log <file>: a service started by a command (client.mjs) or by the launcher at logon has no
   // output of its own anyone reads, so it appends what it writes to the file (Node's own report of
   // a crash too), and leaves its exit code in SERVICE_EXIT_DIR/<pid>: the command that started it
   // is not its parent and learns why it did not start (EXIT_* in identity.mjs) from there. It
   // clears the ones nobody came for in a day: the launcher's may be the only service for weeks.
+  // That one may run for weeks too, so the service moves its log to <file>.1 (the older .1 goes)
+  // once it is over LOG_LIMIT_BYTES and goes on in a new one. Only once it listens: until then it
+  // may be one that is turned away (the port or the canvas is taken) while the service that runs
+  // writes the same log, which the commands that started services used to move away.
   const logFile = option('log')
+  let logListening = null
   if (logFile) {
-    const { mkdirSync, openSync, writeFileSync, writeSync } = await import('node:fs')
-    const { join } = await import('node:path')
-    const { clearOldExitCodes, rotateServiceLog } = await import('../client.mjs')
+    const { closeSync, fstatSync, mkdirSync, openSync, renameSync, writeFileSync, writeSync } = await import('node:fs')
+    const { dirname, join } = await import('node:path')
+    const { LOG_LIMIT_BYTES, clearOldExitCodes } = await import('../client.mjs')
     const { SERVICE_EXIT_DIR } = await import('../lib/token.mjs')
-    rotateServiceLog(logFile)
     clearOldExitCodes()
-    const fd = openSync(logFile, 'a')
+    mkdirSync(dirname(logFile), { recursive: true })
+    let fd = openSync(logFile, 'a')
+    // What the log holds: what was there, and what this service wrote since (others' lines in it
+    // are not counted: few).
+    let size = fstatSync(fd).size
+    let mayMove = false
+    const moveAside = () => {
+      closeSync(fd)
+      let moved = true
+      try {
+        renameSync(logFile, `${logFile}.1`)
+      } catch {
+        // The older log is held open elsewhere: go on in this one, and try again once it fills again.
+        moved = false
+      }
+      fd = openSync(logFile, 'a')
+      size = moved ? fstatSync(fd).size : 0
+    }
     const append = (chunk, encoding) => {
       try {
-        writeSync(fd, typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : chunk)
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : chunk
+        if (mayMove && size > LOG_LIMIT_BYTES) moveAside()
+        writeSync(fd, bytes)
+        size += bytes.length
       } catch {
         // The log went away: nothing to do about it.
       }
     }
+    // A log that is full already is moved aside before the service says it listens.
+    logListening = () => (mayMove = true)
     for (const stream of [process.stdout, process.stderr]) {
       stream.write = (chunk, encoding, callback) => {
         append(chunk, encoding)
@@ -131,7 +157,7 @@ if (process.argv.includes('--import')) {
     })
   }
   const { startCanvasService } = await import('../lib/service.mjs')
-  await startCanvasService({ port, replacing: Number(option('replace')) || null }).catch((error) => {
+  await startCanvasService({ port, replacing: Number(option('replace')) || null, onListening: () => logListening?.() }).catch((error) => {
     process.stderr.write(`[cowart-service] failed to start: ${error?.stack || error}\n`)
     process.exit(1)
   })

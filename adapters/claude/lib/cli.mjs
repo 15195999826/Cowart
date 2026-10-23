@@ -19,12 +19,14 @@
 // a canvas request (written for Codex) spells them.
 import { readFile } from 'node:fs/promises'
 
-import { CanvasServiceClient, findService } from '../../service/client.mjs'
+import { CanvasServiceClient, probeService } from '../../service/client.mjs'
+import { canvasOwner } from '../../service/lib/canvas-lock.mjs'
 import { DEFAULT_PORT, VERSION, compareVersions, samePath } from '../../service/lib/identity.mjs'
 import { MOVE_PAGES_TOOL, folderWords, newPageFolderHint, normalizeFolder, pageTreeLines } from '../../service/lib/page-folders.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
-import { COMMAND_LINK, COMMAND_LINK_SHOWN, ENTRY, installCowart, linkTarget, removeCowart } from './install.mjs'
+import { SHARED_CANVAS_DIR } from '../../shared/paths.mjs'
+import { COMMAND_LINK, ENTRY, commandLinkShown, installCowart, linkTarget, removeCowart } from './install.mjs'
 import { listenForRequests } from './listen.mjs'
 import { ANNOTATION_EDIT_NOTE, ANNOTATION_EDIT_QUESTION, ANNOTATION_REMARKS_NOTE, requestLine, restartListenerNote } from './request-notice.mjs'
 import { CANVAS_STATE_TOOL, GET_REQUEST_TOOL, INSERT_VIDEO_TOOL, LIST_REQUESTS_TOOL, OWN_TOOLS, RENDER_TOOL, REPLY_REQUEST_TOOL } from './tools.mjs'
@@ -70,9 +72,10 @@ export function hostFromEnv(env = process.env) {
   return env.CODEX_THREAD_ID ? 'codex' : 'claude'
 }
 
-// How texts tell the session to run cowart: through the file `install` wrote when it leads here.
-export function cowartCommand() {
-  return samePath(linkTarget(), ENTRY) ? `node ${COMMAND_LINK_SHOWN}` : `node "${ENTRY.replaceAll('\\', '/')}"`
+// How texts tell the session to run cowart: through the file `install` wrote when it leads here
+// (named the way the host's shell reads it: commandLinkShown).
+export function cowartCommand(host = 'claude') {
+  return samePath(linkTarget(), ENTRY) ? `node ${commandLinkShown(host)}` : `node "${ENTRY.replaceAll('\\', '/')}"`
 }
 
 class UsageError extends Error {}
@@ -321,13 +324,17 @@ const OTHER_COMMANDS = [
   ['其它', ['tools'], 'tools [<工具名>]', '列出所有工具；给了工具名就打出它的参数定义'],
   ['其它', ['hook'], 'hook prompt', 'Codex 的提醒 hook（install 装进 Codex 的 hooks.json，用户每发一句话 Codex 跑一次）：画布上有请求在等这个会话就提醒一句，没有就什么都不打；会话里不用自己跑'],
   ['其它', ['help'], 'help [<命令>]', '用法；给了命令就列出它的全部参数'],
-  ['其它', ['install', 'uninstall'], 'install / uninstall', `把 ${COMMAND_LINK_SHOWN} 指向这一份 Cowart，并装上画布服务的开机自启（Windows）；这台机器装了 Codex 的话，再给它装上 cowart skill 和提醒 hook、去掉原来的 cowart_mcp / 删掉这些`]
+  ['其它', ['install', 'uninstall'], 'install / uninstall', installAbout('claude')]
 ]
+function installAbout(host) {
+  return `把 ${commandLinkShown(host)} 指向这一份 Cowart，并装上画布服务的开机自启（Windows）；这台机器装了 Codex 的话，再给它装上 cowart skill 和提醒 hook、去掉原来的 cowart_mcp / 删掉这些`
+}
 // Codex runs no listener: its requests wait until the user asks for them (看画布).
 const CODEX_LISTEN_ABOUT = 'Codex 不用：画布请求不会叫醒 Codex 会话，用户说「看画布」（或答应要做）时用 requests 取，request <编号> 看详情照做'
 
 function otherCommands(host) {
-  return host === 'codex' ? OTHER_COMMANDS.map((entry) => (entry[1].includes('listen') ? [entry[0], entry[1], entry[2], CODEX_LISTEN_ABOUT] : entry)) : OTHER_COMMANDS
+  if (host !== 'codex') return OTHER_COMMANDS
+  return OTHER_COMMANDS.map(([group, names, name, about]) => [group, names, name, names.includes('listen') ? CODEX_LISTEN_ABOUT : names.includes('install') ? installAbout(host) : about])
 }
 
 // What the tool parameters a command has no flag of its own for do, for help (the tools'
@@ -954,7 +961,7 @@ const detailsCommand = (cli) => (id) => `运行 ${cli} request ${id}`
 // What Codex's prompt hook adds to the user's message when requests wait for the session: a
 // reminder, not the requests (D10). The user's message comes first; the requests are done when the
 // user says 看画布 or yes. Nothing when nothing waits.
-export function hookReminder(requests, cli = cowartCommand()) {
+export function hookReminder(requests, cli = cowartCommand('codex')) {
   if (!Array.isArray(requests) || requests.length === 0) return ''
   const line = (request) => {
     const where = [request.pageName ? `来自「${request.pageName}」这一页` : '', request.status === 'running' ? '你已回过 running，做完回 done / failed' : ''].filter(Boolean).join('，')
@@ -975,9 +982,12 @@ const HOOK_TIMEOUT_MS = 2_500
 const HOOK_SERVICE_SINCE = '0.3.0'
 
 // `hook prompt`: Codex runs it for every message the user sends (UserPromptSubmit), with the turn as
-// JSON on stdin, and adds what it prints to the message (D9). It only finds the service (starts
-// none, makes no session: hook-check in server.mjs) and prints nothing when there is nothing to
-// remind of, or anything goes wrong or takes more than 2.5 s: the user's message must not wait.
+// JSON on stdin, and adds what it prints to the message (D9). It goes to the service the canvas lock
+// names (canvas-lock.mjs: its pid runs) and only connects: looking for one the way a command does
+// binds the ports it tries, and a service starting at logon that moment finds its port taken and
+// gives up. It starts none, makes no session (hook-check in server.mjs), and prints nothing when
+// there is nothing to remind of, no lock, or anything goes wrong or takes more than 2.5 s: the
+// user's message must not wait.
 async function promptHook(cli) {
   setTimeout(() => process.exit(0), HOOK_TIMEOUT_MS)
   try {
@@ -989,10 +999,12 @@ async function promptHook(cli) {
     }
     const session = hookSessionId(process.env, input)
     if (!session) return exit(0)
+    const owner = canvasOwner(SHARED_CANVAS_DIR)
+    if (!Number.isInteger(owner?.port)) return exit(0)
     const token = await loadOrCreateToken()
-    const found = await findService({ port: Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT, token })
-    if (!found?.status.version || compareVersions(found.status.version, HOOK_SERVICE_SINCE) < 0) return exit(0)
-    const response = await fetch(`http://127.0.0.1:${found.port}/api/bridge/call`, {
+    const found = await probeService(owner.port, token, { bind: false })
+    if (found.kind !== 'cowart' || !found.status.version || compareVersions(found.status.version, HOOK_SERVICE_SINCE) < 0) return exit(0)
+    const response = await fetch(`http://127.0.0.1:${owner.port}/api/bridge/call`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-cowart-token': token },
       body: JSON.stringify({ session, op: 'hook-check', cli: true, host: 'codex' })
@@ -1024,11 +1036,11 @@ async function listTools(client) {
   return [render, canvasState, ...forwarded, ...rest]
 }
 
-async function toolSchema(client, name) {
+async function toolSchema(client, name, host = 'claude') {
   const own = OWN_TOOLS.find((tool) => tool.name === name)
   if (own) return own.inputSchema
   const tool = (await listTools(client)).find((entry) => entry.name === name)
-  if (!tool) throw new UsageError(`没有叫 ${name} 的工具（${COMMAND_LINK_SHOWN} tools 列出全部）。`)
+  if (!tool) throw new UsageError(`没有叫 ${name} 的工具（${commandLinkShown(host)} tools 列出全部）。`)
   return tool.inputSchema ?? { type: 'object', properties: {} }
 }
 
@@ -1211,22 +1223,24 @@ export async function main(argv = process.argv.slice(2)) {
   // fetch does not count as work (its timeouts are unref'd): with nothing else running, Node
   // would end the process in the middle. Every way out is exit().
   setInterval(() => {}, 60_000)
-  const cli = cowartCommand()
   const host = hostFromEnv()
+  const cli = cowartCommand(host)
   // Set once a command (not call) has its arguments: its results speak in its words.
   let speaking = null
   try {
     const { name, rest } = splitCommand(argv)
     if (!name || name === '--help' || name === '-h' || (name === 'help' && rest.length === 0)) return exit(0, usage(cli, host))
     if (name === '--version') return exit(0, VERSION)
-    // Codex's, before the desktop switch and the session check: it takes the thread from stdin.
+    // Codex's, before the desktop switch and the session check: it takes the thread from stdin (its
+    // environment has no CODEX_THREAD_ID, so it speaks as Codex whatever hostFromEnv says).
     if (name === 'hook') {
       if (rest[0] !== 'prompt' || rest.length > 1) throw new UsageError(`用法：${cli} hook prompt（Codex 的提醒 hook 跑它，会话里不用自己跑）`)
-      return promptHook(cli)
+      return promptHook(cowartCommand('codex'))
     }
     if (name === 'install') {
       const { ok, lines } = await installCowart()
-      return exit(ok ? 0 : 1, [...lines, `会话里这样用：node ${COMMAND_LINK_SHOWN} <命令>（node ${COMMAND_LINK_SHOWN} help 看用法）。`].join('\n'))
+      const shown = commandLinkShown(host)
+      return exit(ok ? 0 : 1, [...lines, `会话里这样用：node ${shown} <命令>（node ${shown} help 看用法）。`].join('\n'))
     }
     if (name === 'uninstall') {
       const { ok, lines } = await removeCowart()
@@ -1288,7 +1302,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (!command && otherCommandNamed(rest[0], host)) return exit(0, describeOther(otherCommandNamed(rest[0], host), cli))
       if (rest[0] === 'put') return exit(0, COMMANDS.filter((entry) => entry.group === '放').map((entry) => `${cli} ${entry.usage}\n    ${entry.about}`).join('\n'))
       if (!command) return exit(2, `没有 ${rest[0]} 这个命令。\n\n${usage(cli, host)}`)
-      return exit(0, describeCommand(command, command.tool ? await toolSchema(client, command.tool) : {}, cli))
+      return exit(0, describeCommand(command, command.tool ? await toolSchema(client, command.tool, host) : {}, cli))
     }
 
     if (name === 'pages' || name === 'page') {
@@ -1312,7 +1326,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (!toolName) throw new UsageError(`没有 ${name} 这个命令。\n\n${usage(cli, host)}`)
     // Only arguments need the parameters' definitions (the service has them for its tools).
     const needsSchema = toolArgv.some((arg) => arg !== '--out' && arg !== 'json') || name === 'call'
-    const schema = needsSchema ? await toolSchema(client, toolName) : {}
+    const schema = needsSchema ? await toolSchema(client, toolName, host) : {}
     const { args, out, help } = await buildArguments(command, schema, toolArgv)
     if (help) return exit(0, describeCommand(command, schema, cli))
     if (command.result === 'take' && !String(args.page ?? '').trim() && args.shownPage !== true) throw new UsageError(`用法：${command.usage}`)
