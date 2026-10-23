@@ -175,7 +175,7 @@ npm --prefix adapters run probe:cold
 
 | 阶段 | 状态 | SHA | 备注 |
 |---|---|---|---|
-| S0 钉子先行 | 已完成 | | HEAD 3fbf866 全绿：contract OK、test:claude 100 PASS + 6 node:test、zcode 12、codex 25 + 26、build 无 diff、check OK、cold 4；加 upstream-test 后 test:claude 103 + 6，test:upstream 连跑 3 次绿；内存（WS / 提交，服务 + 上游）空画布刚起 143 / 150 MB、读后 146 / 185、杀子进程 15 秒后服务 61 / 69；真画布 50 页刚起 146 / 152、读后 267 / 286、杀后 60 / 67；守卫空；两问自查：测试的子进程、服务、临时目录都在 finally 清掉，循环遍历的都是快照 |
+| S0 钉子先行 | 已完成 | 9f97c5c | HEAD 3fbf866 全绿：contract OK、test:claude 100 PASS + 6 node:test、zcode 12、codex 25 + 26、build 无 diff、check OK、cold 4；加 upstream-test 后 test:claude 103 + 6，test:upstream 连跑 3 次绿；内存（WS / 提交，服务 + 上游）空画布刚起 143 / 150 MB、读后 146 / 185、杀子进程 15 秒后服务 61 / 69；真画布 50 页刚起 146 / 152、读后 267 / 286、杀后 60 / 67；守卫空；两问自查：测试的子进程、服务、临时目录都在 finally 清掉，循环遍历的都是快照 |
 | S1 省内存、不空闲退出 | 未开始 | | |
 | S2 脱离宿主拉起 + 开机自启 | 未开始 | | |
 | S3 命令认 Codex 会话 | 未开始 | | |
