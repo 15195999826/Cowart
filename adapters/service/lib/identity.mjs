@@ -84,7 +84,7 @@ export function localIdentity() {
   return { service: SERVICE_NAME, protocol: PROTOCOL, version: VERSION, build: codeFingerprint(), root: REPO_ROOT }
 }
 
-function compareVersions(a, b) {
+export function compareVersions(a, b) {
   const left = String(a).split('.').map(Number)
   const right = String(b).split('.').map(Number)
   for (let index = 0; index < 3; index += 1) {

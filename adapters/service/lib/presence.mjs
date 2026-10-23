@@ -66,6 +66,12 @@ export class Presence extends EventEmitter {
 
   #persist() {
     const now = Date.now()
+    // The service now runs for weeks: what the file forgets after KEPT_MS goes here too, unless
+    // the session holds a page or shows in a pane (it is around then, whatever seenAt says).
+    const shown = new Set([...this.#panes.values()].map((entry) => entry.session))
+    for (const [id, entry] of [...this.#sessions]) {
+      if (now - entry.seenAt >= KEPT_MS && !entry.page && !shown.has(id)) this.#sessions.delete(id)
+    }
     const sessions = Object.fromEntries(
       [...this.#sessions].filter(([, entry]) => entry.name && now - entry.seenAt < KEPT_MS).map(([id, entry]) => [id, { name: entry.name, seenAt: entry.seenAt, page: entry.page }])
     )

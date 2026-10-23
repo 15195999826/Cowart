@@ -100,7 +100,7 @@ try {
   }
   assert.equal(await realpath(join(claudeEnv.CODEX_HOME, 'skills', 'cowart')), await realpath(join(pluginDir, 'adapters/claude/codex-skill/cowart')), "Codex gets the release's Codex skill")
   const codexHooks = JSON.parse(await readFile(join(claudeEnv.CODEX_HOME, 'hooks.json'), 'utf8')).hooks.UserPromptSubmit.flatMap((group) => group.hooks)
-  assert.deepEqual(codexHooks.map((hook) => hook.command), [`"${process.execPath}" "${commandLink}" hook prompt`], 'Codex runs the installed command as its prompt hook')
+  assert.deepEqual(codexHooks.map((hook) => hook.command), [`"${process.execPath}" "${commandLink}" hook prompt || exit 0`], 'Codex runs the installed command as its prompt hook')
   const opening = await runNode(commandLink, ['call', 'render_cowart_canvas_widget', '--json', '-', '--out', 'json'], JSON.stringify({ page: '冷安装共享页', sessionName: '小暖' }))
   const openedClaude = payload(JSON.parse(opening.stdout || '{}'))
   token = (await readFile(join(runtimeDir, 'token'), 'utf8')).trim()

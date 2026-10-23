@@ -75,8 +75,8 @@ npm --prefix adapters run install:claude
 
 - 在 `~/.claude/skills/cowart` 建一个指向 `adapters/claude/skills/cowart` 的目录链接（Windows 是 junction，不用管理员权限），skill 跟着检出的代码走；
 - 写 `~/.cowart/bin/cowart.mjs`：一个指向本仓库 `adapters/claude/bin/cowart.mjs` 的小入口。skill 里的命令都写成 `node ~/.cowart/bin/cowart.mjs <命令>`，所以不管 Cowart 装在哪，会话都用这一个路径；
-- 画布服务的开机自启（只在 Windows）：`~/.cowart/bin/cowart-service.mjs`（同样是指向本仓库服务入口的小入口）、旁边的 `start-service.vbs`（不显示窗口跑服务，只跑一份；退出码 0 / 3 / 4 就结束，别的 60 秒后重起）和启动文件夹里的 `CowartCanvas.lnk`。登录时服务就起来，任务管理器「启动应用」里能禁用。装的时候不启动服务，会话用到时照旧拉起；
-- 这台机器装了 Codex（有 `CODEX_HOME`，没设就看 `~/.codex`）时：把 `<Codex 主目录>/skills/cowart` 链到 `codex-skill/cowart`，删掉以前 Codex 插件留下的 `cowart-image-edit` / `cowart-image-gen` / `cowart-open-canvas` 链接，在 `hooks.json` 里装上提醒 hook（UserPromptSubmit，已有的别的 hook 原样留着，Codex 第一次见到它时要在 Codex 里信任一次），从 `config.toml` 里删掉以前插件的 `[mcp_servers.cowart_mcp]`（开着的 Codex 重开才不再起它）。改 `hooks.json`、`config.toml` 之前先备份成 `<文件>.bak-cowart-<时间>`。
+- 画布服务的开机自启（只在 Windows）：`~/.cowart/bin/cowart-service.mjs`（同样是指向本仓库服务入口的小入口）、旁边的 `start-service.vbs`（不显示窗口跑服务，只跑一份；退出码 0 / 3 / 4 就结束，别的 60 秒后重起；每次起之前看一眼 node 和服务入口还在不在，不在就结束）和启动文件夹里的 `CowartCanvas.lnk`。登录时服务就起来，任务管理器「启动应用」里能禁用。装的时候不启动服务，会话用到时照旧拉起；
+- 这台机器装了 Codex（有 `CODEX_HOME`，没设就看 `~/.codex`）时：把 `<Codex 主目录>/skills/cowart` 链到 `codex-skill/cowart`，删掉以前 Codex 插件留下的 `cowart-image-edit` / `cowart-image-gen` / `cowart-open-canvas` 链接，在 `hooks.json` 里装上提醒 hook（UserPromptSubmit，命令是 `"<node>" "<命令入口>" hook prompt || exit 0`：Codex 遇到退出码 2 会拦下用户的话，命令入口指向的 Cowart 不在了时就是 2；已有的别的 hook 原样留着，Codex 第一次见到它时要在 Codex 里信任一次），从 `config.toml` 里删掉以前插件的 `[mcp_servers.cowart_mcp]`（开着的 Codex 重开才不再起它；那一段里有跨行的值就不动，报一行请你自己删）。改 `hooks.json`、`config.toml` 之前先备份成 `<文件>.bak-cowart-<时间>`。
 
 `uninstall:claude` 删掉这些（入口指向别的 Cowart 时不动；正在跑的画布服务不停；`cowart_mcp` 不恢复）。
 
@@ -91,7 +91,7 @@ npm --prefix adapters run install:claude
 - `COWART_DOMAIN_PORT`：本机门房（Caddy 之类，把 `cowart.localhost` 转到画布服务的端口、保留 Host）听的端口，默认 80（只给用这台机器画布的服务）。门房转到了本服务，网址就是 `http://cowart.localhost`；没有门房时是 `cowart.localhost:<服务端口>`；`0` 关掉，网址回到 `127.0.0.1:<服务端口>`。
 - `COWART_ALLOW_CLI=1`：命令行版等非桌面入口也让 cowart 干活（没有 Browser 面板，网址在浏览器里打开）。
 - `COWART_SESSION_ID`：会话标识，手动试用、测试时用；平时由桌面版的 `CLAUDE_CODE_HOST_SESSION_ID` 给（Codex 是 `codex-<CODEX_THREAD_ID>`）。
-- `COWART_HOST`：当作哪个宿主（`claude` / `codex`），测试、手动试用时用；平时按有没有 `CLAUDE_CODE_*`、`CODEX_THREAD_ID` 认。
+- `COWART_HOST`：当作哪个宿主（`claude` / `codex`），测试、手动试用时用；平时按有没有 Claude Code 给会话命令的 `CLAUDE_CODE_ENTRYPOINT` / `CLAUDE_CODE_HOST_SESSION_ID` / `CLAUDE_CODE_SESSION_ID`、`CODEX_THREAD_ID` 认。
 - `COWART_SESSION_BUSY_MS` / `COWART_LISTENER_GONE_MS` / `COWART_SESSION_LEASE_MS`：会话在线的三段时间（只管它拉起的服务）：监听送来请求后最多在线多久（默认 12 小时）、监听没送请求就断了以后多久算结束（默认 2 分钟）、没监听时最后一条命令后多久算结束（默认 30 分钟）。
 - `COWART_COMMAND_LINK`：`install` 写的入口放哪，默认 `~/.cowart/bin/cowart.mjs`（测试用）。
 - `COWART_SERVICE_LINK`：`install` 写的服务入口放哪，默认 `~/.cowart/bin/cowart-service.mjs`，`start-service.vbs` 写在它旁边；`COWART_STARTUP_DIR`：`CowartCanvas.lnk` 放进哪个启动文件夹，默认问 Windows（都是测试用）。
@@ -110,7 +110,7 @@ node adapters/service/bin/cowart-service.mjs --stop --port <端口>   # 只停�
 
 `service:status` / `service:stop` 像 cowart 命令一样从 43240 往后找；`service:stop` 只停用这台机器画布的那个，用别的画布的（测试服务、联调宿主）不停，要停就带上它的端口。给了端口（`--port` 或 `COWART_CLAUDE_PORT`），`--stop` 就只看这一个端口，不往后找；`--status` 找到的不是问的那个端口时会说。
 
-服务日志在 `~/.cowart-claude/service.log`（服务自己追加；它没起来时的退出码在 `~/.cowart-claude/service-exit/<pid>`，拉起它的命令读完就删）。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
+服务日志在 `~/.cowart-claude/service.log`（服务自己追加；它没起来时的退出码在 `~/.cowart-claude/service-exit/<pid>`，拉起它的命令读完就删，一天没人读的下次拉起服务时删）。画布目录里的 `.cowart-service.lock`（默认 `~/.cowart/canvas/.cowart-service.lock`）记着哪个服务（pid、端口）在用这张画布，服务退出时删掉；另一个服务还在用时，给同一张画布拉起的第二个服务不会起来。
 
 ## 使用
 

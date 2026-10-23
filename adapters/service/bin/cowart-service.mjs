@@ -94,14 +94,16 @@ if (process.argv.includes('--import')) {
   // --log <file>: a service started through WMI (client.mjs) or by the launcher at logon has no
   // output of its own anyone reads, so it appends what it writes to the file (Node's own report of
   // a crash too), and leaves its exit code in SERVICE_EXIT_DIR/<pid>: the command that started it
-  // is not its parent and learns why it did not start (EXIT_* in identity.mjs) from there.
+  // is not its parent and learns why it did not start (EXIT_* in identity.mjs) from there. It
+  // clears the ones nobody came for in a day: the launcher's may be the only service for weeks.
   const logFile = option('log')
   if (logFile) {
     const { mkdirSync, openSync, writeFileSync, writeSync } = await import('node:fs')
     const { join } = await import('node:path')
-    const { rotateServiceLog } = await import('../client.mjs')
+    const { clearOldExitCodes, rotateServiceLog } = await import('../client.mjs')
     const { SERVICE_EXIT_DIR } = await import('../lib/token.mjs')
     rotateServiceLog(logFile)
+    clearOldExitCodes()
     const fd = openSync(logFile, 'a')
     const append = (chunk, encoding) => {
       try {

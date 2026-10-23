@@ -873,10 +873,11 @@ export class CanvasServer {
     switch (op) {
       case 'hook-check': {
         // The requests still waiting for a Codex session, for its prompt hook to remind it of
-        // (cowart hook prompt). Asking delivers nothing; a known command session stays online
-        // the way its commands keep it.
+        // (cowart hook prompt). Asking delivers nothing; a known Codex command session stays
+        // online the way its commands keep it. A Codex started inside a Claude Code session asks
+        // with that session's id (D7): it stays Claude Code's, kept online by its own commands.
         if (!session) return { requests: [] }
-        if (session.cli) this.#touchCommandSession(session, 'codex')
+        if (session.cli && (session.host ?? 'codex') === 'codex') this.#touchCommandSession(session, 'codex')
         const waiting = this.queue.list(session.id).filter((request) => !FINAL_STATUSES.has(request.status) && request.executor !== 'service')
         return { requests: waiting.map(({ id, title, pageName, status }) => ({ id, title, pageName, status })) }
       }

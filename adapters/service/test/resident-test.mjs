@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -82,10 +82,12 @@ let started = null
 try {
   await stopTestService(PORT)
   if (WINDOWS) {
-    // A command starting the service, the way the cowart command does.
-    const client = new CanvasServiceClient({ host: 'claude', session: 'resident-check', cwd: root, port: PORT, command: true })
-    await client.start()
-    started = await serviceStatus(PORT)
+    await step('a command starts the service on the check port', async () => {
+      // A command starting the service, the way the cowart command does.
+      const client = new CanvasServiceClient({ host: 'claude', session: 'resident-check', cwd: root, port: PORT, command: true })
+      await client.start()
+      started = await serviceStatus(PORT)
+    })
   }
 
   await step('(g) a service a command starts runs outside the job the command runs in', async () => {
@@ -140,6 +142,51 @@ await step('(i) --log: the service writes its log there and leaves its exit code
   }
 })
 
+await step('(i) a service started with --log clears the exit files nobody came for in a day', async () => {
+  const exits = join(RUNTIME_DIR, 'service-exit')
+  await mkdir(exits, { recursive: true })
+  const stale = join(exits, '999999991')
+  await writeFile(stale, '0')
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 3600_000)
+  await utimes(stale, twoDaysAgo, twoDaysAgo)
+  const holder = net.createServer((socket) => socket.destroy())
+  await new Promise((resolve, reject) => holder.once('error', reject).listen(TAKEN_PORT, '127.0.0.1', resolve))
+  const canvas = process.env.COWART_CANVAS_DIR
+  process.env.COWART_CANVAS_DIR = join(root, 'canvas-taken')
+  try {
+    const child = spawn(process.execPath, [SERVICE_ENTRY, '--port', String(TAKEN_PORT), '--log', join(root, 'by-hand.log')], { stdio: 'ignore', windowsHide: true })
+    assert.equal(await new Promise((resolve) => child.on('exit', resolve)), EXIT_PORT_TAKEN)
+    assert.equal(existsSync(stale), false, 'an exit file two days old is still there')
+    await rm(join(exits, String(child.pid)), { force: true })
+  } finally {
+    process.env.COWART_CANVAS_DIR = canvas
+    await rm(stale, { force: true })
+    await new Promise((resolve) => holder.close(resolve))
+  }
+})
+
+await step("(i) an exit file an earlier process with the same pid left is not the launched service's: Windows reuses pids", async () => {
+  const { launchedService } = await import('../client.mjs')
+  // A pid that is gone.
+  const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', windowsHide: true })
+  await new Promise((resolve) => gone.on('exit', resolve))
+  const file = join(RUNTIME_DIR, 'service-exit', String(gone.pid))
+  await mkdir(join(RUNTIME_DIR, 'service-exit'), { recursive: true })
+  try {
+    await writeFile(file, String(EXIT_PORT_TAKEN))
+    const minuteAgo = new Date(Date.now() - 60_000)
+    await utimes(file, minuteAgo, minuteAgo)
+    const launched = launchedService(gone.pid, Date.now())
+    assert.equal(launched.exitCode, -1, 'a code left before the service was started was taken for its own')
+    assert.equal(existsSync(file), false, 'the old exit file was left for the next one')
+    await writeFile(file, String(EXIT_PORT_TAKEN))
+    assert.equal(launchedService(gone.pid, Date.now() - 5_000).exitCode, EXIT_PORT_TAKEN, 'its own exit code')
+    assert.equal(existsSync(file), false, 'the exit file was not removed once read')
+  } finally {
+    await rm(file, { force: true })
+  }
+})
+
 await step('(j) installServiceAutostart writes the service entry, its launcher and the shortcut at logon; removeServiceAutostart takes them away', async () => {
   const { installServiceAutostart, removeServiceAutostart } = await import('../../claude/lib/install.mjs')
   const entry = process.env.COWART_SERVICE_LINK
@@ -176,6 +223,22 @@ await step('(j) installServiceAutostart writes the service entry, its launcher a
   assert.equal((await removeServiceAutostart()).removed, false, 'nothing left to remove')
 })
 
+await step('(j) the launcher looks for node and the service entry before each start: an uninstall or a moved node ends it instead of a retry every minute', async () => {
+  if (!WINDOWS) return console.log('      (skipped: the launcher is a Windows thing)')
+  const { installServiceAutostart, removeServiceAutostart } = await import('../../claude/lib/install.mjs')
+  await installServiceAutostart()
+  try {
+    const source = (await readFile(join(root, 'bin', 'start-service.vbs'))).subarray(2).toString('utf16le')
+    const loop = source.indexOf('\r\nDo\r\n')
+    assert.ok(loop > 0, `no loop in the launcher:\n${source}`)
+    const check = source.indexOf('Not files.FileExists(')
+    assert.ok(check > loop, `the launcher looks for node and the entry only once, before its loop:\n${source}`)
+    assert.ok(source.indexOf('shell.Run(', loop) > check, 'the launcher starts the service before it looks')
+  } finally {
+    await removeServiceAutostart()
+  }
+})
+
 await step('a bridge (ZCode) is started once the service says hello on its session stream, which stays open in the background', async () => {
   let registered = false
   let reachedSession
@@ -210,6 +273,26 @@ await step('a bridge (ZCode) is started once the service says hello on its sessi
     server.closeAllConnections()
     await closed
   }
+})
+
+await step('a session not seen for 7 days that holds no page and shows in no pane is forgotten by the running service too, not only in its file', async () => {
+  const { Presence } = await import('../lib/presence.mjs')
+  const KEPT_MS = 7 * 24 * 3600_000
+  const almost = Date.now() - KEPT_MS + 400
+  await writeFile(process.env.COWART_SESSION_NAMES_FILE, JSON.stringify({
+    version: 2,
+    sessions: {
+      old: { name: '小川', seenAt: almost, page: null },
+      holder: { name: '阿满', seenAt: almost, page: { canvasDir: join(root, 'canvas'), pageId: 'page:held' } }
+    }
+  }))
+  const presence = new Presence({ canvasDir: join(root, 'canvas') })
+  assert.equal(presence.nameOf('old'), '小川')
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  presence.ensureName('fresh')
+  assert.equal(presence.nameOf('old'), null, 'a session gone for 7 days is still known by name')
+  assert.equal(presence.nameOf('holder'), '阿满', 'a session that holds a page was forgotten')
+  assert.equal(presence.ensureName('fresher'), '小川', "the forgotten session's name is not free again")
 })
 
 await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})

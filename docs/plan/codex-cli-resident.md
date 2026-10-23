@@ -1,7 +1,7 @@
 # Codex 改走 cowart 命令 + 画布服务常驻（CX，2026-10-23）
 
 > 来源：2026-10-23 Claude 会话的讨论（服务内存实测 → 常驻 → Codex 弃 widget + MCP；两个待定点用户按推荐拍板，整体方案用户发 `/plan-runner 跑`）。范围：`adapters/`、`FORK.md`、根目录 `.mcp.json` / `.codex-plugin/plugin.json`、`docs/plan/`。**`src/`、`mcp/`、根 `skills/`、根 `package.json` / `package-lock.json` / `plugin.json` 零改动**。
-> 状态：**未开始**。各阶段 SHA 见 §6；收口后待用户 push。
+> 状态：**S0–S7 已跑完，待人工验收**（清单在 §6 S7 行）。各阶段 SHA 见 §6；收口后待用户 push。
 > 执行方式：每阶段 fresh context、一个原子提交、失败即停、无人值守不 push。本项目第一次用 plan-runner，profile 就是本文 §2。
 
 ---
@@ -182,7 +182,7 @@ npm --prefix adapters run probe:cold
 | S4 Codex 的 hook、skill 与安装 | 已完成 | 907768a | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 126 PASS + 6 node:test（+7：codex-cli o ×5 / p ×2）、zcode 12、codex 25 + 26、build / check OK、cold 4（install 另断言 Codex skill 链到发布副本、hook 跑装好的命令）；test:codex-cli 另连跑 2 次绿；守卫空；两问自查：hook 的 2.5 秒定时器随进程退出，服务没加表或定时器（hook-check 不建会话，续租用已有的 session.timer）；skill 链接、hook 条目 uninstall 删，cowart_mcp 按计划不恢复，备份留给用户；测试的 Codex 主目录、占端口的服务在 finally 清掉；新循环遍历的都是解析出的数组或 queue.list 的拷贝 |
 | S5 删掉 Codex widget + MCP | 已完成 | 5ed065d | 全量组全绿（第 1 关一轮过，test:codex 已删）：contract OK、test:claude 127 PASS + 13 node:test（+1 PASS：搬来的 hello；+7 node:test：搬来的撤销 410、page-client ×3、从 test:codex 挪来的 media-assets ×2、新的「不再接 widget 投递」先红后绿）、zcode 12、build / check OK、cold 3（去掉 Codex 桥、widget 两步，改由命令拉起服务）；少掉的只有 Codex 桥 / widget 专用的：test:codex 的 node:test 19 个（asset-cache 2 + 3 子、partial native host updates、widget event cursors、mixed-host 1 + 10 子、restarted service）和 Codex smoke 25 个；守卫空；两问自查：删掉的 widget 表、投递租约定时器连同 `close()` 里的清理一起去掉，没加新的表或定时器；新测试的服务、页面流、listen 子进程、临时目录在 finally / after 清掉；新循环遍历的都是数组字面量或拷贝 |
 | S6 文档 | 已完成 | fd163f6 | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 127 PASS + 13 node:test、zcode 12、build / check OK（产物无变化）、cold 3；测试数不变（只改文档）；退役词 rg 余 11 行，都标明历史或待撤：FORK.md 分支与同步（verify-release / switch-codex-entry 历史）、宿主差异（Codex 列「10-23 以前」；ZCode 列和 zcode/README 是 09-14 的 ZCode 核实）、Codex 也改走 ×3（原来 / 清旧链接 / 去掉的）、素材加载、Codex 原生小部件一节、注意（旧 skill 目录）、补丁点 Blob 行（待撤）、claude/README 对照表（上游原版 / 10-23 前）；FORK.md 仓内路径脚本逐个核过，只缺写成历史的已删路径；守卫空；两问自查：只改文档，没加表 / 定时器 / 文件 / 进程 / 安装项，没有新循环 |
-| S7 整体审与收口 | 未开始 | | |
+| S7 整体审与收口 | 待人工验收 | | 全量组全绿（第 1 关一轮过）：contract OK、test:claude 137 PASS + 13 node:test（+10：codex-cli +5、resident +5，含起服务那步改成 step 的 +1）、zcode 12、build / check OK、cold 3；审查 2 个子 agent 共 18 条（去重 15，medium 2）：采纳 11（2 medium + 9 low，其中 4 条只采纳零风险的那部分：hook 命令 `|| exit 0`、常驻后会话名从内存删、hook-check 不改 Claude 会话的 host、`hostFromEnv` 只认会话变量、hook 不问 0.3.0 以前的服务、cowart_mcp 段有跨行值不动、拉起后重算等待、同 pid 旧退出码文件不算 + `--log` 服务清一天前的、vbs 每次拉起前查入口、写入保护记新条目时清结算的、测试失败路径的清理），不采纳 8 → 后续观察；退役词 rg 余 11 行，同 S6、都标明历史或待撤；内存（WS / 提交，服务 + 上游）空画布刚起 152 / 133 MB、读后 154 / 166、杀子进程 15 秒后服务 65 / 65；真画布 50 页刚起 152 / 132、读后 259 / 263、杀后 65 / 67；守卫空；两问自查：没加表、定时器、进程或安装项，删的都按快照遍历（`[...map]`）；新测试的退出码文件、开机自启、假服务、临时 Codex 主目录在 finally 清掉；**人工验收清单**：1) 真装 `node adapters/claude/scripts/install-skill.mjs`，看输出和备份（hooks.json 里的命令带 `|| exit 0`）；2) `npm --prefix adapters run service:stop` 后双击启动文件夹的 CowartCanvas（或注销重登），服务起来，「启动应用」里有它；3) 开关 Claude、Codex 会话、重启 Codex 后 `service:status` 的 pid 不变；4) 右键「在资源管理器中显示」「拷贝索引」照常；5) Codex 桌面版新任务：信任 hook，说「打开 Cowart 画布 <页名>」，链接在内置浏览器打开，`put` 能放东西（画布请求不手点）；6) 闲 5 分钟后画布服务只剩一个 node、约 65 MB |
 
 > 备注列只写验收摘要一行（各组结果 / 测试数变化 / 内存数字 / 守卫 / 两问自查一句），偏离内容在 deviations 文件。
 
@@ -198,3 +198,11 @@ npm --prefix adapters run probe:cold
 - （S4）命令给 Codex 的文字写 `node ~/.cowart/bin/cowart.mjs`：Windows PowerShell 5.1 不展开 `~`（pwsh 7.6 展开，Codex 优先用 pwsh）；Codex skill 里写了换成 `$HOME` 的写法，命令自己的文字没改。
 - （S5）根目录上游的 `scripts/check-plugin-metadata.mjs` 现在报根 `package.json` 版本（`0.1.28+codex.…`）≠ `.codex-plugin/plugin.json`（上游 0.1.27）：D15 只恢复后者、根版本不动；不在全量组里。
 - （S5）本机真安装还指着删掉的东西：`~/.codex/config.toml` 的 `cowart_mcp` 跑发布副本 0.2.16 的桥（协议同为 3，会沿用本仓库换上的服务，widget 的调用都报「不认识操作」）；`~/.codex/skills/` 下 4 个 junction 指向已删的 `adapters/codex/skills/*`。S7 人工验收第 1 条真装 install 会清掉。
+- （S7 审查）提醒 hook 找服务用的是命令的 `findService`：每句话都会短暂绑一下 43240（服务没跑时往后 20 个端口都绑一下）；正赶上开机自启的服务在起，它会以 3（端口被占）退出、vbs 就此结束。改成只连不绑在 Windows 上每个空端口要 1–2 秒，会顶满 2.5 秒，没改。
+- （S7 审查）config.toml 里紧挨在 `[mcp_servers.cowart_mcp]` 段后面、下一张表表头前的注释行会跟着这一段一起删（有备份）。
+- （S7 审查）经 WMI 拉起的服务死后，它的 pid 若在命令下次查看前就被别的活进程复用，`exitCode` 一直是 null，命令要等满 20 秒才报泛化的「没能启动」；要分开得比对进程创建时间。
+- （S7 审查）开机自启的 vbs 遇到持续失败（退出码不是 0 / 3 / 4，比如 43240 落进系统保留端口）每分钟重起一次、没有上限，每次轮转日志、留一个退出码文件。
+- （S7 审查，存疑）Codex 只在本机 `sandbox_mode = "danger-full-access"` 下验过：默认沙箱（workspace-write、不联网）里命令可能连不上 127.0.0.1、WMI 被拒退回 spawn 落进沙箱 Job；要在默认配置的 Codex 上跑一次 `open` / `put` 看服务日志。
+- （S7 审查）`launchDetached` 的 15 秒超时：WMI 其实已建好进程只是回话慢时，`spawnService` 会再 `detached` 起一个，靠端口和画布锁淘汰一个，留下的可能是在宿主 Job 里的那个。
+- （S7 审查）别的进程拉起服务前会轮转 `service.log`（> 5 MB 改名 `.1`）：常驻服务的 fd 跟着写进 `.1`，再轮转一次就写进已删的文件；运行中按路径重开日志得另做（不同于 S2 那条「只在启动时轮转」）。
+- （S7 审查，存疑）Codex 命令会话的画布页开着就一直 held（D8）：Codex 关掉任务后内置浏览器的标签页若还留着、SSE 不断，这个会话永不结束、一直占着那一页；要在 Codex 里核实关任务时标签页是否销毁。

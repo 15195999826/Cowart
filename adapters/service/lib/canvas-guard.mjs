@@ -22,8 +22,11 @@ export class CanvasGuard {
     }
   }
 
+  // Settled entries go when a page saves, and when new ones come: a resident service where only
+  // commands insert (no page open to save) would keep every record it ever inserted.
   trackInsertedRecords(canvasDir, records) {
     const entries = this.#entries(this.#inserted, canvasDir)
+    this.#dropSettled(entries)
     for (const record of records) {
       if (record?.id) entries.set(record.id, { record, addedAt: Date.now(), fetchedAt: null })
     }
@@ -34,7 +37,9 @@ export class CanvasGuard {
   }
 
   trackRemovedShape(canvasDir, shapeId) {
-    this.#entries(this.#removed, canvasDir).set(shapeId, { addedAt: Date.now(), fetchedAt: null })
+    const entries = this.#entries(this.#removed, canvasDir)
+    this.#dropSettled(entries)
+    entries.set(shapeId, { addedAt: Date.now(), fetchedAt: null })
   }
 
   // Until the page has fetched a snapshot that reflects a service-side edit, a save that
@@ -91,6 +96,10 @@ export class CanvasGuard {
   // Settled once the page has seen the edit for a while (later saves are user intent) or it expired.
   #settled(entry, now) {
     return now - entry.addedAt > MAX_PENDING_MS || (entry.fetchedAt !== null && now - entry.fetchedAt > FETCH_GRACE_MS)
+  }
+
+  #dropSettled(entries, now = Date.now()) {
+    for (const [id, entry] of [...entries]) if (this.#settled(entry, now)) entries.delete(id)
   }
 
   #entries(map, canvasDir) {

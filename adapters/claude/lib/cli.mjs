@@ -20,7 +20,7 @@
 import { readFile } from 'node:fs/promises'
 
 import { CanvasServiceClient, findService } from '../../service/client.mjs'
-import { DEFAULT_PORT, VERSION, samePath } from '../../service/lib/identity.mjs'
+import { DEFAULT_PORT, VERSION, compareVersions, samePath } from '../../service/lib/identity.mjs'
 import { MOVE_PAGES_TOOL, folderWords, newPageFolderHint, normalizeFolder, pageTreeLines } from '../../service/lib/page-folders.mjs'
 import { AGENT_STATUSES, requestTask } from '../../service/lib/requests.mjs'
 import { loadOrCreateToken } from '../../service/lib/token.mjs'
@@ -59,11 +59,14 @@ export function hookSessionId(env = process.env, input = null) {
 
 // Which host runs the command: COWART_HOST when set (tests), else Claude Code when it gave the
 // command its variables, else Codex when it gave its thread, else Claude Code. The texts differ
-// by host (Codex has no Browser pane, no AskUserQuestion, no background listener).
+// by host (Codex has no Browser pane, no AskUserQuestion, no background listener). Claude Code's
+// are the ones it gives the commands of a session; other CLAUDE_CODE_* are set for the whole
+// machine (CLAUDE_CODE_GIT_BASH_PATH on Windows) and reach Codex's commands too.
+const CLAUDE_CODE_SESSION_VARIABLES = ['CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_HOST_SESSION_ID', 'CLAUDE_CODE_SESSION_ID']
 export function hostFromEnv(env = process.env) {
   const given = String(env.COWART_HOST ?? '').trim().toLowerCase()
   if (given) return given
-  if (Object.keys(env).some((key) => key.startsWith('CLAUDE_CODE_'))) return 'claude'
+  if (CLAUDE_CODE_SESSION_VARIABLES.some((key) => env[key])) return 'claude'
   return env.CODEX_THREAD_ID ? 'codex' : 'claude'
 }
 
@@ -967,6 +970,9 @@ export function hookReminder(requests, cli = cowartCommand()) {
 // ---- Running --------------------------------------------------------------------------
 
 const HOOK_TIMEOUT_MS = 2_500
+// The first service that answers hook-check: an older one would take the thread for a session of
+// its own (a command session it keeps online) before it says it does not know the operation.
+const HOOK_SERVICE_SINCE = '0.3.0'
 
 // `hook prompt`: Codex runs it for every message the user sends (UserPromptSubmit), with the turn as
 // JSON on stdin, and adds what it prints to the message (D9). It only finds the service (starts
@@ -985,7 +991,7 @@ async function promptHook(cli) {
     if (!session) return exit(0)
     const token = await loadOrCreateToken()
     const found = await findService({ port: Number(process.env.COWART_CLAUDE_PORT) || DEFAULT_PORT, token })
-    if (!found) return exit(0)
+    if (!found?.status.version || compareVersions(found.status.version, HOOK_SERVICE_SINCE) < 0) return exit(0)
     const response = await fetch(`http://127.0.0.1:${found.port}/api/bridge/call`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-cowart-token': token },

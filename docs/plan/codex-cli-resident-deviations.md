@@ -68,4 +68,11 @@
 
 ## S7 整体审与收口
 
-- 
+- S7-1 / 提醒 hook 的命令末尾加 `|| exit 0`，codex-cli-test (p) 和 probe:cold 比对整条命令的断言跟着改 / 审查 medium：codex-rs 把 UserPromptSubmit 的退出码 2 + stderr 当拦截，命令入口指向的 Cowart 不在了（入口退出 2）时用户每句话都被拦；改的是 Codex 断言。
+- S7-2 / [假设] `hostFromEnv` 把 D7 的「有 `CLAUDE_CODE_*`」收窄成 Claude Code 给会话命令的 ENTRYPOINT / HOST_SESSION_ID / SESSION_ID（有值才算）/ 整台机器设的 `CLAUDE_CODE_GIT_BASH_PATH` 之类 Codex 也继承，原写法把 Codex 会话认成 Claude。
+- S7-3 / [假设] hook 不问比 0.3.0 旧（或没报版本）的服务，`identity.mjs` 导出 `compareVersions`；只改 hook-check 的续租条件（host 为 codex 或空），不改它列出的请求 / 审查 low：旧服务先建会话再回 422；嵌套 Codex 会把 Claude 会话改成 codex，开着面板就永不结束。
+- S7-4 / [假设] config.toml 的 cowart_mcp 段里有跨行的值（未闭合的 [ / {、三引号）就整份不动、报一行请用户删，install 仍退出 0；不做 TOML 解析 / 按行删会在值里像表头的行提前停、留下坏的 config；保守退让只会少删不会多删，常见的单行写法照旧删。
+- S7-5 / [假设] 导出 `launchedService(pid, since)`（测试用）；早于拉起时刻 1 秒以上写的退出码文件算同 pid 的旧进程留的、按 -1 并删；带 `--log` 的服务启动时也清一天前的（导出 `clearOldExitCodes`）/ 审查 low：开机自启和被替换的服务的文件没人读，pid 复用会读到旧码。
+- S7-6 / [假设] `#settle` 每次拉起后重算 20 秒等待（原先从进 `#settle` 算）、`CanvasGuard` 记新条目前先清已结算的，这两处没加测试 / 前者要慢 WMI 才测得到、只放宽上限；后者外面看不出（结算的条目本来就不再用），现有写入保护测试兜住没回归。
+- S7-7 / [假设] `Presence` 在 `#persist` 里删 7 天没见、不负责页、没开着面板的条目（同存盘的口径，只多了负责页 / 面板两条保留）/ 审查 medium：常驻后内存里的会话名只增不删，备用名会用光、旧名不能再用。
+- S7-8 / resident-test 起服务那步包进 step（+1 PASS），codex-cli-test 的 finally 各步单独 catch、`stopTestService` 挪进 try / 审查 low：失败路径会跳过清理和 finish；只改测试。

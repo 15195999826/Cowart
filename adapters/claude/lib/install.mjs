@@ -98,7 +98,8 @@ function serviceLinkSource(target) {
 }
 
 // VBScript, saved as UTF-16 so any path reads right. A path that is gone ends it quietly: a script
-// error would show a dialog at logon.
+// error would show a dialog at logon. It looks before every start, not once: uninstall leaves a
+// running launcher alone, and node may move (an upgrade) while it waits for the service.
 function launcherSource() {
   const text = (value) => `"${String(value).replaceAll('"', '""')}"`
   const quoted = (path) => `""${path}""`
@@ -113,11 +114,11 @@ function launcherSource() {
     'If running.Count > 1 Then WScript.Quit 0',
     '',
     'Set files = CreateObject("Scripting.FileSystemObject")',
-    `If Not files.FileExists(${text(process.execPath)}) Or Not files.FileExists(${text(SERVICE_LINK)}) Then WScript.Quit 0`,
     'Set shell = CreateObject("WScript.Shell")',
     `If files.FolderExists(${text(REPO_ROOT)}) Then shell.CurrentDirectory = ${text(REPO_ROOT)}`,
     `command = "${quoted(process.execPath)} ${quoted(SERVICE_LINK)} --port ${DEFAULT_PORT} --log ${quoted(SERVICE_LOG)}"`,
     'Do',
+    `  If Not files.FileExists(${text(process.execPath)}) Or Not files.FileExists(${text(SERVICE_LINK)}) Then Exit Do`,
     '  code = shell.Run(command, 0, True)',
     `  If code = 0 Or code = ${EXIT_PORT_TAKEN} Or code = ${EXIT_CANVAS_BUSY} Then Exit Do`,
     '  WScript.Sleep 60000',
@@ -200,9 +201,12 @@ export function codexHome() {
   return process.env.CODEX_HOME || join(homedir(), '.codex')
 }
 
-// What the hook runs. Codex runs it through cmd /C "…" on Windows and $SHELL -lc elsewhere.
+// What the hook runs. Codex runs it through cmd /C "…" on Windows and $SHELL -lc elsewhere, and
+// holds the user's message back when it exits 2 with something on stderr: what the command link
+// does when the Cowart it leads to is gone, and an older cowart that knows no `hook`. So the hook
+// ends with 0 whatever the command does (it prints nothing on stdout when it fails).
 export function promptHookCommand() {
-  return `"${process.execPath}" "${COMMAND_LINK}" hook prompt`
+  return `"${process.execPath}" "${COMMAND_LINK}" hook prompt || exit 0`
 }
 
 const isCowartHook = (hook) => typeof hook?.command === 'string' && hook.command.includes('cowart') && hook.command.includes('hook prompt')
@@ -309,19 +313,35 @@ async function editHooks(home, change) {
   return { ok: true, file, changed: true, backup }
 }
 
+// A line that leaves a value open (an array or inline table not closed on it, a multi-line
+// string): the lines that follow are the value's, though one may read like a table header.
+function opensValue(line) {
+  if (/"""|'''/.test(line)) return true
+  let depth = 0
+  for (const char of line.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '').replace(/#.*/, '')) {
+    if (char === '[' || char === '{') depth += 1
+    else if (char === ']' || char === '}') depth -= 1
+  }
+  return depth !== 0
+}
+
 // config.toml without the table [mcp_servers.cowart_mcp] and its subtables ([…cowart_mcp.env]),
-// up to the next other table; every other byte as it was.
+// up to the next other table; every other byte as it was. null when a value in it goes on over
+// lines: the table is cut line by line, and a line inside the value could pass for the next table.
 export function withoutCowartMcp(text) {
   const table = /^[ \t]*\[\[?(.*?)\]\]?[ \t]*(#.*)?\r?\n?$/
   let dropping = false
-  return text
+  let tangled = false
+  const kept = text
     .split(/(?<=\n)/)
     .filter((line) => {
       const header = table.exec(line)
       if (header) dropping = /^mcp_servers\.cowart_mcp(\.|$)/.test(header[1].replace(/[\s"']/g, ''))
+      else if (dropping && opensValue(line)) tangled = true
       return !dropping
     })
     .join('')
+  return tangled ? null : kept
 }
 
 async function dropCowartMcp(home) {
@@ -329,6 +349,7 @@ async function dropCowartMcp(home) {
   if (!existsSync(file)) return { changed: false }
   const original = await readFile(file, 'utf8')
   const text = withoutCowartMcp(original)
+  if (text === null) return { changed: false, tangled: true, file }
   if (text === original) return { changed: false }
   const backup = await backUp(file)
   await writeFile(file, text)
@@ -376,6 +397,7 @@ export async function installCodex() {
 
   const mcp = await dropCowartMcp(home)
   if (mcp.changed) lines.push(`已从 ${mcp.file} 去掉以前 Codex 插件的 cowart_mcp（备份在 ${mcp.backup}）；开着的 Codex 要重开才不再起它。`)
+  else if (mcp.tangled) lines.push(`没从 ${mcp.file} 去掉以前 Codex 插件的 cowart_mcp：它那一段里有跨行的值，按行删可能删错，请自己删掉 [mcp_servers.cowart_mcp]（连同它的子表），再重开 Codex。`)
   return { ok, lines }
 }
 

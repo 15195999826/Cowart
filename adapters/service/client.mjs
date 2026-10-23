@@ -33,6 +33,8 @@ const RECONNECT_MAX_MS = 5_000
 const LOG_LIMIT_BYTES = 5 * 1024 * 1024
 // Exit codes nobody came for (the command that started the service gave up or ended first).
 const EXIT_FILE_KEPT_MS = 24 * 3600_000
+// A file's time and Date.now() may round differently (file systems keep coarser times).
+const EXIT_FILE_SLACK_MS = 1_000
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
@@ -141,7 +143,10 @@ function logLine(message) {
   }
 }
 
-function clearOldExitCodes() {
+// Before a command starts a service, and when a service with a log of its own starts (the one the
+// launcher at logon starts is the only service for weeks): nobody reads the codes of the services
+// no command waited for (replaced, stopped, started at logon).
+export function clearOldExitCodes() {
   try {
     for (const name of readdirSync(SERVICE_EXIT_DIR)) {
       const file = join(SERVICE_EXIT_DIR, name)
@@ -154,8 +159,9 @@ function clearOldExitCodes() {
 
 // A service started through WMI is no child of this process: its exit code is null while it
 // runs; once it is gone, the code it left in its exit file (read once, then removed), -1 when it
-// left none (it was killed).
-function launchedService(pid) {
+// left none (it was killed). since: when it was started. A file from before then is an earlier
+// process's that had the same pid (Windows reuses them), and not this one's.
+export function launchedService(pid, since) {
   let code = null
   return {
     pid,
@@ -163,8 +169,10 @@ function launchedService(pid) {
       if (code !== null || isAlive(pid)) return code
       const file = join(SERVICE_EXIT_DIR, String(pid))
       try {
-        code = Number.parseInt(readFileSync(file, 'utf8'), 10)
+        const written = statSync(file).mtimeMs
+        const text = readFileSync(file, 'utf8')
         rmSync(file, { force: true })
+        code = written < since - EXIT_FILE_SLACK_MS ? -1 : Number.parseInt(text, 10)
       } catch {
         code = -1
       }
@@ -185,8 +193,9 @@ export function spawnService(port, { entry = SERVICE_ENTRY, replacing = null } =
   if (process.platform === 'win32') {
     clearOldExitCodes()
     let reason = ''
+    const since = Date.now()
     const launched = launchDetached({ execPath: process.execPath, args: [...args, '--log', SERVICE_LOG], cwd: REPO_ROOT, env: serviceEnv(), onFailure: (why) => (reason = why) })
-    if (launched) return launchedService(launched.pid)
+    if (launched) return launchedService(launched.pid, since)
     logLine(`launch via WMI failed, spawned directly${reason ? ` (${reason})` : ''}`)
   }
   const out = openSync(SERVICE_LOG, 'a')
@@ -427,6 +436,8 @@ export class CanvasServiceClient {
       started = spawnService(port, { entry: this.entry })
       starts += 1
       mayReplace = false
+      // The time it has to come up starts now: starting it through WMI can itself take seconds.
+      deadline = Date.now() + READY_TIMEOUT_MS
     }
   }
 

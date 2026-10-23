@@ -8,10 +8,11 @@
 // nothing otherwise; `cowart install` sets Codex up (D13: the skill, the hook, no cowart_mcp server).
 // The check runs with a runtime directory, a canvas, a Codex home and a port of its own.
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -82,8 +83,18 @@ await step('(k) D7: the session and host from what the host gives a command', as
   assert.equal(hostFromEnv({}), 'claude')
 })
 
-await stopTestService(PORT)
+await step('(k) a CLAUDE_CODE_* set for the whole machine is no Claude Code session: only what Claude Code gives its commands is', async () => {
+  const { hostFromEnv } = await import('../lib/cli.mjs')
+  // Set by users on Windows for Claude Code to find Git Bash: Codex's commands inherit it.
+  assert.equal(hostFromEnv({ CLAUDE_CODE_GIT_BASH_PATH: 'C:\\Git\\bin\\bash.exe', CODEX_THREAD_ID: 't' }), 'codex')
+  assert.equal(hostFromEnv({ CLAUDE_CODE_USE_BEDROCK: '1', CODEX_THREAD_ID: 't' }), 'codex')
+  assert.equal(hostFromEnv({ CLAUDE_CODE_SESSION_ID: 's', CODEX_THREAD_ID: 't' }), 'claude')
+  assert.equal(hostFromEnv({ CLAUDE_CODE_HOST_SESSION_ID: 's', CODEX_THREAD_ID: 't' }), 'claude')
+  assert.equal(hostFromEnv({ CLAUDE_CODE_GIT_BASH_PATH: 'C:\\Git\\bin\\bash.exe' }), 'claude')
+})
+
 try {
+  await stopTestService(PORT)
   await step('(k) with only CODEX_THREAD_ID, open works: the session is codex-<thread>, host codex, a command session', async () => {
     const result = await codex.run(['open', '--out', 'json'])
     assert.equal(result.code, 0, result.stderr || result.stdout)
@@ -275,6 +286,36 @@ try {
     assert.equal(await sessionOf(`codex-${stranger}`), null, 'the hook made a session for a thread it did not know')
   })
 
+  await step("(o) hook-check leaves a Claude Code session a Claude Code one (a Codex started inside it asks with the session's id)", async () => {
+    const claude = cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-claude-asked', env: lease })
+    assert.equal((await claude.run(['pages'])).code, 0)
+    assert.equal((await sessionOf(claude.session))?.host, 'claude')
+    const asked = await api(origin, '/api/bridge/call', { session: claude.session, op: 'hook-check', cli: true, host: 'codex' })
+    assert.deepEqual(asked.result, { requests: [] })
+    assert.equal((await sessionOf(claude.session))?.host, 'claude', 'the hook made the Claude Code session a Codex one')
+  })
+
+  await step('(o) hook prompt asks no service older than the hook (0.3.0): one would take the thread for a session of its own', async () => {
+    const { localIdentity } = await import('../../service/lib/identity.mjs')
+    await stopTestService(PORT)
+    const asked = []
+    const older = http.createServer((req, res) => {
+      if (req.url === '/api/service') return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ...localIdentity(), version: '0.2.16', pid: process.pid }))
+      asked.push(req.url)
+      res.writeHead(422, { 'content-type': 'application/json' }).end(JSON.stringify({ error: '不认识的操作' }))
+    })
+    await new Promise((resolve) => older.listen(PORT, '127.0.0.1', resolve))
+    try {
+      const result = await promptHook(thread)
+      assert.equal(result.code, 0, result.stderr)
+      assert.equal(result.stdout + result.stderr, '')
+      assert.deepEqual(asked, [], 'the hook asked a 0.2.16 service')
+    } finally {
+      older.closeAllConnections()
+      await new Promise((resolve) => older.close(resolve))
+    }
+  })
+
   await step('(p) install sets Codex up: the skill, the prompt hook once, no cowart_mcp server, backups; uninstall takes the skill and the hook away', async () => {
     const home = join(root, 'codex-home')
     const skills = join(home, 'skills')
@@ -319,7 +360,7 @@ try {
 
     const hooks = JSON.parse(await readFile(hooksFile, 'utf8'))
     const ours = hooks.hooks.UserPromptSubmit.flatMap((group) => group.hooks).filter((hook) => hook.command.includes('cowart') && hook.command.includes('hook prompt'))
-    assert.deepEqual(ours, [{ type: 'command', command: `"${process.execPath}" "${COMMAND_LINK}" hook prompt`, timeout: 5 }])
+    assert.deepEqual(ours, [{ type: 'command', command: `"${process.execPath}" "${COMMAND_LINK}" hook prompt || exit 0`, timeout: 5 }])
     assert.deepEqual(hooks.hooks.UserPromptSubmit[0], otherHooks.UserPromptSubmit[0])
     assert.deepEqual(hooks.hooks.Stop, otherHooks.Stop)
     assert.equal(await readFile(configFile, 'utf8'), kept + after)
@@ -364,9 +405,48 @@ try {
     assert.equal(await realpath(join(skills, 'cowart-image-edit')), await realpath(elsewhere), 'a link to somewhere else was touched')
     assert.equal(await readFile(join(skills, 'cowart-open-canvas', 'SKILL.md'), 'utf8'), 'mine', 'a real directory was touched')
   })
+
+  await step('(p) the prompt hook ends with 0 when the cowart command it runs is gone: Codex holds the message back on an exit 2', async () => {
+    const home = join(root, 'codex-gone')
+    await mkdir(home, { recursive: true })
+    const link = join(root, 'gone', 'cowart.mjs')
+    const installed = await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-installer', env: { CODEX_HOME: home, COWART_COMMAND_LINK: link } }).run(['install'])
+    assert.equal(installed.code, 0, installed.stderr || installed.stdout)
+    const [hook] = JSON.parse(await readFile(join(home, 'hooks.json'), 'utf8')).hooks.UserPromptSubmit.flatMap((group) => group.hooks)
+    // The Cowart the command leads to was removed (a release folder deleted, a clone moved).
+    const source = await readFile(link, 'utf8')
+    await writeFile(link, source.replace(/^const target = ".*"$/m, `const target = ${JSON.stringify(join(root, 'removed', 'cowart.mjs').replaceAll('\\', '/'))}`))
+    const gone = await run(process.execPath, [link, 'hook', 'prompt'], { windowsHide: true }).catch((error) => error)
+    assert.equal(gone.code, 2, 'the command whose Cowart is gone no longer exits 2: the check needs another way to fail it')
+    // The way Codex runs a hook: cmd /C "<command>" on Windows, $SHELL -lc elsewhere (codex-rs hooks).
+    const child = process.platform === 'win32'
+      ? spawn(process.env.COMSPEC || 'cmd.exe', ['/C', `"${hook.command}"`], { windowsVerbatimArguments: true, windowsHide: true })
+      : spawn(process.env.SHELL || '/bin/sh', ['-lc', hook.command])
+    let stdout = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stdin.end(JSON.stringify({ session_id: randomUUID(), hook_event_name: 'UserPromptSubmit', prompt: '你好' }))
+    const code = await new Promise((resolve) => child.on('exit', resolve))
+    assert.equal(code, 0, `Codex would ${code === 2 ? 'hold back' : 'report a failed hook on'} every message (exit ${code})`)
+    assert.equal(stdout, '')
+  })
+
+  await step('(p) a cowart_mcp table with a value over several lines is left for the user: config.toml as it was, and install says so', async () => {
+    const home = join(root, 'codex-multiline')
+    await mkdir(home, { recursive: true })
+    const config = ['model = "gpt-5"', '', '[mcp_servers.cowart_mcp]', 'command = "node"', 'args = [', '  "start.mjs",', '  ["nested"]', ']', 'env = { A = "1" }', '', '[mcp_servers.other]', 'command = "x"', ''].join('\n')
+    await writeFile(join(home, 'config.toml'), config)
+    const result = await cliSession({ cwd: projectDir, port: PORT, session: 'codex-cli-installer', env: { CODEX_HOME: home } }).run(['install'])
+    assert.equal(result.code, 0, result.stderr || result.stdout)
+    assert.equal(await readFile(join(home, 'config.toml'), 'utf8'), config, 'install cut the table at a line inside its value')
+    assert.match(result.stdout, /cowart_mcp/)
+    assert.equal((await readdir(home)).some((name) => name.startsWith('config.toml.bak-cowart-')), false, 'a file left alone needs no backup')
+    const { withoutCowartMcp } = await import('../lib/install.mjs')
+    assert.equal(withoutCowartMcp('[mcp_servers.cowart_mcp]\nargs = ["a", "b"]\nenv = { A = "[" }\n\n[x]\ny = 1\n'), '[x]\ny = 1\n', 'one-line values are cut out as before')
+  })
 } finally {
-  await codex.close()
-  await stopTestService(PORT)
+  // Each on its own: one that fails must not keep the others, and finish(), from cleaning up.
+  await codex.close().catch(() => {})
+  await stopTestService(PORT).catch(() => {})
   await rm(root, { recursive: true, force: true }).catch(() => {})
 }
 finish()
